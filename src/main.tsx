@@ -322,6 +322,26 @@ function usageMetaRight(snapshot: UsageSnapshot) {
   return resetLabelToClock(snapshot.resetLabel) || "Reset --";
 }
 
+const LIMITED_RESET_REFRESH_LEAD_MS = 2 * 60 * 1000;
+const LIMITED_FALLBACK_REFRESH_MS = 10 * 60 * 1000;
+
+function limitedThreshold(provider: Provider) {
+  return provider === "claude" ? 99 : 100;
+}
+
+function isProviderLimited(provider: Provider, snapshot: UsageSnapshot) {
+  return (snapshot.percentUsed ?? 0) >= limitedThreshold(provider);
+}
+
+function shouldAutoRefreshProvider(provider: Provider, snapshot: UsageSnapshot, now: number, lastLimitedRefreshAt: Record<Provider, number>) {
+  if (!isProviderLimited(provider, snapshot)) return true;
+
+  const resetMs = parseResetMs(snapshot.resetLabel);
+  if (resetMs !== null) return resetMs <= now + LIMITED_RESET_REFRESH_LEAD_MS;
+
+  return now - (lastLimitedRefreshAt[provider] || 0) >= LIMITED_FALLBACK_REFRESH_MS;
+}
+
 function providerForLabel(label: string): Provider | null {
   if (label === "provider_claude") return "claude";
   if (label === "provider_codex") return "codex";
@@ -470,6 +490,8 @@ function WidgetApp() {
     claude: loadSnapshot("claude"),
     codex: loadSnapshot("codex"),
   });
+  const snapshotsRef = useRef(snapshots);
+  const lastLimitedAutoRefreshRef = useRef<Record<Provider, number>>({ claude: 0, codex: 0 });
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [busy, setBusy] = useState<Provider | `${Provider}-open` | `${Provider}-close` | `${Provider}-reload` | `${Provider}-logout` | `${Provider}-discover` | null>(null);
   const [discovery, setDiscovery] = useState<Partial<Record<Provider, string>>>({});
@@ -613,6 +635,10 @@ function WidgetApp() {
   }, [mode]);
 
   useEffect(() => {
+    snapshotsRef.current = snapshots;
+  }, [snapshots]);
+
+  useEffect(() => {
     function reloadLocal() {
       setSettings(loadSettings());
       setSnapshots({ claude: loadSnapshot("claude"), codex: loadSnapshot("codex") });
@@ -631,7 +657,19 @@ function WidgetApp() {
   useEffect(() => {
     let cancelled = false;
     async function refreshOpenProviders() {
-      const providers: Provider[] = ["claude", "codex"];
+      const now = Date.now();
+      const currentSnapshots = snapshotsRef.current;
+      const providers: Provider[] = (["claude", "codex"] as Provider[]).filter((provider) =>
+        shouldAutoRefreshProvider(provider, currentSnapshots[provider], now, lastLimitedAutoRefreshRef.current)
+      );
+      if (!providers.length) return;
+
+      for (const provider of providers) {
+        if (isProviderLimited(provider, currentSnapshots[provider]) && parseResetMs(currentSnapshots[provider].resetLabel) === null) {
+          lastLimitedAutoRefreshRef.current[provider] = now;
+        }
+      }
+
       const results = await Promise.all(
         providers.map((provider) => {
           const url = provider === "claude" ? settings.claudeUrl : settings.codexUrl;
@@ -672,7 +710,7 @@ function WidgetApp() {
       const next = new Set(prev);
       let changed = false;
       for (const p of ["claude", "codex"] as Provider[]) {
-        if ((snapshots[p].percentUsed ?? 0) >= 100 && !next.has(p)) {
+        if (isProviderLimited(p, snapshots[p]) && !next.has(p)) {
           next.add(p);
           changed = true;
         }
