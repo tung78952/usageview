@@ -373,16 +373,8 @@ async function closeProvider(provider: Provider) {
   await invoke("close_provider_window", { provider });
 }
 
-async function reloadProvider(provider: Provider) {
-  await invoke("reload_provider_window", { provider });
-}
-
 async function refreshProviderPage(provider: Provider, url: string) {
   await invoke("refresh_provider_page", { provider, url });
-}
-
-async function prepareProviderRefresh(provider: Provider, url: string) {
-  await invoke("prepare_provider_refresh", { provider, url });
 }
 
 function wait(ms: number) {
@@ -492,6 +484,8 @@ function WidgetApp() {
   });
   const snapshotsRef = useRef(snapshots);
   const lastLimitedAutoRefreshRef = useRef<Record<Provider, number>>({ claude: 0, codex: 0 });
+  const prevUpdatedAtRef = useRef<Record<Provider, string>>({ claude: "", codex: "" });
+  const [flashSet, setFlashSet] = useState<Set<Provider>>(new Set());
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [busy, setBusy] = useState<Provider | `${Provider}-open` | `${Provider}-close` | `${Provider}-reload` | `${Provider}-logout` | `${Provider}-discover` | null>(null);
   const [discovery, setDiscovery] = useState<Partial<Record<Provider, string>>>({});
@@ -586,7 +580,12 @@ function WidgetApp() {
           visible ? innerHeight >= boxesMin + footerHeight - 4 : innerHeight >= boxesMin + footerHeight + 4,
         );
 
-        void appWindow.setMinSize(new LogicalSize(WIDGET_MIN_WIDTH, Math.max(WIDGET_MIN_HEIGHT_FALLBACK, boxesMin + footerHeight))).catch(() => undefined);
+        const minHeight = Math.max(WIDGET_MIN_HEIGHT_FALLBACK, boxesMin + footerHeight + 4);
+        void appWindow.setMinSize(new LogicalSize(WIDGET_MIN_WIDTH, minHeight)).catch(() => undefined);
+        if (innerHeight < minHeight) {
+          const innerWidth = Math.ceil(widget.getBoundingClientRect().width);
+          void appWindow.setSize(new LogicalSize(Math.max(WIDGET_MIN_WIDTH, innerWidth), minHeight)).catch(() => undefined);
+        }
       });
     }
 
@@ -656,11 +655,11 @@ function WidgetApp() {
 
   useEffect(() => {
     let cancelled = false;
-    async function refreshOpenProviders() {
+    async function refreshOpenProviders(force = false) {
       const now = Date.now();
       const currentSnapshots = snapshotsRef.current;
       const providers: Provider[] = (["claude", "codex"] as Provider[]).filter((provider) =>
-        shouldAutoRefreshProvider(provider, currentSnapshots[provider], now, lastLimitedAutoRefreshRef.current)
+        force || shouldAutoRefreshProvider(provider, currentSnapshots[provider], now, lastLimitedAutoRefreshRef.current)
       );
       if (!providers.length) return;
 
@@ -683,7 +682,7 @@ function WidgetApp() {
     }
     // Refresh once shortly after launch (gives the hidden WebViews a moment to exist/navigate),
     // then keep refreshing on the interval — all silently in the background.
-    const initial = window.setTimeout(refreshOpenProviders, 800);
+    const initial = window.setTimeout(() => refreshOpenProviders(true), 800);
     const interval = window.setInterval(refreshOpenProviders, Math.max(15, settings.refreshIntervalSec) * 1000);
     return () => {
       cancelled = true;
@@ -717,6 +716,20 @@ function WidgetApp() {
       }
       return changed ? next : prev;
     });
+  }, [snapshots]);
+
+  useEffect(() => {
+    const flashing = new Set<Provider>();
+    for (const p of ["claude", "codex"] as Provider[]) {
+      if (snapshots[p].updatedAt !== prevUpdatedAtRef.current[p]) {
+        prevUpdatedAtRef.current[p] = snapshots[p].updatedAt;
+        flashing.add(p);
+      }
+    }
+    if (!flashing.size) return;
+    setFlashSet(flashing);
+    const timer = setTimeout(() => setFlashSet(new Set()), 2000);
+    return () => clearTimeout(timer);
   }, [snapshots]);
 
   function toggleCompactTimer(provider: Provider) {
@@ -852,6 +865,10 @@ function WidgetApp() {
     updateSettings({ ...settings, alwaysOnTop: !settings.alwaysOnTop });
   }
 
+  const now = Date.now();
+  const isPaused = (p: Provider) =>
+    !shouldAutoRefreshProvider(p, snapshots[p], now, lastLimitedAutoRefreshRef.current);
+
   if (mode === "compact") {
     return (
       <main className={`compact-widget ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={prepareCompactDrag} onMouseMove={maybeStartCompactDrag} onContextMenu={openCompactMenu}>
@@ -865,10 +882,10 @@ function WidgetApp() {
               style={{ cursor: compactTimerSet.has(provider) ? "default" : "pointer" }}
             >
               {compactTimerSet.has(provider)
-                ? <CompactTimerView snapshot={snapshots[provider]} onBack={() => toggleCompactTimer(provider)} />
+                ? <CompactTimerView snapshot={snapshots[provider]} onBack={() => toggleCompactTimer(provider)} paused={isPaused(provider)} />
                 : compactHovered === provider
-                ? <UsageBlock snapshot={snapshots[provider]} />
-                : <CompactUsageBlock snapshot={snapshots[provider]} />
+                ? <UsageBlock snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} />
+                : <CompactUsageBlock snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} />
               }
             </div>
           )) : <EmptyProviderState />}
@@ -961,7 +978,7 @@ function WidgetApp() {
         <WindowControls pinned={settings.alwaysOnTop} onTogglePin={togglePinned} onMinimize={() => void minimizeWindow()} onMaximize={() => void toggleMaximizeWindow()} onClose={() => void closeWindow()} />
       </div>
       <div ref={providersRef} className="providers" data-tauri-drag-region>
-        {shown.length > 0 ? shown.map((provider) => <UsageBlock key={provider} snapshot={snapshots[provider]} compact />) : <EmptyProviderState />}
+        {shown.length > 0 ? shown.map((provider) => <UsageBlock key={provider} snapshot={snapshots[provider]} compact flash={flashSet.has(provider)} paused={isPaused(provider)} />) : <EmptyProviderState />}
       </div>
       {showFooter && (
         <footer ref={widgetFooterRef} className="widget-footer">
@@ -1194,7 +1211,7 @@ function formatCountdown(resetMs: number): string {
   return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-function CompactTimerView({ snapshot, onBack }: { snapshot: UsageSnapshot; onBack: () => void }) {
+function CompactTimerView({ snapshot, onBack, paused = false }: { snapshot: UsageSnapshot; onBack: () => void; paused?: boolean }) {
   const [, setTick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 1000);
@@ -1203,7 +1220,7 @@ function CompactTimerView({ snapshot, onBack }: { snapshot: UsageSnapshot; onBac
   const resetMs = parseResetMs(snapshot.resetLabel);
   const countdown = resetMs !== null ? formatCountdown(resetMs) : null;
   return (
-    <article className={`compact-usage provider-tile ${snapshot.provider} timer-view`} onClick={onBack}>
+    <article className={`compact-usage provider-tile ${snapshot.provider} timer-view${paused ? " mark-paused" : ""}`} onClick={onBack}>
       <div className="compact-usage-head">
         <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
         <span className="timer-label">reset at</span>
@@ -1217,37 +1234,14 @@ function CompactTimerView({ snapshot, onBack }: { snapshot: UsageSnapshot; onBac
   );
 }
 
-function CompactExpandedView({ snapshot }: { snapshot: UsageSnapshot }) {
-  const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
-  const activeCells = Math.max(0, Math.min(20, Math.round((percent ?? 0) / 5)));
-  const metaLeft = usageMetaLeft(snapshot, percent);
-  const metaRight = usageMetaRight(snapshot);
-  return (
-    <article className={`compact-usage provider-tile ${snapshot.provider} hovered-expand`}>
-      <div className="compact-usage-head">
-        <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
-        <span className={`source-pill ${snapshot.status === "ok" ? "ok" : "warn"}`}>{providerSourceLabel(snapshot.provider, snapshot.status)}</span>
-      </div>
-      <div className="expand-percent">{percent !== undefined ? `${Math.round(percent)}%` : "—"}</div>
-      <div className="expand-bar" aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
-        {Array.from({ length: 20 }, (_, i) => <span key={i} className={i < activeCells ? "cell active" : "cell"} />)}
-      </div>
-      <div className="expand-message">{snapshot.message}</div>
-      <div className="compact-meta">
-        <span>{metaLeft}</span>
-        <span>{metaRight}</span>
-      </div>
-    </article>
-  );
-}
 
-function CompactUsageBlock({ snapshot }: { snapshot: UsageSnapshot }) {
+function CompactUsageBlock({ snapshot, flash = false, paused = false }: { snapshot: UsageSnapshot; flash?: boolean; paused?: boolean }) {
   const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
   const activeCells = Math.max(0, Math.min(12, Math.round((percent ?? 0) / 8.333)));
   const metaLeft = usageMetaLeft(snapshot, percent);
   const metaRight = usageMetaRight(snapshot);
   return (
-    <article className={`compact-usage provider-tile ${snapshot.provider}`}>
+    <article className={`compact-usage provider-tile ${snapshot.provider}${flash ? " mark-flash" : ""}${paused ? " mark-paused" : ""}`}>
       <div className="compact-usage-head">
         <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
         <span className={`source-pill ${snapshot.status === "ok" ? "ok" : "warn"}`}>{providerSourceLabel(snapshot.provider, snapshot.status)}</span>
@@ -1267,13 +1261,13 @@ function CompactUsageBlock({ snapshot }: { snapshot: UsageSnapshot }) {
   );
 }
 
-function UsageBlock({ snapshot, compact = false }: { snapshot: UsageSnapshot; compact?: boolean }) {
+function UsageBlock({ snapshot, compact = false, flash = false, paused = false }: { snapshot: UsageSnapshot; compact?: boolean; flash?: boolean; paused?: boolean }) {
   const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
   const activeCells = Math.max(0, Math.min(20, Math.round((percent ?? 0) / 5)));
   const metaLeft = usageMetaLeft(snapshot, percent);
   const metaRight = usageMetaRight(snapshot);
   return (
-    <article className={`${compact ? "usage compact" : "usage"} provider-tile ${snapshot.provider}`}>
+    <article className={`${compact ? "usage compact" : "usage"} provider-tile ${snapshot.provider}${flash ? " mark-flash" : ""}${paused ? " mark-paused" : ""}`}>
       <div className="usage-top">
         <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
         <span className={`source-pill ${snapshot.status === "ok" ? "ok" : "warn"}`}>{providerSourceLabel(snapshot.provider, snapshot.status)}</span>
