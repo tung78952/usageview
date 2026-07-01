@@ -5,7 +5,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
 import "./styles.css";
 
-type Provider = "claude" | "codex";
+type Provider = "claude" | "codex" | "codex-1";
 type UsageStatus = "ok" | "not_open" | "not_logged_in" | "not_found" | "parser_failed" | "page_unavailable";
 
 type UsageSnapshot = {
@@ -24,6 +24,7 @@ type UsageSnapshot = {
 type Settings = {
   claudeUrl: string;
   codexUrl: string;
+  codex1Url: string;
   theme: "terminal" | "dark" | "light" | "glass" | "glass-light";
   opacity: number;
   uiScale: number;
@@ -32,6 +33,7 @@ type Settings = {
   corner: "top-left" | "top-right" | "bottom-left" | "bottom-right";
   showClaude: boolean;
   showCodex: boolean;
+  showCodex1: boolean;
 };
 
 type AppMode = "widget" | "settings" | "compact";
@@ -46,6 +48,7 @@ type WindowGeometry = {
 const defaultSettings: Settings = {
   claudeUrl: "https://claude.ai/settings/usage",
   codexUrl: "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+  codex1Url: "https://chatgpt.com/codex/cloud/settings/analytics#usage",
   theme: "terminal",
   opacity: 0.96,
   uiScale: 0.9,
@@ -54,6 +57,7 @@ const defaultSettings: Settings = {
   corner: "top-right",
   showClaude: true,
   showCodex: true,
+  showCodex1: false,
 };
 
 const GEOMETRY_KEY = "usageview.windowGeometry.v6";
@@ -78,9 +82,10 @@ function loadSettings(): Settings {
       uiScale: 1,
       showClaude: loaded.showClaude ?? true,
       showCodex: loaded.showCodex ?? true,
+      showCodex1: loaded.showCodex1 ?? false,
     };
   } catch {
-    return { ...defaultSettings, uiScale: 1, showClaude: true, showCodex: true };
+    return { ...defaultSettings, uiScale: 1, showClaude: true, showCodex: true, showCodex1: false };
   }
 }
 
@@ -272,7 +277,15 @@ function readableStatus(status: UsageStatus) {
 }
 
 function providerLabel(provider: Provider) {
-  return provider === "claude" ? "Claude" : "Codex";
+  if (provider === "claude") return "Claude";
+  if (provider === "codex-1") return "Codex 2";
+  return "Codex";
+}
+
+function providerUrl(provider: Provider, settings: Settings): string {
+  if (provider === "claude") return settings.claudeUrl;
+  if (provider === "codex-1") return settings.codex1Url;
+  return settings.codexUrl;
 }
 
 function providerSourceLabel(provider: Provider, status: UsageStatus) {
@@ -345,6 +358,7 @@ function shouldAutoRefreshProvider(provider: Provider, snapshot: UsageSnapshot, 
 function providerForLabel(label: string): Provider | null {
   if (label === "provider_claude") return "claude";
   if (label === "provider_codex") return "codex";
+  if (label === "provider_codex_1") return "codex-1";
   return null;
 }
 
@@ -364,7 +378,7 @@ function decodeSnapshot(provider: Provider, encoded: string): UsageSnapshot {
 }
 
 async function openProvider(provider: Provider, settings: Settings) {
-  const url = provider === "claude" ? settings.claudeUrl : settings.codexUrl;
+  const url = providerUrl(provider, settings);
   localStorage.setItem(`usageview.providerTarget.${provider}`, url);
   await invoke("open_provider_window", { provider, url });
 }
@@ -373,8 +387,8 @@ async function closeProvider(provider: Provider) {
   await invoke("close_provider_window", { provider });
 }
 
-async function refreshProviderPage(provider: Provider, url: string) {
-  await invoke("refresh_provider_page", { provider, url });
+async function refreshProviderPage(provider: Provider, url: string, background = false) {
+  await invoke("refresh_provider_page", { provider, url, background });
 }
 
 function wait(ms: number) {
@@ -427,9 +441,9 @@ async function extractProvider(provider: Provider, url: string): Promise<UsageSn
   }
 }
 
-async function refreshProviderFromUrl(provider: Provider, url: string): Promise<UsageSnapshot> {
+async function refreshProviderFromUrl(provider: Provider, url: string, background = false): Promise<UsageSnapshot> {
   try {
-    await refreshProviderPage(provider, url);
+    await refreshProviderPage(provider, url, background);
     await wait(provider === "claude" ? 2600 : 900);
   } catch {
     // If navigation fails, still try the extractor so the UI gets a useful error snapshot.
@@ -481,10 +495,11 @@ function WidgetApp() {
   const [snapshots, setSnapshots] = useState<Record<Provider, UsageSnapshot>>({
     claude: loadSnapshot("claude"),
     codex: loadSnapshot("codex"),
+    "codex-1": loadSnapshot("codex-1"),
   });
   const snapshotsRef = useRef(snapshots);
-  const lastLimitedAutoRefreshRef = useRef<Record<Provider, number>>({ claude: 0, codex: 0 });
-  const prevUpdatedAtRef = useRef<Record<Provider, string>>({ claude: "", codex: "" });
+  const lastLimitedAutoRefreshRef = useRef<Record<Provider, number>>({ claude: 0, codex: 0, "codex-1": 0 });
+  const prevUpdatedAtRef = useRef<Record<Provider, string>>({ claude: "", codex: "", "codex-1": "" });
   const [flashSet, setFlashSet] = useState<Set<Provider>>(new Set());
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [busy, setBusy] = useState<Provider | `${Provider}-open` | `${Provider}-close` | `${Provider}-reload` | `${Provider}-logout` | `${Provider}-discover` | null>(null);
@@ -640,7 +655,7 @@ function WidgetApp() {
   useEffect(() => {
     function reloadLocal() {
       setSettings(loadSettings());
-      setSnapshots({ claude: loadSnapshot("claude"), codex: loadSnapshot("codex") });
+      setSnapshots({ claude: loadSnapshot("claude"), codex: loadSnapshot("codex"), "codex-1": loadSnapshot("codex-1") });
       setLastUpdated(new Date());
     }
     window.addEventListener("storage", reloadLocal);
@@ -658,7 +673,7 @@ function WidgetApp() {
     async function refreshOpenProviders(force = false) {
       const now = Date.now();
       const currentSnapshots = snapshotsRef.current;
-      const providers: Provider[] = (["claude", "codex"] as Provider[]).filter((provider) =>
+      const providers: Provider[] = (["claude", "codex", "codex-1"] as Provider[]).filter((provider) =>
         force || shouldAutoRefreshProvider(provider, currentSnapshots[provider], now, lastLimitedAutoRefreshRef.current)
       );
       if (!providers.length) return;
@@ -670,10 +685,7 @@ function WidgetApp() {
       }
 
       const results = await Promise.all(
-        providers.map((provider) => {
-          const url = provider === "claude" ? settings.claudeUrl : settings.codexUrl;
-          return refreshProviderFromUrl(provider, url);
-        }),
+        providers.map((provider) => refreshProviderFromUrl(provider, providerUrl(provider, settings), true)),
       );
       if (!cancelled) {
         setSnapshots((current) => results.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), current));
@@ -689,16 +701,17 @@ function WidgetApp() {
       window.clearTimeout(initial);
       window.clearInterval(interval);
     };
-  }, [settings.refreshIntervalSec, settings.claudeUrl, settings.codexUrl]);
+  }, [settings.refreshIntervalSec, settings.claudeUrl, settings.codexUrl, settings.codex1Url]);
 
   const shown = useMemo(() => {
-    return (["claude", "codex"] as Provider[]).filter((provider) => provider === "claude" ? settings.showClaude : settings.showCodex);
-  }, [settings.showClaude, settings.showCodex]);
+    return (["claude", "codex", "codex-1"] as Provider[]).filter((provider) =>
+      provider === "claude" ? settings.showClaude : provider === "codex-1" ? settings.showCodex1 : settings.showCodex
+    );
+  }, [settings.showClaude, settings.showCodex, settings.showCodex1]);
 
   async function refresh(provider: Provider) {
     setBusy(provider);
-    const url = provider === "claude" ? settings.claudeUrl : settings.codexUrl;
-    const snapshot = await refreshProviderFromUrl(provider, url);
+    const snapshot = await refreshProviderFromUrl(provider, providerUrl(provider, settings));
     setSnapshots((currentSnapshots) => ({ ...currentSnapshots, [provider]: snapshot }));
     setMessage(`${providerLabel(provider)}: ${snapshot.message}`);
     setBusy(null);
@@ -708,7 +721,7 @@ function WidgetApp() {
     setCompactTimerSet((prev) => {
       const next = new Set(prev);
       let changed = false;
-      for (const p of ["claude", "codex"] as Provider[]) {
+      for (const p of ["claude", "codex", "codex-1"] as Provider[]) {
         if (isProviderLimited(p, snapshots[p]) && !next.has(p)) {
           next.add(p);
           changed = true;
@@ -720,7 +733,7 @@ function WidgetApp() {
 
   useEffect(() => {
     const flashing = new Set<Provider>();
-    for (const p of ["claude", "codex"] as Provider[]) {
+    for (const p of ["claude", "codex", "codex-1"] as Provider[]) {
       if (snapshots[p].updatedAt !== prevUpdatedAtRef.current[p]) {
         prevUpdatedAtRef.current[p] = snapshots[p].updatedAt;
         flashing.add(p);
@@ -743,7 +756,7 @@ function WidgetApp() {
   async function refreshAll() {
     setBusy("claude");
     const results = await Promise.all(
-      (["claude", "codex"] as Provider[]).map((provider) => refreshProviderFromUrl(provider, provider === "claude" ? settings.claudeUrl : settings.codexUrl)),
+      (["claude", "codex", "codex-1"] as Provider[]).map((provider) => refreshProviderFromUrl(provider, providerUrl(provider, settings))),
     );
     setSnapshots((currentSnapshots) => results.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), currentSnapshots));
     setLastUpdated(new Date());
@@ -776,7 +789,7 @@ function WidgetApp() {
   async function reloadInApp(provider: Provider) {
     setBusy(`${provider}-reload`);
     try {
-      await refreshProviderPage(provider, provider === "claude" ? settings.claudeUrl : settings.codexUrl);
+      await refreshProviderPage(provider, providerUrl(provider, settings));
       setMessage(`${providerLabel(provider)} usage page opened.`);
     } catch (error) {
       setMessage(`${providerLabel(provider)} reload failed: ${String(error)}`);
@@ -785,7 +798,7 @@ function WidgetApp() {
   }
 
   async function openBrowser(provider: Provider) {
-    const url = provider === "claude" ? settings.claudeUrl : settings.codexUrl;
+    const url = providerUrl(provider, settings);
     const via = await openInChrome(url);
     setMessage(
       via === "chrome"
@@ -797,7 +810,7 @@ function WidgetApp() {
   async function findApi(provider: Provider) {
     setBusy(`${provider}-discover`);
     try {
-      const result = await discoverProviderApi(provider, provider === "claude" ? settings.claudeUrl : settings.codexUrl);
+      const result = await discoverProviderApi(provider, providerUrl(provider, settings));
       setDiscovery((current) => ({ ...current, [provider]: result }));
       setMessage(`${providerLabel(provider)}: API discovery done — see "Discovered API" below.`);
     } catch (error) {
@@ -811,8 +824,7 @@ function WidgetApp() {
   async function logoutInApp(provider: Provider) {
     setBusy(`${provider}-logout`);
     try {
-      const url = provider === "claude" ? settings.claudeUrl : settings.codexUrl;
-      await logoutProvider(provider, url);
+      await logoutProvider(provider, providerUrl(provider, settings));
       setMessage(`${providerLabel(provider)} signed out — in-app session cleared.`);
     } catch (error) {
       setMessage(`${providerLabel(provider)} logout failed: ${String(error)}`);
@@ -960,6 +972,24 @@ function WidgetApp() {
           shownInWidget={settings.showCodex}
           onToggleShown={() => updateSettings({ ...settings, showCodex: !settings.showCodex })}
         />
+
+        <ProviderPanel
+          provider="codex-1"
+          url={settings.codex1Url}
+          snapshot={snapshots["codex-1"]}
+          busy={busy}
+          onOpen={() => void openInApp("codex-1")}
+          onBrowser={() => void openBrowser("codex-1")}
+          onReload={() => void reloadInApp("codex-1")}
+          onClose={() => void closeInApp("codex-1")}
+          onLogout={() => void logoutInApp("codex-1")}
+          onDiscover={() => void findApi("codex-1")}
+          discovery={discovery["codex-1"]}
+          onExtract={() => void refresh("codex-1")}
+          onUrlChange={(url) => updateSettings({ ...settings, codex1Url: url })}
+          shownInWidget={settings.showCodex1}
+          onToggleShown={() => updateSettings({ ...settings, showCodex1: !settings.showCodex1 })}
+        />
         </section>
 
         <WidgetSettings settings={settings} savedAt={settingsSavedAt} onChange={updateSettings} />
@@ -1036,7 +1066,7 @@ function PinIcon() {
 
 function ProviderLoginApp({ provider }: { provider: Provider }) {
   const settings = loadSettings();
-  const targetUrl = localStorage.getItem(`usageview.providerTarget.${provider}`) || (provider === "claude" ? settings.claudeUrl : settings.codexUrl);
+  const targetUrl = localStorage.getItem(`usageview.providerTarget.${provider}`) || providerUrl(provider, settings);
   const [status, setStatus] = useState("Ready. Click Open Page to login inside this app window.");
 
   function openPage() {
@@ -1117,7 +1147,7 @@ function ProviderPanel({
       <div className="mini-head">
         <div>
           <h2><ProviderMark provider={provider} />{providerLabel(provider)}</h2>
-          <p>{provider === "claude" ? "Claude account session." : "Codex account session."}</p>
+          <p>{provider === "claude" ? "Claude account session." : provider === "codex-1" ? "Codex account 2 (isolated session)." : "Codex account session."}</p>
         </div>
         <StatusPill status={snapshot.status} />
       </div>

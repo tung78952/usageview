@@ -8,13 +8,8 @@ const EXTRACT_EVENT: &str = "usageview-extract-result";
 
 #[tauri::command]
 fn open_provider_window(app: tauri::AppHandle, provider: String, url: String) -> Result<(), String> {
-  // Provider windows are predeclared (hidden) in tauri.conf.json. Dynamically created
-  // WebView windows render blank on this environment, so we only ever show/focus the
-  // existing window and never rebuild it.
   let label = provider_label(&provider)?;
-  let window = app
-    .get_webview_window(&label)
-    .ok_or_else(|| format!("{} window not found", label))?;
+  let window = get_or_create_provider_window(&app, &label)?;
   let target = tauri::Url::parse(&url).map_err(|error| error.to_string())?;
   window.navigate(target).map_err(|error| error.to_string())?;
   window.show().map_err(|error| error.to_string())?;
@@ -43,9 +38,13 @@ fn reload_provider_window(app: tauri::AppHandle, provider: String) -> Result<(),
 }
 
 #[tauri::command]
-fn refresh_provider_page(app: tauri::AppHandle, provider: String, url: String) -> Result<(), String> {
+fn refresh_provider_page(app: tauri::AppHandle, provider: String, url: String, background: bool) -> Result<(), String> {
   let label = provider_label(&provider)?;
   let window = app.get_webview_window(&label).ok_or_else(|| format!("{} WebView is not open", provider))?;
+  // Background refresh must never yank a visible window — the user may be mid-login on it.
+  if background && window.is_visible().unwrap_or(false) {
+    return Ok(());
+  }
   let target = tauri::Url::parse(&url).map_err(|error| error.to_string())?;
   window.navigate(target).map_err(|error| error.to_string())?;
   Ok(())
@@ -113,10 +112,11 @@ fn open_in_chrome(url: String) -> Result<(), String> {
 #[tauri::command]
 fn logout_provider(app: tauri::AppHandle, provider: String, url: String) -> Result<(), String> {
   // Clear the WebView session (cookies/storage) so the user is truly signed out, then send
-  // the window back to the login/usage URL. Note: all windows share one WebView2 profile,
-  // so this signs out of both providers at once.
+  // the window back to the login/usage URL.
+  // Note: primary provider windows share one WebView2 profile, so signing out of claude or
+  // codex also affects the other. Isolated accounts (codex-1 etc.) have separate profiles.
   let label = provider_label(&provider)?;
-  let window = app.get_webview_window(&label).ok_or_else(|| format!("{} WebView is not open", provider))?;
+  let window = get_or_create_provider_window(&app, &label)?;
   window.clear_all_browsing_data().map_err(|error| error.to_string())?;
   let target = tauri::Url::parse(&url).map_err(|error| error.to_string())?;
   window.navigate(target).map_err(|error| error.to_string())?;
@@ -128,7 +128,7 @@ fn logout_provider(app: tauri::AppHandle, provider: String, url: String) -> Resu
 #[tauri::command]
 async fn extract_provider(app: tauri::AppHandle, provider: String, url: String) -> Result<String, String> {
   let label = provider_label(&provider)?;
-  let window = app.get_webview_window(&label).ok_or_else(|| format!("{} WebView is not open", provider))?;
+  let window = get_or_create_provider_window(&app, &label)?;
   let expected_host = provider_host(&provider)?;
 
   // Silent background refresh: if the window is hidden and not already on the provider site
@@ -228,7 +228,7 @@ async fn extract_provider(app: tauri::AppHandle, provider: String, url: String) 
 #[tauri::command]
 async fn discover_provider_api(app: tauri::AppHandle, provider: String, url: String) -> Result<String, String> {
   let label = provider_label(&provider)?;
-  let window = app.get_webview_window(&label).ok_or_else(|| format!("{} WebView is not open", provider))?;
+  let window = get_or_create_provider_window(&app, &label)?;
   let expected_host = provider_host(&provider)?;
 
   let visible = window.is_visible().unwrap_or(false);
@@ -286,7 +286,7 @@ pub fn run() {
       // not destroy the predeclared window. The widget window closes normally to quit.
       if let tauri::WindowEvent::CloseRequested { api, .. } = event {
         let label = window.label();
-        if label == "provider_claude" || label == "provider_codex" {
+        if label.starts_with("provider_") {
           api.prevent_close();
           if let Some(widget) = window.app_handle().get_webview_window("widget") {
             let _ = widget.show();
@@ -316,6 +316,7 @@ fn provider_label(provider: &str) -> Result<String, String> {
   match provider {
     "claude" => Ok("provider_claude".to_string()),
     "codex" => Ok("provider_codex".to_string()),
+    "codex-1" => Ok("provider_codex_1".to_string()),
     _ => Err(format!("Unknown provider: {}", provider)),
   }
 }
@@ -323,9 +324,37 @@ fn provider_label(provider: &str) -> Result<String, String> {
 fn provider_host(provider: &str) -> Result<&'static str, String> {
   match provider {
     "claude" => Ok("claude.ai"),
-    "codex" => Ok("chatgpt.com"),
+    "codex" | "codex-1" => Ok("chatgpt.com"),
     _ => Err(format!("Unknown provider: {}", provider)),
   }
+}
+
+/// Get a provider window if it exists, or create it with an isolated WebView2 profile.
+/// Primary provider windows (provider_claude, provider_codex) are pre-declared in
+/// tauri.conf.json so get_webview_window always finds them. Additional account windows
+/// (provider_codex_1 etc.) are created dynamically with a separate data_directory so
+/// they can hold an independent login session.
+fn get_or_create_provider_window(app: &tauri::AppHandle, label: &str) -> Result<tauri::WebviewWindow, String> {
+  if let Some(window) = app.get_webview_window(label) {
+    return Ok(window);
+  }
+  let data_dir = app
+    .path()
+    .app_data_dir()
+    .map_err(|e| e.to_string())?
+    .join("profiles")
+    .join(label);
+  let title = label.strip_prefix("provider_").unwrap_or(label).replace('_', " ");
+  WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
+    .title(format!("{} \u{2014} UsageView", title))
+    .inner_size(980.0, 760.0)
+    .min_inner_size(720.0, 520.0)
+    .center()
+    .visible(false)
+    .data_directory(data_dir)
+    .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+    .build()
+    .map_err(|e| e.to_string())
 }
 
 fn is_usable_provider_page(provider: &str, current: &tauri::Url, expected_host: &str, target_url: &str) -> bool {
@@ -357,14 +386,14 @@ fn js_string(value: &str) -> String {
 }
 
 fn extract_script(provider: &str, marker: &str) -> Result<String, String> {
-  if provider != "claude" && provider != "codex" {
+  if provider != "claude" && provider != "codex" && provider != "codex-1" {
     return Err(format!("Unknown provider: {}", provider));
   }
 
-  if provider == "codex" {
+  if provider == "codex" || provider == "codex-1" {
     return Ok(format!(
       r#"(async () => {{
-  const provider = 'codex';
+  const provider = {provider_name};
   const marker = {marker};
 
   function finish(status, snapshot) {{
@@ -421,10 +450,11 @@ fn extract_script(provider: &str, marker: &str) -> Result<String, String> {
       }});
       return;
     }}
+    const accessToken = sessionJson.accessToken;
 
     const response = await fetch(location.origin + '/backend-api/wham/usage', {{
       credentials: 'include',
-      headers: {{ Authorization: 'Bearer ' + sessionJson.accessToken }}
+      headers: {{ Authorization: 'Bearer ' + accessToken }}
     }});
     const raw = await response.text();
     if (!response.ok) {{
@@ -465,6 +495,7 @@ fn extract_script(provider: &str, marker: &str) -> Result<String, String> {
     finish('not_found', fallbackSnapshot('Codex usage API fetch failed.', error && error.message ? error.message : error));
   }}
 }})();"#,
+      provider_name = js_string(provider),
       marker = js_string(marker),
       event = EXTRACT_EVENT
     ));
@@ -773,7 +804,7 @@ fn extract_script(provider: &str, marker: &str) -> Result<String, String> {
 }
 
 fn discover_script(provider: &str, marker: &str) -> Result<String, String> {
-  if provider != "claude" && provider != "codex" {
+  if provider != "claude" && provider != "codex" && provider != "codex-1" {
     return Err(format!("Unknown provider: {}", provider));
   }
 
