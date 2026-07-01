@@ -1,0 +1,70 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "UsageView",
+  "version": "0.1.0",
+  "identifier": "dev.usageview.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "widget",
+        "title": "UsageView",
+        "width": 392,
+        "height": 500,
+        "minWidth": 320,
+        "minHeight": 260,
+        "resizable": true,
+        "center": false,
+        "x": 1200,
+        "y": 20,
+        "alwaysOnTop": true,
+        "skipTaskbar": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false
+      },
+      {
+        "label": "provider_claude",
+        "title": "Claude Usage - UsageView",
+        "width": 980,
+        "height": 760,
+        "minWidth": 720,
+        "minHeight": 520,
+        "resizable": true,
+        "center": true,
+        "visible": false
+      },
+      {
+        "label": "provider_codex",
+        "title": "Codex Usage - UsageView",
+        "width": 980,
+        "height": 760,
+        "minWidth": 720,
+        "minHeight": 520,
+        "resizable": true,
+        "center": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null,
+      "capabilities": ["default"]
+    },
+    "withGlobalTauri": true
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico"
+    ]
+  }
+}
