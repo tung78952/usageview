@@ -1,10 +1,17 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
-use tauri::{Listener, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+  menu::{Menu, MenuItem, PredefinedMenuItem},
+  tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+  Listener, Manager, WebviewUrl, WebviewWindowBuilder,
+};
 
 const PAYLOAD_PREFIX: &str = "__USAGEVIEW__";
 const EXTRACT_EVENT: &str = "usageview-extract-result";
+const TRAY_SHOW_WIDGET: &str = "show_widget";
+const TRAY_HIDE_WIDGET: &str = "hide_widget";
+const TRAY_QUIT: &str = "quit";
 
 #[tauri::command]
 fn open_provider_window(app: tauri::AppHandle, provider: String, url: String) -> Result<(), String> {
@@ -73,13 +80,18 @@ fn prepare_provider_refresh(app: tauri::AppHandle, provider: String, url: String
 
 #[tauri::command]
 fn open_widget_window(app: tauri::AppHandle) -> Result<(), String> {
+  show_widget_window(&app)
+}
+
+fn show_widget_window(app: &tauri::AppHandle) -> Result<(), String> {
   if let Some(window) = app.get_webview_window("widget") {
+    window.unminimize().map_err(|error| error.to_string())?;
     window.show().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())?;
     return Ok(());
   }
 
-  WebviewWindowBuilder::new(&app, "widget", WebviewUrl::App("index.html".into()))
+  WebviewWindowBuilder::new(app, "widget", WebviewUrl::App("index.html".into()))
     .title("UsageView Widget")
     .inner_size(350.0, 230.0)
     .decorations(false)
@@ -89,6 +101,53 @@ fn open_widget_window(app: tauri::AppHandle) -> Result<(), String> {
     .resizable(false)
     .build()
     .map_err(|error| error.to_string())?;
+  Ok(())
+}
+
+fn hide_widget_window(app: &tauri::AppHandle) -> Result<(), String> {
+  if let Some(window) = app.get_webview_window("widget") {
+    window.hide().map_err(|error| error.to_string())?;
+  }
+  Ok(())
+}
+
+fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+  let show = MenuItem::with_id(app, TRAY_SHOW_WIDGET, "Show UsageView", true, None::<&str>)?;
+  let hide = MenuItem::with_id(app, TRAY_HIDE_WIDGET, "Hide UsageView", true, None::<&str>)?;
+  let separator = PredefinedMenuItem::separator(app)?;
+  let quit = MenuItem::with_id(app, TRAY_QUIT, "Quit", true, None::<&str>)?;
+  let menu = Menu::with_items(app, &[&show, &hide, &separator, &quit])?;
+
+  let mut tray = TrayIconBuilder::with_id("usageview-tray")
+    .tooltip("UsageView")
+    .menu(&menu)
+    .show_menu_on_left_click(false)
+    .on_menu_event(|app, event| match event.id().as_ref() {
+      TRAY_SHOW_WIDGET => {
+        let _ = show_widget_window(app);
+      }
+      TRAY_HIDE_WIDGET => {
+        let _ = hide_widget_window(app);
+      }
+      TRAY_QUIT => app.exit(0),
+      _ => {}
+    })
+    .on_tray_icon_event(|tray, event| {
+      if let TrayIconEvent::Click {
+        button: MouseButton::Left,
+        button_state: MouseButtonState::Up,
+        ..
+      } = event
+      {
+        let _ = show_widget_window(tray.app_handle());
+      }
+    });
+
+  if let Some(icon) = app.default_window_icon().cloned() {
+    tray = tray.icon(icon);
+  }
+
+  tray.build(app)?;
   Ok(())
 }
 
@@ -281,12 +340,18 @@ async fn discover_provider_api(app: tauri::AppHandle, provider: String, url: Str
 pub fn run() {
   tauri::Builder::default()
     .plugin(tauri_plugin_opener::init())
+    .setup(|app| {
+      setup_tray(app.handle())?;
+      Ok(())
+    })
     .on_window_event(|window, event| {
-      // Native title-bar X on a provider window should hide it (preserving the session),
-      // not destroy the predeclared window. The widget window closes normally to quit.
+      // Close hides app windows so UsageView can keep running from the tray.
       if let tauri::WindowEvent::CloseRequested { api, .. } = event {
         let label = window.label();
-        if label.starts_with("provider_") {
+        if label == "widget" {
+          api.prevent_close();
+          let _ = window.hide();
+        } else if label.starts_with("provider_") {
           api.prevent_close();
           if let Some(widget) = window.app_handle().get_webview_window("widget") {
             let _ = widget.show();

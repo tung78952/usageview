@@ -23,7 +23,7 @@
         "x": 1200,
         "y": 20,
         "alwaysOnTop": true,
-        "skipTaskbar": false,
+        "skipTaskbar": true,
         "decorations": false,
         "transparent": true,
         "shadow": false

@@ -335,6 +335,23 @@ function usageMetaRight(snapshot: UsageSnapshot) {
   return resetLabelToClock(snapshot.resetLabel) || "Reset --";
 }
 
+function hasUsageDisplayValue(snapshot: UsageSnapshot) {
+  return (
+    snapshot.percentUsed !== undefined ||
+    !!snapshot.usedLabel ||
+    !!snapshot.remainingLabel ||
+    !!snapshot.resetLabel ||
+    !!snapshot.weeklyLabel
+  );
+}
+
+function flashToken(snapshot: UsageSnapshot) {
+  if (snapshot.status !== "ok") return "";
+  if (!hasUsageDisplayValue(snapshot)) return "";
+  if (snapshot.message.toLowerCase().includes("last good value retained")) return "";
+  return snapshot.updatedAt;
+}
+
 const LIMITED_RESET_REFRESH_LEAD_MS = 2 * 60 * 1000;
 const LIMITED_FALLBACK_REFRESH_MS = 10 * 60 * 1000;
 
@@ -499,7 +516,8 @@ function WidgetApp() {
   });
   const snapshotsRef = useRef(snapshots);
   const lastLimitedAutoRefreshRef = useRef<Record<Provider, number>>({ claude: 0, codex: 0, "codex-1": 0 });
-  const prevUpdatedAtRef = useRef<Record<Provider, string>>({ claude: "", codex: "", "codex-1": "" });
+  const prevFlashTokenRef = useRef<Partial<Record<Provider, string>>>({});
+  const flashTimersRef = useRef<Partial<Record<Provider, number>>>({});
   const [flashSet, setFlashSet] = useState<Set<Provider>>(new Set());
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [busy, setBusy] = useState<Provider | `${Provider}-open` | `${Provider}-close` | `${Provider}-reload` | `${Provider}-logout` | `${Provider}-discover` | null>(null);
@@ -653,6 +671,14 @@ function WidgetApp() {
   }, [snapshots]);
 
   useEffect(() => {
+    return () => {
+      for (const timer of Object.values(flashTimersRef.current)) {
+        if (timer !== undefined) window.clearTimeout(timer);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     function reloadLocal() {
       setSettings(loadSettings());
       setSnapshots({ claude: loadSnapshot("claude"), codex: loadSnapshot("codex"), "codex-1": loadSnapshot("codex-1") });
@@ -732,17 +758,37 @@ function WidgetApp() {
   }, [snapshots]);
 
   useEffect(() => {
-    const flashing = new Set<Provider>();
+    const newly: Provider[] = [];
     for (const p of ["claude", "codex", "codex-1"] as Provider[]) {
-      if (snapshots[p].updatedAt !== prevUpdatedAtRef.current[p]) {
-        prevUpdatedAtRef.current[p] = snapshots[p].updatedAt;
-        flashing.add(p);
+      const token = flashToken(snapshots[p]);
+      const previousToken = prevFlashTokenRef.current[p];
+      prevFlashTokenRef.current[p] = token;
+      if (previousToken !== undefined && token && token !== previousToken) {
+        newly.push(p);
       }
     }
-    if (!flashing.size) return;
-    setFlashSet(flashing);
-    const timer = setTimeout(() => setFlashSet(new Set()), 2000);
-    return () => clearTimeout(timer);
+    if (!newly.length) return;
+    // Each provider owns its timer. A new valid snapshot resets only that provider's
+    // light, so staggered Codex results cannot hide each other or flash on stale values.
+    for (const p of newly) {
+      const existingTimer = flashTimersRef.current[p];
+      if (existingTimer !== undefined) window.clearTimeout(existingTimer);
+    }
+    setFlashSet((prev) => {
+      const next = new Set(prev);
+      newly.forEach((p) => next.add(p));
+      return next;
+    });
+    for (const p of newly) {
+      flashTimersRef.current[p] = window.setTimeout(() => {
+        setFlashSet((prev) => {
+          const next = new Set(prev);
+          next.delete(p);
+          return next;
+        });
+        delete flashTimersRef.current[p];
+      }, 2000);
+    }
   }, [snapshots]);
 
   function toggleCompactTimer(provider: Provider) {
