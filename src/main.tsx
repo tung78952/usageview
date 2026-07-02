@@ -290,12 +290,12 @@ function providerUrl(provider: Provider, settings: Settings): string {
 
 function providerSourceLabel(provider: Provider, status: UsageStatus) {
   if (status !== "ok") return readableStatus(status);
-  return provider === "claude" ? "page check" : "api synced";
+  return "api synced";
 }
 
 function providerMessage(snapshot: UsageSnapshot) {
   if (snapshot.status === "ok") {
-    return snapshot.provider === "claude" ? "Usage page detected" : "JSON usage read";
+    return "JSON usage read";
   }
   if (snapshot.status === "not_found" && snapshot.provider === "claude") return "Usage page not detected";
   if (snapshot.status === "not_open") return "Open login";
