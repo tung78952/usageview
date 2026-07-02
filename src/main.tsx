@@ -288,14 +288,20 @@ function providerUrl(provider: Provider, settings: Settings): string {
   return settings.codexUrl;
 }
 
-function providerSourceLabel(provider: Provider, status: UsageStatus) {
-  if (status !== "ok") return readableStatus(status);
-  return "api synced";
+function resetCountdownLabel(snapshot: UsageSnapshot): string | undefined {
+  if (!snapshot.resetLabel) return undefined;
+  const resetMs = parseResetMs(snapshot.resetLabel);
+  if (resetMs === null) return "resetting soon";
+  const remaining = resetMs - Date.now();
+  if (remaining <= 0) return "resetting soon";
+  const hours = Math.floor(remaining / 3_600_000);
+  const minutes = Math.floor((remaining % 3_600_000) / 60_000);
+  return hours > 0 ? `resets in ${hours}h ${minutes}m` : `resets in ${minutes}m`;
 }
 
 function providerMessage(snapshot: UsageSnapshot) {
   if (snapshot.status === "ok") {
-    return "JSON usage read";
+    return resetCountdownLabel(snapshot) ?? "up to date";
   }
   if (snapshot.status === "not_found" && snapshot.provider === "claude") return "Usage page not detected";
   if (snapshot.status === "not_open") return "Open login";
@@ -1465,7 +1471,9 @@ function CompactUsageBlock({ snapshot, flash = false, paused = false, updatedAgo
         <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
         <span className="tile-status">
           {updatedAgo && <span className="updated-ago">{updatedAgo}</span>}
-          <span className={`source-pill ${stale ? "stale" : snapshot.status === "ok" ? "ok" : "warn"}`}>{stale ? "cached" : providerSourceLabel(snapshot.provider, snapshot.status)}</span>
+          {(stale || snapshot.status !== "ok" || paused) && (
+            <span className={`source-pill ${stale ? "stale" : snapshot.status !== "ok" ? "warn" : "paused"}`}>{stale ? "cached" : snapshot.status !== "ok" ? readableStatus(snapshot.status) : "paused"}</span>
+          )}
         </span>
       </div>
       <div className="compact-usage-main">
@@ -1495,7 +1503,9 @@ function UsageBlock({ snapshot, compact = false, flash = false, paused = false, 
         <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
         <span className="tile-status">
           {updatedAgo && <span className="updated-ago">{updatedAgo}</span>}
-          <span className={`source-pill ${stale ? "stale" : snapshot.status === "ok" ? "ok" : "warn"}`}>{stale ? "cached" : providerSourceLabel(snapshot.provider, snapshot.status)}</span>
+          {(stale || snapshot.status !== "ok" || paused) && (
+            <span className={`source-pill ${stale ? "stale" : snapshot.status !== "ok" ? "warn" : "paused"}`}>{stale ? "cached" : snapshot.status !== "ok" ? readableStatus(snapshot.status) : "paused"}</span>
+          )}
         </span>
       </div>
       <div className="metric">

@@ -655,6 +655,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 .source-pill.warn, .pill.not_found, .pill.parser_failed, .pill.page_unavailable { color: var(--danger); border: 1px solid color-mix(in oklch, var(--danger) 46%, transparent); background: color-mix(in oklch, var(--danger) 14%, transparent); }
 .pill.not_open, .pill.not_logged_in { color: var(--warn); border: 1px solid color-mix(in oklch, var(--warn) 46%, transparent); background: color-mix(in oklch, var(--warn) 13%, transparent); }
 .source-pill.stale { color: var(--warn); border: 1px solid color-mix(in oklch, var(--warn) 46%, transparent); background: color-mix(in oklch, var(--warn) 13%, transparent); }
+.source-pill.paused { color: var(--muted); border: 1px solid color-mix(in oklch, var(--muted) 38%, transparent); background: color-mix(in oklch, var(--muted) 12%, transparent); }
 .tile-status { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 0 0 auto; }
 .tile-status .source-pill { max-width: none; }
 .updated-ago { font: 650 8.5px/1 var(--font-mono); letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.5; white-space: nowrap; }
