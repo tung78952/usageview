@@ -348,6 +348,10 @@ async fn discover_provider_api(app: tauri::AppHandle, provider: String, url: Str
 
 pub fn run() {
   tauri::Builder::default()
+    // Single-instance must be registered first: a second launch just focuses the running widget.
+    .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+      let _ = show_widget_window(app);
+    }))
     .plugin(tauri_plugin_opener::init())
     .setup(|app| {
       setup_tray(app.handle())?;

@@ -788,7 +788,7 @@ function WidgetApp() {
     // Refresh once shortly after launch (gives the hidden WebViews a moment to exist/navigate),
     // then keep refreshing on the interval — all silently in the background.
     const initial = window.setTimeout(() => refreshOpenProviders(true), 800);
-    const interval = window.setInterval(refreshOpenProviders, Math.max(15, settings.refreshIntervalSec) * 1000);
+    const interval = window.setInterval(refreshOpenProviders, Math.max(10, settings.refreshIntervalSec) * 1000);
     return () => {
       cancelled = true;
       window.clearTimeout(initial);
@@ -1040,7 +1040,7 @@ function WidgetApp() {
           </div>
           <div className="title-actions">
             <button className="back-btn" onClick={() => setMode("widget")}>Back</button>
-            <WindowControls pinned={settings.alwaysOnTop} onTogglePin={togglePinned} onMinimize={() => void minimizeWindow()} onMaximize={() => void toggleMaximizeWindow()} onClose={() => void closeWindow()} />
+            <WindowControls pinned={settings.alwaysOnTop} onTogglePin={togglePinned} onMinimize={() => void minimizeWindow()} onMaximize={() => void toggleMaximizeWindow()} onClose={() => void closeWindow()} showMinimize={false} showMaximize={false} />
           </div>
         </header>
 
@@ -1310,6 +1310,46 @@ function WidgetSettings({ settings, savedAt, onChange }: { settings: Settings; s
     onChange({ ...settings, ...next });
   }
 
+  // The refresh interval applies to ALL providers. Values >=60s apply immediately; values below 60s
+  // are held behind an explicit confirmation because frequent refreshing costs resources and can be
+  // rate-limited by the providers.
+  const [secondsDraft, setSecondsDraft] = useState(String(settings.refreshIntervalSec));
+  const [pendingLow, setPendingLow] = useState<number | null>(null);
+
+  useEffect(() => {
+    setSecondsDraft(String(settings.refreshIntervalSec));
+    setPendingLow(null);
+  }, [settings.refreshIntervalSec]);
+
+  function commitSeconds() {
+    const parsed = Math.round(Number(secondsDraft));
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setSecondsDraft(String(settings.refreshIntervalSec));
+      setPendingLow(null);
+      return;
+    }
+    const clamped = Math.max(10, parsed);
+    if (clamped >= 60) {
+      setPendingLow(null);
+      if (clamped !== settings.refreshIntervalSec) patch({ refreshIntervalSec: clamped });
+      setSecondsDraft(String(clamped));
+    } else {
+      setPendingLow(clamped); // require explicit confirmation before applying
+    }
+  }
+
+  function confirmLow() {
+    if (pendingLow === null) return;
+    patch({ refreshIntervalSec: pendingLow });
+    setSecondsDraft(String(pendingLow));
+    setPendingLow(null);
+  }
+
+  function cancelLow() {
+    setSecondsDraft(String(settings.refreshIntervalSec));
+    setPendingLow(null);
+  }
+
   return (
     <section className="settings-section mini-card settings-card">
       <div className="mini-head">
@@ -1324,8 +1364,24 @@ function WidgetSettings({ settings, savedAt, onChange }: { settings: Settings; s
         <label>Opacity<input type="range" min="0.45" max="1" step="0.01" value={settings.opacity} onChange={(event) => patch({ opacity: Number(event.target.value) })} /></label>
       </div>
       <div className="settings-row">
-        <label>Refresh seconds<input type="number" min="15" value={settings.refreshIntervalSec} onChange={(event) => patch({ refreshIntervalSec: Number(event.target.value) })} /></label>
+        <label>Refresh seconds (all AIs)<input
+          type="number"
+          min="10"
+          value={secondsDraft}
+          onChange={(event) => setSecondsDraft(event.target.value)}
+          onBlur={commitSeconds}
+          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commitSeconds(); } }}
+        /></label>
       </div>
+      {pendingLow !== null && (
+        <div className="settings-warn">
+          <span>Under 60s refreshes more often — costs more resources and may get rate-limited. Apply {pendingLow}s anyway?</span>
+          <div className="settings-warn-actions">
+            <button className="primary" onClick={confirmLow}>Apply {pendingLow}s</button>
+            <button onClick={cancelLow}>Cancel</button>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

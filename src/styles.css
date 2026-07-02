@@ -658,6 +658,8 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 .tile-status { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 0 0 auto; }
 .tile-status .source-pill { max-width: none; }
 .updated-ago { font: 650 8.5px/1 var(--font-mono); letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.5; white-space: nowrap; }
+.settings-warn { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; padding: 9px 11px; border-radius: 5px; font-size: 11px; line-height: 1.4; color: var(--warn); border: 1px solid color-mix(in oklch, var(--warn) 40%, transparent); background: color-mix(in oklch, var(--warn) 12%, transparent); }
+.settings-warn-actions { display: flex; gap: 8px; }
 .metric { display: flex; align-items: end; justify-content: space-between; margin-top: 14px; gap: 10px; min-width: 0; }
 .percent {
   color: var(--tone);
