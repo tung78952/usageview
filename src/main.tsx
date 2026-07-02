@@ -696,6 +696,21 @@ function WidgetApp() {
     };
   }, []);
 
+  // Close the compact context menu whenever the window loses focus. This also covers
+  // hiding via the tray "Hide" item (which bypasses React), so the menu never lingers
+  // and reappears when the widget is shown again.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void getCurrentWindow()
+      .onFocusChanged(({ payload: focused }) => {
+        if (!focused) setCompactMenuOpen(false);
+      })
+      .then((fn) => {
+        unlisten = fn;
+      });
+    return () => unlisten?.();
+  }, []);
+
   useEffect(() => {
     function reloadLocal() {
       setSettings(loadSettings());
@@ -947,14 +962,14 @@ function WidgetApp() {
 
   if (mode === "compact") {
     return (
-      <main className={`compact-widget ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={prepareCompactDrag} onMouseMove={maybeStartCompactDrag} onContextMenu={openCompactMenu}>
+      <main className={`compact-widget ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={prepareCompactDrag} onMouseMove={maybeStartCompactDrag} onContextMenu={openCompactMenu} onClick={() => { if (compactMenuOpen) setCompactMenuOpen(false); }}>
         <div ref={compactProvidersRef} className="compact-providers">
           {shown.length > 0 ? shown.map((provider) => (
             <div
               key={provider}
               onMouseEnter={() => setCompactHovered(provider)}
               onMouseLeave={() => setCompactHovered(null)}
-              onClick={() => { if (!compactTimerSet.has(provider)) toggleCompactTimer(provider); }}
+              onClick={() => { if (compactMenuOpen) { setCompactMenuOpen(false); return; } if (!compactTimerSet.has(provider)) toggleCompactTimer(provider); }}
               style={{ cursor: compactTimerSet.has(provider) ? "default" : "pointer" }}
             >
               {compactTimerSet.has(provider)
@@ -968,12 +983,11 @@ function WidgetApp() {
         </div>
         {compactMenuOpen && (
           <div className="compact-menu" role="menu" onClick={(event) => event.stopPropagation()}>
-            <button onClick={togglePinned}>{settings.alwaysOnTop ? "Unpin" : "Pin"}</button>
+            <button onClick={() => { togglePinned(); setCompactMenuOpen(false); }}>{settings.alwaysOnTop ? "Unpin" : "Pin"}</button>
             <button onClick={() => { setCompactMenuOpen(false); void refreshAll(); }}>Refresh</button>
             <button onClick={() => { setCompactMenuOpen(false); setMode("settings"); }}>Settings</button>
             <button onClick={() => { setCompactMenuOpen(false); setMode("widget"); }}>Full view</button>
-            <button onClick={() => void minimizeWindow()}>Minimize</button>
-            <button className="danger" onClick={() => void closeWindow()}>Close</button>
+            <button className="danger" onClick={() => { setCompactMenuOpen(false); void closeWindow(); }}>Close</button>
           </div>
         )}
       </main>
@@ -1070,7 +1084,7 @@ function WidgetApp() {
         <div className="window-title" data-tauri-drag-region>
           <span data-tauri-drag-region>updated {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
         </div>
-        <WindowControls pinned={settings.alwaysOnTop} onTogglePin={togglePinned} onMinimize={() => void minimizeWindow()} onMaximize={() => void toggleMaximizeWindow()} onClose={() => void closeWindow()} />
+        <WindowControls pinned={settings.alwaysOnTop} onTogglePin={togglePinned} onMinimize={() => void minimizeWindow()} onMaximize={() => void toggleMaximizeWindow()} onClose={() => void closeWindow()} showMinimize={false} showMaximize={false} />
       </div>
       <div ref={providersRef} className="providers" data-tauri-drag-region>
         {shown.length > 0 ? shown.map((provider) => <UsageBlock key={provider} snapshot={snapshots[provider]} compact flash={flashSet.has(provider)} paused={isPaused(provider)} />) : <EmptyProviderState />}
@@ -1103,18 +1117,22 @@ function WindowControls({
   onMinimize,
   onMaximize,
   onClose,
+  showMinimize = true,
+  showMaximize = true,
 }: {
   pinned: boolean;
   onTogglePin: () => void;
   onMinimize: () => void;
   onMaximize: () => void;
   onClose: () => void;
+  showMinimize?: boolean;
+  showMaximize?: boolean;
 }) {
   return (
     <div className="window-controls" aria-label="Window controls">
       <button className={`window-control pin ${pinned ? "active" : ""}`} type="button" title={pinned ? "Unpin from top" : "Pin always on top"} aria-label={pinned ? "Unpin from top" : "Pin always on top"} onClick={onTogglePin}><PinIcon /></button>
-      <button className="window-control minimize" type="button" title="Minimize" aria-label="Minimize" onClick={onMinimize}>-</button>
-      <button className="window-control maximize" type="button" title="Maximize" aria-label="Maximize" onClick={onMaximize}>[]</button>
+      {showMinimize && <button className="window-control minimize" type="button" title="Minimize" aria-label="Minimize" onClick={onMinimize}>-</button>}
+      {showMaximize && <button className="window-control maximize" type="button" title="Maximize" aria-label="Maximize" onClick={onMaximize}>[]</button>}
       <button className="window-control close" type="button" title="Close" aria-label="Close" onClick={onClose}>x</button>
     </div>
   );
@@ -1320,7 +1338,7 @@ function CompactTimerView({ snapshot, onBack, paused = false }: { snapshot: Usag
         <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
         <span className="timer-label">reset at</span>
       </div>
-      <div className="compact-timer-clock">{countdown ?? snapshot.resetLabel ?? "—"}</div>
+      <div className="compact-timer-clock">{countdown ?? (snapshot.resetLabel ? "Resetting soon" : "—")}</div>
       <div className="compact-timer-sub">
         {snapshot.resetLabel && <span>{snapshot.resetLabel}</span>}
         <span className="compact-timer-hint">tap to dismiss</span>
