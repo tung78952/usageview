@@ -99,6 +99,7 @@ fn show_widget_window(app: &tauri::AppHandle) -> Result<(), String> {
     .always_on_top(true)
     .skip_taskbar(true)
     .resizable(false)
+    .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows")
     .build()
     .map_err(|error| error.to_string())?;
   Ok(())
@@ -426,6 +427,7 @@ fn get_or_create_provider_window(app: &tauri::AppHandle, label: &str) -> Result<
     .center()
     .visible(false)
     .data_directory(data_dir)
+    .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows")
     .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
     .build()
     .map_err(|e| e.to_string())

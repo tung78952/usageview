@@ -13,6 +13,7 @@
     "windows": [
       {
         "label": "widget",
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows",
         "title": "UsageView",
         "width": 392,
         "height": 500,
@@ -30,6 +31,7 @@
       },
       {
         "label": "provider_claude",
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows",
         "title": "Claude Usage - UsageView",
         "width": 980,
         "height": 760,
@@ -41,6 +43,7 @@
       },
       {
         "label": "provider_codex",
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows",
         "title": "Codex Usage - UsageView",
         "width": 980,
         "height": 760,
