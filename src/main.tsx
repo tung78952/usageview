@@ -352,6 +352,23 @@ function flashToken(snapshot: UsageSnapshot) {
   return snapshot.updatedAt;
 }
 
+function isStale(snapshot: UsageSnapshot) {
+  return snapshot.status === "ok" && snapshot.message.toLowerCase().includes("last good value retained");
+}
+
+function formatAgo(iso?: string): string | undefined {
+  if (!iso) return undefined;
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return undefined;
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 45) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 function tooltipLeftLabel(snapshot: UsageSnapshot) {
   if (snapshot.status !== "ok" || typeof snapshot.percentUsed !== "number") return "-- left";
   const left = Math.round(100 - Math.max(0, Math.min(100, snapshot.percentUsed)));
@@ -531,8 +548,10 @@ function WidgetApp() {
   const snapshotsRef = useRef(snapshots);
   const lastLimitedAutoRefreshRef = useRef<Record<Provider, number>>({ claude: 0, codex: 0, "codex-1": 0 });
   const prevFlashTokenRef = useRef<Partial<Record<Provider, string>>>({});
+  const lastFreshAtRef = useRef<Partial<Record<Provider, string>>>({});
   const flashTimersRef = useRef<Partial<Record<Provider, number>>>({});
   const [flashSet, setFlashSet] = useState<Set<Provider>>(new Set());
+  const [, setAgoTick] = useState(0);
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [busy, setBusy] = useState<Provider | `${Provider}-open` | `${Provider}-close` | `${Provider}-reload` | `${Provider}-logout` | `${Provider}-discover` | null>(null);
   const [discovery, setDiscovery] = useState<Partial<Record<Provider, string>>>({});
@@ -709,6 +728,21 @@ function WidgetApp() {
         unlisten = fn;
       });
     return () => unlisten?.();
+  }, []);
+
+  // Record the timestamp of the last GENUINE valid read per provider (a non-empty flashToken).
+  // Retained Claude snapshots bump updatedAt but have an empty flashToken, so this stays put and
+  // "updated ago" reflects real freshness instead of the retain time.
+  useEffect(() => {
+    for (const p of ["claude", "codex", "codex-1"] as Provider[]) {
+      if (flashToken(snapshots[p])) lastFreshAtRef.current[p] = snapshots[p].updatedAt;
+    }
+  }, [snapshots]);
+
+  // Re-render every 30s so the "updated ago" labels stay current between refreshes.
+  useEffect(() => {
+    const id = window.setInterval(() => setAgoTick((tick) => tick + 1), 30000);
+    return () => window.clearInterval(id);
   }, []);
 
   useEffect(() => {
@@ -959,6 +993,7 @@ function WidgetApp() {
   const now = Date.now();
   const isPaused = (p: Provider) =>
     !shouldAutoRefreshProvider(p, snapshots[p], now, lastLimitedAutoRefreshRef.current);
+  const agoFor = (p: Provider) => formatAgo(lastFreshAtRef.current[p]);
 
   if (mode === "compact") {
     return (
@@ -975,8 +1010,8 @@ function WidgetApp() {
               {compactTimerSet.has(provider)
                 ? <CompactTimerView snapshot={snapshots[provider]} onBack={() => toggleCompactTimer(provider)} paused={isPaused(provider)} />
                 : compactHovered === provider
-                ? <UsageBlock snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} />
-                : <CompactUsageBlock snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} />
+                ? <UsageBlock snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} />
+                : <CompactUsageBlock snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} />
               }
             </div>
           )) : <EmptyProviderState />}
@@ -1087,7 +1122,7 @@ function WidgetApp() {
         <WindowControls pinned={settings.alwaysOnTop} onTogglePin={togglePinned} onMinimize={() => void minimizeWindow()} onMaximize={() => void toggleMaximizeWindow()} onClose={() => void closeWindow()} showMinimize={false} showMaximize={false} />
       </div>
       <div ref={providersRef} className="providers" data-tauri-drag-region>
-        {shown.length > 0 ? shown.map((provider) => <UsageBlock key={provider} snapshot={snapshots[provider]} compact flash={flashSet.has(provider)} paused={isPaused(provider)} />) : <EmptyProviderState />}
+        {shown.length > 0 ? shown.map((provider) => <UsageBlock key={provider} snapshot={snapshots[provider]} compact flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} />) : <EmptyProviderState />}
       </div>
       {showFooter && (
         <footer ref={widgetFooterRef} className="widget-footer">
@@ -1348,8 +1383,9 @@ function CompactTimerView({ snapshot, onBack, paused = false }: { snapshot: Usag
 }
 
 
-function CompactUsageBlock({ snapshot, flash = false, paused = false }: { snapshot: UsageSnapshot; flash?: boolean; paused?: boolean }) {
+function CompactUsageBlock({ snapshot, flash = false, paused = false, updatedAgo }: { snapshot: UsageSnapshot; flash?: boolean; paused?: boolean; updatedAgo?: string }) {
   const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
+  const stale = isStale(snapshot);
   const activeCells = Math.max(0, Math.min(12, Math.round((percent ?? 0) / 8.333)));
   const metaLeft = usageMetaLeft(snapshot, percent);
   const metaRight = usageMetaRight(snapshot);
@@ -1357,7 +1393,10 @@ function CompactUsageBlock({ snapshot, flash = false, paused = false }: { snapsh
     <article className={`compact-usage provider-tile ${snapshot.provider}${flash ? " mark-flash" : ""}${paused ? " mark-paused" : ""}`}>
       <div className="compact-usage-head">
         <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
-        <span className={`source-pill ${snapshot.status === "ok" ? "ok" : "warn"}`}>{providerSourceLabel(snapshot.provider, snapshot.status)}</span>
+        <span className="tile-status">
+          {updatedAgo && <span className="updated-ago">{updatedAgo}</span>}
+          <span className={`source-pill ${stale ? "stale" : snapshot.status === "ok" ? "ok" : "warn"}`}>{stale ? "cached" : providerSourceLabel(snapshot.provider, snapshot.status)}</span>
+        </span>
       </div>
       <div className="compact-usage-main">
         <span className="compact-percent">{percent !== undefined ? `${Math.round(percent)}%` : "--"}</span>
@@ -1374,8 +1413,9 @@ function CompactUsageBlock({ snapshot, flash = false, paused = false }: { snapsh
   );
 }
 
-function UsageBlock({ snapshot, compact = false, flash = false, paused = false }: { snapshot: UsageSnapshot; compact?: boolean; flash?: boolean; paused?: boolean }) {
+function UsageBlock({ snapshot, compact = false, flash = false, paused = false, updatedAgo }: { snapshot: UsageSnapshot; compact?: boolean; flash?: boolean; paused?: boolean; updatedAgo?: string }) {
   const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
+  const stale = isStale(snapshot);
   const activeCells = Math.max(0, Math.min(20, Math.round((percent ?? 0) / 5)));
   const metaLeft = usageMetaLeft(snapshot, percent);
   const metaRight = usageMetaRight(snapshot);
@@ -1383,7 +1423,10 @@ function UsageBlock({ snapshot, compact = false, flash = false, paused = false }
     <article className={`${compact ? "usage compact" : "usage"} provider-tile ${snapshot.provider}${flash ? " mark-flash" : ""}${paused ? " mark-paused" : ""}`}>
       <div className="usage-top">
         <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
-        <span className={`source-pill ${snapshot.status === "ok" ? "ok" : "warn"}`}>{providerSourceLabel(snapshot.provider, snapshot.status)}</span>
+        <span className="tile-status">
+          {updatedAgo && <span className="updated-ago">{updatedAgo}</span>}
+          <span className={`source-pill ${stale ? "stale" : snapshot.status === "ok" ? "ok" : "warn"}`}>{stale ? "cached" : providerSourceLabel(snapshot.provider, snapshot.status)}</span>
+        </span>
       </div>
       <div className="metric">
         <span className="percent">{percent !== undefined ? `${Math.round(percent)}%` : "--"}</span>
