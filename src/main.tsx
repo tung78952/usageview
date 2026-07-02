@@ -25,7 +25,7 @@ type Settings = {
   claudeUrl: string;
   codexUrl: string;
   codex1Url: string;
-  theme: "terminal" | "dark" | "light" | "glass" | "glass-light";
+  theme: "terminal" | "light";
   opacity: number;
   uiScale: number;
   alwaysOnTop: boolean;
@@ -80,6 +80,7 @@ function loadSettings(): Settings {
     return {
       ...loaded,
       uiScale: 1,
+      theme: loaded.theme === "light" ? "light" : "terminal", // glass/dark themes were removed
       showClaude: loaded.showClaude ?? true,
       showCodex: loaded.showCodex ?? true,
       showCodex1: loaded.showCodex1 ?? false,
@@ -95,30 +96,7 @@ function saveSettings(settings: Settings) {
 }
 
 function themeClass(theme: Settings["theme"]) {
-  if (theme === "glass-light") return "theme-glass theme-light theme-glass-light";
-  return `theme-${theme}`;
-}
-
-function isGlassTheme(theme: Settings["theme"]) {
-  return theme === "glass" || theme === "glass-light";
-}
-
-function isLightTheme(theme: Settings["theme"]) {
-  return theme === "light" || theme === "glass-light";
-}
-
-function toggleGlassTheme(theme: Settings["theme"]): Settings["theme"] {
-  if (theme === "glass") return "terminal";
-  if (theme === "glass-light") return "light";
-  if (theme === "light") return "glass-light";
-  return "glass";
-}
-
-function toggleLightTheme(theme: Settings["theme"]): Settings["theme"] {
-  if (theme === "light") return "terminal";
-  if (theme === "glass-light") return "glass";
-  if (theme === "glass") return "glass-light";
-  return "light";
+  return theme === "light" ? "theme-light" : "theme-terminal";
 }
 
 function panelStyle(settings: Settings): React.CSSProperties {
@@ -126,8 +104,6 @@ function panelStyle(settings: Settings): React.CSSProperties {
     "--ui-scale": 1,
     "--panel-opacity": settings.opacity,
     "--panel-opacity-pct": `${Math.round(settings.opacity * 100)}%`,
-    "--glass-dark-opacity-pct": `${Math.round(settings.opacity * 48)}%`,
-    "--glass-light-opacity-pct": `${Math.round(settings.opacity * 72)}%`,
   } as React.CSSProperties;
 }
 
@@ -214,6 +190,31 @@ async function recoverVisibleWindow(mode: AppMode, corner: Settings["corner"]) {
   await appWindow.setPosition(new LogicalPosition(geometry.x, geometry.y)).catch(() => undefined);
   await appWindow.show().catch(() => undefined);
   await appWindow.setFocus().catch(() => undefined);
+}
+
+// Switching modes (widget <-> settings <-> compact) should resize the window in place, not teleport
+// it to that mode's remembered corner. Keep the current top-left; only change the size (clamped so a
+// taller mode stays on-screen).
+async function resizeWindowForMode(mode: AppMode) {
+  const appWindow = getCurrentWindow();
+  const scaleFactor = await appWindow.scaleFactor();
+  const position = (await appWindow.outerPosition()).toLogical(scaleFactor);
+  const here = { x: Math.round(position.x), y: Math.round(position.y) };
+  const saved = loadWindowGeometry()[mode];
+  const size = defaultWindowSize(mode);
+  const geometry = normalizeWindowGeometry(
+    mode,
+    { width: saved?.width ?? size.width, height: saved?.height ?? size.height, x: here.x, y: here.y },
+    here,
+  );
+  try {
+    if (await appWindow.isMaximized()) await appWindow.unmaximize();
+  } catch {
+    // no-op
+  }
+  await appWindow.unminimize().catch(() => undefined);
+  await appWindow.setSize(new LogicalSize(geometry.width, geometry.height)).catch(() => undefined);
+  await appWindow.setPosition(new LogicalPosition(geometry.x, geometry.y)).catch(() => undefined);
 }
 
 async function readCurrentGeometry(): Promise<WindowGeometry> {
@@ -538,13 +539,10 @@ function WidgetApp() {
   const providersRef = useRef<HTMLDivElement | null>(null);
   const compactProvidersRef = useRef<HTMLDivElement | null>(null);
   const compactPointerRef = useRef<{ x: number; y: number; dragged: boolean } | null>(null);
-  const widgetFooterRef = useRef<HTMLElement | null>(null);
-  const footerHeightRef = useRef<number>(0);
   const [mode, setMode] = useState<AppMode>("widget");
   const [compactMenuOpen, setCompactMenuOpen] = useState(false);
   const [compactTimerSet, setCompactTimerSet] = useState<Set<Provider>>(new Set());
   const [compactHovered, setCompactHovered] = useState<Provider | null>(null);
-  const [showFooter, setShowFooter] = useState(true);
   const [settings, setSettings] = useState(loadSettings);
   const [snapshots, setSnapshots] = useState<Record<Provider, UsageSnapshot>>({
     claude: loadSnapshot("claude"),
@@ -582,8 +580,8 @@ function WidgetApp() {
   }, []);
 
   useEffect(() => {
-    void recoverVisibleWindow(mode, settings.corner);
-  }, [mode, settings.corner]);
+    void resizeWindowForMode(mode);
+  }, [mode]);
 
   useEffect(() => {
     if (mode !== "widget" && mode !== "compact") {
@@ -625,10 +623,8 @@ function WidgetApp() {
     const appWindow = getCurrentWindow();
     let animationFrame = 0;
 
-    // Minimum height stops flush at the bottom of the last provider tile. The footer is
-    // hidden once the window is too short to fit it beneath the tiles, so collapsing bottoms
-    // out right at the last status box. Uses providers.scrollHeight and observes each tile, so
-    // it adapts automatically when more providers are added.
+    // Minimum height keeps the last provider tile flush at the bottom. Uses providers.scrollHeight
+    // and observes each tile, so it adapts automatically when providers are added/removed.
     function updateLayout() {
       window.cancelAnimationFrame(animationFrame);
       animationFrame = window.requestAnimationFrame(() => {
@@ -637,23 +633,12 @@ function WidgetApp() {
         const providers = providersRef.current;
         if (!widget || !header || !providers) return;
 
-        // Remember the footer's height while it is mounted; we need it to decide when there is
-        // room to show it again after it has been removed from the DOM.
-        const footer = widgetFooterRef.current;
-        if (footer) footerHeightRef.current = footer.getBoundingClientRect().height;
-        const footerHeight = footerHeightRef.current;
-
         const widgetStyle = window.getComputedStyle(widget);
         const borderHeight = (Number.parseFloat(widgetStyle.borderTopWidth) || 0) + (Number.parseFloat(widgetStyle.borderBottomWidth) || 0);
         const boxesMin = Math.ceil(header.getBoundingClientRect().height + providers.scrollHeight + borderHeight);
         const innerHeight = widget.getBoundingClientRect().height;
 
-        // Hysteresis (~4px) prevents the footer from flickering right at the threshold.
-        setShowFooter((visible) =>
-          visible ? innerHeight >= boxesMin + footerHeight - 4 : innerHeight >= boxesMin + footerHeight + 4,
-        );
-
-        const minHeight = Math.max(WIDGET_MIN_HEIGHT_FALLBACK, boxesMin + footerHeight + 4);
+        const minHeight = Math.max(WIDGET_MIN_HEIGHT_FALLBACK, boxesMin + 4);
         void appWindow.setMinSize(new LogicalSize(WIDGET_MIN_WIDTH, minHeight)).catch(() => undefined);
         if (innerHeight < minHeight) {
           const innerWidth = Math.ceil(widget.getBoundingClientRect().width);
@@ -667,7 +652,6 @@ function WidgetApp() {
     if (widgetRef.current) observer.observe(widgetRef.current);
     if (widgetHeaderRef.current) observer.observe(widgetHeaderRef.current);
     if (providersRef.current) observer.observe(providersRef.current);
-    if (widgetFooterRef.current) observer.observe(widgetFooterRef.current);
     providersRef.current?.querySelectorAll(".provider-tile").forEach((element) => observer.observe(element));
 
     return () => {
@@ -1139,28 +1123,16 @@ function WidgetApp() {
         <div className="window-title" data-tauri-drag-region>
           <span data-tauri-drag-region>updated {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
         </div>
-        <WindowControls pinned={settings.alwaysOnTop} onTogglePin={togglePinned} onMinimize={() => void minimizeWindow()} onMaximize={() => void toggleMaximizeWindow()} onClose={() => void closeWindow()} showMinimize={false} showMaximize={false} />
+        <div className="header-actions">
+          <button className={`window-control refresh${busy !== null ? " spinning" : ""}`} type="button" title="Refresh now" aria-label="Refresh now" onClick={() => void refreshAll()} disabled={busy !== null}><RefreshIcon /></button>
+          <button className="window-control gear" type="button" title="Settings" aria-label="Settings" onClick={() => setMode("settings")}><GearIcon /></button>
+          <button className="window-control compact" type="button" title="Compact mode" aria-label="Compact mode" onClick={() => setMode("compact")}><CompactIcon /></button>
+          <WindowControls pinned={settings.alwaysOnTop} onTogglePin={togglePinned} onMinimize={() => void minimizeWindow()} onMaximize={() => void toggleMaximizeWindow()} onClose={() => void closeWindow()} showMinimize={false} showMaximize={false} />
+        </div>
       </div>
       <div ref={providersRef} className="providers" data-tauri-drag-region>
         {shown.length > 0 ? shown.map((provider) => <UsageBlock key={provider} snapshot={snapshots[provider]} compact flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} />) : <EmptyProviderState />}
       </div>
-      {showFooter && (
-        <footer ref={widgetFooterRef} className="widget-footer">
-          <div className="appearance">
-            <button className={isGlassTheme(settings.theme) ? "active" : ""} onClick={() => updateSettings({ ...settings, theme: toggleGlassTheme(settings.theme) })}>
-              {isGlassTheme(settings.theme) ? "Glass" : "Pixel"}
-            </button>
-            <button className={isLightTheme(settings.theme) ? "active" : ""} onClick={() => updateSettings({ ...settings, theme: toggleLightTheme(settings.theme) })}>
-              {isLightTheme(settings.theme) ? "Light" : "Dark"}
-            </button>
-          </div>
-          <div className="actions">
-            <button className="compact-toggle" title="Compact mode" aria-label="Compact mode" onClick={() => setMode("compact")}>▣</button>
-            <button onClick={() => void refreshAll()} disabled={busy !== null}>{busy ? "Reading" : "Refresh now"}</button>
-            <button onClick={() => setMode("settings")}>Settings</button>
-          </div>
-        </footer>
-      )}
       </div>
     </main>
   );
@@ -1198,6 +1170,33 @@ function PinIcon() {
     <svg className="pin-icon" viewBox="0 0 24 24" aria-hidden="true">
       <path d="M14 3l7 7-4.2 4.2-3.2-.8-5.9 5.9-3-3 5.9-5.9-.8-3.2L14 3z" />
       <path d="M7.2 16.8 3 21" />
+    </svg>
+  );
+}
+
+function RefreshIcon() {
+  return (
+    <svg className="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+      <path d="M21 3v6h-6" />
+    </svg>
+  );
+}
+
+function GearIcon() {
+  return (
+    <svg className="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+  );
+}
+
+function CompactIcon() {
+  return (
+    <svg className="action-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M7 8l5 5 5-5" />
+      <path d="M7 16l5-5 5 5" />
     </svg>
   );
 }
@@ -1380,7 +1379,7 @@ function WidgetSettings({ settings, savedAt, onChange }: { settings: Settings; s
         <span className="save-state">{savedAt ? `Saved ${savedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Auto-save on"}</span>
       </div>
       <div className="settings-row">
-        <label>Theme<select value={settings.theme} onChange={(event) => patch({ theme: event.target.value as Settings["theme"] })}><option value="terminal">Pixel Dark</option><option value="light">Pixel Light</option><option value="glass">Glass Dark</option><option value="glass-light">Glass Light</option><option value="dark">Dark</option></select></label>
+        <label>Theme<select value={settings.theme} onChange={(event) => patch({ theme: event.target.value as Settings["theme"] })}><option value="terminal">Dark</option><option value="light">Light</option></select></label>
         <label>Opacity<input type="range" min="0.45" max="1" step="0.01" value={settings.opacity} onChange={(event) => patch({ opacity: Number(event.target.value) })} /></label>
       </div>
       <div className="settings-row">
