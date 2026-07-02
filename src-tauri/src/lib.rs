@@ -152,6 +152,14 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 }
 
 #[tauri::command]
+fn update_tray_tooltip(app: tauri::AppHandle, text: String) -> Result<(), String> {
+  if let Some(tray) = app.tray_by_id("usageview-tray") {
+    tray.set_tooltip(Some(text)).map_err(|error| error.to_string())?;
+  }
+  Ok(())
+}
+
+#[tauri::command]
 fn open_in_chrome(url: String) -> Result<(), String> {
   // Launch Chrome explicitly. We resolve chrome.exe from its known install locations rather
   // than relying on PATH or `start chrome`, so a missing Chrome fails cleanly (no Windows
@@ -368,6 +376,7 @@ pub fn run() {
       refresh_provider_page,
       prepare_provider_refresh,
       open_widget_window,
+      update_tray_tooltip,
       open_in_chrome,
       logout_provider,
       extract_provider,

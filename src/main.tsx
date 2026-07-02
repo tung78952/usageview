@@ -352,6 +352,20 @@ function flashToken(snapshot: UsageSnapshot) {
   return snapshot.updatedAt;
 }
 
+function tooltipLeftLabel(snapshot: UsageSnapshot) {
+  if (snapshot.status !== "ok" || typeof snapshot.percentUsed !== "number") return "-- left";
+  const left = Math.round(100 - Math.max(0, Math.min(100, snapshot.percentUsed)));
+  return `${left}% left`;
+}
+
+function trayTooltipText(snapshots: Record<Provider, UsageSnapshot>) {
+  return [
+    `Claude: ${tooltipLeftLabel(snapshots.claude)}`,
+    `Codex 1: ${tooltipLeftLabel(snapshots.codex)}`,
+    `Codex 2: ${tooltipLeftLabel(snapshots["codex-1"])}`,
+  ].join("\n");
+}
+
 const LIMITED_RESET_REFRESH_LEAD_MS = 2 * 60 * 1000;
 const LIMITED_FALLBACK_REFRESH_MS = 10 * 60 * 1000;
 
@@ -671,6 +685,10 @@ function WidgetApp() {
   }, [snapshots]);
 
   useEffect(() => {
+    void invoke("update_tray_tooltip", { text: trayTooltipText(snapshots) }).catch(() => undefined);
+  }, [snapshots]);
+
+  useEffect(() => {
     return () => {
       for (const timer of Object.values(flashTimersRef.current)) {
         if (timer !== undefined) window.clearTimeout(timer);
@@ -950,6 +968,7 @@ function WidgetApp() {
         </div>
         {compactMenuOpen && (
           <div className="compact-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+            <button onClick={togglePinned}>{settings.alwaysOnTop ? "Unpin" : "Pin"}</button>
             <button onClick={() => { setCompactMenuOpen(false); void refreshAll(); }}>Refresh</button>
             <button onClick={() => { setCompactMenuOpen(false); setMode("settings"); }}>Settings</button>
             <button onClick={() => { setCompactMenuOpen(false); setMode("widget"); }}>Full view</button>
