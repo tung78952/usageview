@@ -1471,9 +1471,7 @@ function CompactUsageBlock({ snapshot, flash = false, paused = false, updatedAgo
         <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
         <span className="tile-status">
           {updatedAgo && <span className="updated-ago">{updatedAgo}</span>}
-          {(stale || snapshot.status !== "ok" || paused) && (
-            <span className={`source-pill ${stale ? "stale" : snapshot.status !== "ok" ? "warn" : "paused"}`}>{stale ? "cached" : snapshot.status !== "ok" ? readableStatus(snapshot.status) : "paused"}</span>
-          )}
+          <span className={`source-pill ${stale ? "stale" : snapshot.status !== "ok" ? "warn" : paused ? "paused" : "ok"}`}>{stale ? "cached" : snapshot.status !== "ok" ? readableStatus(snapshot.status) : paused ? "paused" : "live"}</span>
         </span>
       </div>
       <div className="compact-usage-main">
@@ -1503,9 +1501,7 @@ function UsageBlock({ snapshot, compact = false, flash = false, paused = false, 
         <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
         <span className="tile-status">
           {updatedAgo && <span className="updated-ago">{updatedAgo}</span>}
-          {(stale || snapshot.status !== "ok" || paused) && (
-            <span className={`source-pill ${stale ? "stale" : snapshot.status !== "ok" ? "warn" : "paused"}`}>{stale ? "cached" : snapshot.status !== "ok" ? readableStatus(snapshot.status) : "paused"}</span>
-          )}
+          <span className={`source-pill ${stale ? "stale" : snapshot.status !== "ok" ? "warn" : paused ? "paused" : "ok"}`}>{stale ? "cached" : snapshot.status !== "ok" ? readableStatus(snapshot.status) : paused ? "paused" : "live"}</span>
         </span>
       </div>
       <div className="metric">
