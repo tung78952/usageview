@@ -254,11 +254,10 @@ async fn extract_provider(app: tauri::AppHandle, provider: String, url: String) 
       }
     }
     let current = window.url().map_err(|error| error.to_string())?;
-    let here = if provider == "claude" {
-      is_usable_provider_page(&provider, &current, expected_host, &url)
-    } else {
-      current.host_str().unwrap_or_default().contains(expected_host)
-    };
+    // Eval as soon as we are on the provider's host. Claude now reads usage from a same-origin JSON
+    // API (works on any claude.ai page), so we must NOT gate on the /settings path: the SPA often
+    // routes away from it, which previously blocked the eval entirely and starved the API fetch.
+    let here = current.host_str().unwrap_or_default().contains(expected_host);
     if here {
       if attempt % 4 == 0 {
         window.eval(&script).map_err(|error| error.to_string())?;
@@ -658,8 +657,12 @@ fn extract_script(provider: &str, marker: &str) -> Result<String, String> {
   // where utilization is a 0..1 fraction. Parse that known shape precisely.
   function windowFromClaude(win) {
     if (!win || typeof win !== 'object') return undefined;
-    const percent = toPercent(win.utilization);
     const resetMs = toMs(win.resets_at);
+    // A secondary/empty org returns utilization 0 with resets_at null. Treat that as "no data" so the
+    // candidate loop skips it and picks the org that actually has an active usage window (a user can
+    // belong to several orgs; only one has real usage).
+    if (resetMs === undefined && !win.utilization) return undefined;
+    const percent = toPercent(win.utilization);
     if (percent === undefined && resetMs === undefined) return undefined;
     return { percent: percent, resetMs: resetMs };
   }
@@ -793,24 +796,11 @@ fn extract_script(provider: &str, marker: &str) -> Result<String, String> {
     return { status: status, snapshot: snapshot };
   }
 
-  // Claude usage should mirror the official page the user sees. Avoid accepting
-  // internal API payloads here: they can be stale, partial, or shaped differently
-  // from the visible "Current session" value and may incorrectly report 0%.
-  // If the SPA has not painted yet, emit the temporary DOM status and let the
-  // Rust polling loop retry until the rendered page becomes readable.
-  try {
-    const rendered = domScrape();
-    if (rendered && rendered.snapshot) {
-      rendered.snapshot.debugText = (rendered.snapshot.debugText || '') + '\n[api] skipped; Claude usage is read from the rendered official page';
-      finish(rendered.status, rendered.snapshot);
-      return;
-    }
-  } catch (e) {}
-
-  // 2) API-first fallback: kept for reference but normally unreachable for Claude.
-  //    Never short-circuit login state from a bare API call
-  //    (claude.ai returns 403 to header-less fetches even when signed in); only report 'ok'
-  //    here if we actually parsed usage, otherwise always fall through to the DOM scrape.
+  // API-first: Claude exposes a cookie-authed JSON usage endpoint
+  // (/api/organizations/<uuid>/usage -> { five_hour:{utilization,resets_at}, seven_day:{...} }),
+  // confirmed 200 in-session. Read it like Codex — no page render needed, so it stays reliable even
+  // in a hidden/throttled WebView. Only report 'ok' when we actually parse usage; otherwise fall
+  // through to the DOM scrape below. Never short-circuit login state from a bare API call.
   const apiLog = [];
   try {
     // Same-origin resource URLs the page already fetched.

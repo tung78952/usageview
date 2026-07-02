@@ -546,6 +546,7 @@ function WidgetApp() {
     "codex-1": loadSnapshot("codex-1"),
   });
   const snapshotsRef = useRef(snapshots);
+  const refreshInFlightRef = useRef<Set<Provider>>(new Set());
   const lastLimitedAutoRefreshRef = useRef<Record<Provider, number>>({ claude: 0, codex: 0, "codex-1": 0 });
   const prevFlashTokenRef = useRef<Partial<Record<Provider, string>>>({});
   const lastFreshAtRef = useRef<Partial<Record<Provider, string>>>({});
@@ -778,7 +779,7 @@ function WidgetApp() {
       }
 
       const results = await Promise.all(
-        providers.map((provider) => refreshProviderFromUrl(provider, providerUrl(provider, settings), true)),
+        providers.map((provider) => guardedRefresh(provider, providerUrl(provider, settings), true)),
       );
       if (!cancelled) {
         setSnapshots((current) => results.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), current));
@@ -802,9 +803,22 @@ function WidgetApp() {
     );
   }, [settings.showClaude, settings.showCodex, settings.showCodex1]);
 
+  // Never let two reads of the same provider run at once. At low refresh intervals a slow Claude
+  // read (reload + scrape, ~3-15s) would otherwise be reloaded out from under itself by the next
+  // tick, fail, and fall back to the cached value. Codex reads are fast so they are never skipped.
+  async function guardedRefresh(provider: Provider, url: string, background: boolean): Promise<UsageSnapshot> {
+    if (refreshInFlightRef.current.has(provider)) return snapshotsRef.current[provider];
+    refreshInFlightRef.current.add(provider);
+    try {
+      return await refreshProviderFromUrl(provider, url, background);
+    } finally {
+      refreshInFlightRef.current.delete(provider);
+    }
+  }
+
   async function refresh(provider: Provider) {
     setBusy(provider);
-    const snapshot = await refreshProviderFromUrl(provider, providerUrl(provider, settings));
+    const snapshot = await guardedRefresh(provider, providerUrl(provider, settings), false);
     setSnapshots((currentSnapshots) => ({ ...currentSnapshots, [provider]: snapshot }));
     setMessage(`${providerLabel(provider)}: ${snapshot.message}`);
     setBusy(null);
@@ -869,7 +883,7 @@ function WidgetApp() {
   async function refreshAll() {
     setBusy("claude");
     const results = await Promise.all(
-      (["claude", "codex", "codex-1"] as Provider[]).map((provider) => refreshProviderFromUrl(provider, providerUrl(provider, settings))),
+      (["claude", "codex", "codex-1"] as Provider[]).map((provider) => guardedRefresh(provider, providerUrl(provider, settings), false)),
     );
     setSnapshots((currentSnapshots) => results.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), currentSnapshots));
     setLastUpdated(new Date());
