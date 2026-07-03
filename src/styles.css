@@ -224,6 +224,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   overflow: hidden;
 }
 .compact-bar {
+  position: relative;
   width: 100%;
   min-width: 0;
   height: 12px;
@@ -443,6 +444,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 
 .message { max-width: 128px; color: var(--muted); text-align: right; font-size: 12px; overflow-wrap: anywhere; }
 .bar {
+  position: relative;
   width: 100%;
   min-width: 0;
   height: 22px;
@@ -458,6 +460,243 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 }
 .cell { min-width: 0; background: color-mix(in srgb, var(--fg) 9%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 4%, transparent); }
 .cell.active { background: var(--tone); box-shadow: 0 0 10px color-mix(in srgb, var(--tone) 38%, transparent), inset -2px -2px 0 color-mix(in srgb, #000 16%, transparent); }
+.cell.partial {
+  position: relative;
+  background: color-mix(in srgb, var(--fg) 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 4%, transparent);
+}
+.cell.partial::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: max(2px, calc(100% * var(--partial-ratio, 0)));
+  background: linear-gradient(180deg, color-mix(in srgb, var(--tone) 78%, #fff), var(--tone));
+  box-shadow: inset -1px -1px 0 color-mix(in srgb, #000 16%, transparent);
+}
+.compact-bar .cell.partial::after {
+  width: max(1px, calc(100% * var(--partial-ratio, 0)));
+}
+.cell.partial.fx-partial {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  column-gap: 1px;
+  padding: 0;
+  background: color-mix(in srgb, var(--fg) 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 4%, transparent);
+}
+.cell.partial.fx-partial::after {
+  display: none;
+}
+.cell.partial.fx-partial .mini-cell {
+  min-width: 0;
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  box-shadow: none;
+}
+.cell.partial.fx-partial .mini-cell.on {
+  background:
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.2) 0 1px, transparent 1px 4px),
+    linear-gradient(180deg, color-mix(in srgb, var(--tone) 78%, #fff), var(--tone));
+  box-shadow:
+    0 0 9px color-mix(in srgb, var(--tone) 62%, transparent),
+    0 0 18px color-mix(in srgb, var(--tone) 28%, transparent),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.24);
+}
+.cell.partial.fx-partial .mini-cell.edge {
+  filter: brightness(1.35);
+  box-shadow:
+    0 0 10px color-mix(in srgb, var(--tone) 78%, transparent),
+    0 0 22px color-mix(in srgb, var(--tone) 42%, transparent),
+    1px 0 0 color-mix(in srgb, var(--tone) 78%, #fff),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.34);
+}
+.compact-bar .cell.partial.fx-partial {
+  column-gap: 1px;
+  padding: 0;
+}
+
+.usage-effect-bar {
+  overflow: visible;
+  clip-path: inset(-42px -3px -3px -3px);
+  filter: brightness(var(--effect-bar-brightness, 1));
+  border-color: color-mix(in srgb, var(--tone) 62%, var(--border));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--tone) 26%, transparent) inset,
+    0 0 15px color-mix(in srgb, var(--tone) 18%, transparent);
+  animation: usage-bar-glow var(--effect-duration, 4000ms) cubic-bezier(.16, 1, .3, 1) both;
+}
+.usage-effect-bar .cell.active {
+  animation: usage-cell-glow var(--effect-duration, 4000ms) cubic-bezier(.16, 1, .3, 1) both;
+}
+.bar.drop-impact,
+.compact-bar.drop-impact {
+  animation: impact-shake 260ms steps(2, end) calc(var(--effect-duration, 4000ms) * 0.27);
+}
+.effect-delta-range,
+.effect-edge-glow,
+.effect-ripple,
+.effect-drop-cell,
+.effect-particle {
+  position: absolute;
+  pointer-events: none;
+  z-index: 2;
+}
+.effect-delta-range {
+  left: var(--delta-start);
+  top: 2px;
+  bottom: 2px;
+  width: max(var(--delta-width), 3px);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--tone) 38%, transparent), color-mix(in srgb, var(--tone) 72%, #fff) 78%, color-mix(in srgb, var(--tone) 92%, #fff)),
+    linear-gradient(180deg, color-mix(in srgb, var(--tone) 84%, #fff), var(--tone));
+  border-radius: 2px;
+  box-shadow:
+    2px 0 0 color-mix(in srgb, var(--tone) 78%, #fff),
+    7px 0 12px color-mix(in srgb, var(--tone) 58%, transparent),
+    12px 0 26px color-mix(in srgb, var(--tone) 34%, transparent),
+    inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+  opacity: 0;
+  filter: brightness(var(--effect-delta-brightness, 1));
+  animation: usage-delta-range var(--effect-duration, 4000ms) cubic-bezier(.2, .8, .2, 1) both;
+}
+.effect-delta-range::after {
+  content: "";
+  position: absolute;
+  right: -2px;
+  top: -3px;
+  bottom: -3px;
+  width: 6px;
+  background: color-mix(in srgb, var(--tone) 74%, #fff);
+  opacity: min(1, calc(0.85 * var(--effect-delta-brightness, 1)));
+  box-shadow:
+    0 0 10px color-mix(in srgb, var(--tone) 88%, transparent),
+    0 0 24px color-mix(in srgb, var(--tone) 48%, transparent);
+}
+.compact-bar .effect-delta-range {
+  top: 1px;
+  bottom: 1px;
+  width: max(var(--delta-width), 2px);
+}
+.compact-bar .effect-delta-range::after {
+  top: -2px;
+  bottom: -2px;
+  width: 4px;
+}
+.effect-edge-glow {
+  left: var(--delta-edge);
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  transform: translateX(-50%);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, white 72%, var(--tone) 28%), transparent);
+  filter: brightness(var(--effect-delta-brightness, 1));
+  opacity: 0;
+  animation: usage-edge-glow var(--effect-duration, 4000ms) ease-out both;
+}
+.effect-ripple {
+  left: var(--delta-edge);
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  transform: translate(-50%, -50%);
+  border: 1px solid color-mix(in srgb, var(--tone) 70%, white 30%);
+  box-shadow:
+    0 0 0 0 color-mix(in srgb, var(--tone) 70%, transparent),
+    0 0 0 0 color-mix(in srgb, var(--tone) 34%, transparent);
+  opacity: 0;
+  animation: usage-pixel-ripple var(--effect-duration, 4000ms) cubic-bezier(.16, 1, .3, 1) both;
+}
+.effect-drop-cell {
+  left: var(--drop-left);
+  top: 0;
+  width: var(--drop-width, 8px);
+  height: calc(100% - 2px);
+  transform: translate(-50%, 0);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--tone) 82%, white), var(--tone));
+  box-shadow:
+    0 0 10px color-mix(in srgb, var(--tone) 78%, transparent),
+    inset 1px 1px 0 rgba(255, 255, 255, .28),
+    inset -1px -1px 0 color-mix(in srgb, #000 18%, transparent);
+  opacity: 0;
+  image-rendering: pixelated;
+  animation: usage-drop-cell calc(var(--effect-duration, 4000ms) * 0.46) cubic-bezier(0.22, 0.9, 0.22, 1) forwards;
+}
+.effect-particle {
+  left: var(--delta-edge);
+  top: 50%;
+  width: var(--particle-size);
+  height: var(--particle-size);
+  background: color-mix(in srgb, var(--tone) 78%, white 22%);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--tone) 58%, transparent);
+  opacity: 0;
+  animation: usage-particle-burst var(--effect-duration, 4000ms) ease-out both;
+  animation-delay: var(--particle-delay);
+}
+@keyframes usage-bar-glow {
+  0%, 18% { filter: brightness(1); box-shadow: 0 0 0 1px color-mix(in srgb, var(--tone) 18%, transparent) inset; }
+  34%, 58% {
+    filter: brightness(var(--effect-bar-brightness, 1));
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--tone) 42%, transparent) inset,
+      0 0 18px color-mix(in srgb, var(--tone) 24%, transparent),
+      0 0 34px color-mix(in srgb, var(--tone) 12%, transparent);
+  }
+  100% { filter: brightness(1); box-shadow: 0 0 0 1px color-mix(in srgb, var(--tone) 12%, transparent) inset; }
+}
+@keyframes usage-cell-glow {
+  0%, 26% { filter: brightness(1); }
+  42%, 62% { filter: brightness(var(--effect-bar-brightness, 1)); }
+  100% { filter: brightness(1); }
+}
+@keyframes usage-delta-range {
+  0%, 12% { opacity: 0; transform: scaleX(.72); transform-origin: right center; }
+  22%, 72% { opacity: .86; transform: scaleX(1); }
+  100% { opacity: 0; transform: scaleX(1); }
+}
+@keyframes usage-edge-glow {
+  0%, 30% { opacity: 0; transform: translateX(-50%) scaleX(.6); }
+  42%, 68% { opacity: .9; transform: translateX(-50%) scaleX(1); }
+  100% { opacity: 0; transform: translateX(-50%) scaleX(1.3); }
+}
+@keyframes usage-pixel-ripple {
+  0%, 30% { opacity: 0; transform: translate(-50%, -50%) scale(.3); }
+  40% {
+    opacity: .76;
+    transform: translate(-50%, -50%) scale(1.1);
+    box-shadow:
+      0 0 0 6px color-mix(in srgb, var(--tone) 42%, transparent),
+      0 0 0 14px color-mix(in srgb, var(--tone) 18%, transparent);
+  }
+  72%, 100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(2.3);
+    box-shadow:
+      0 0 0 18px transparent,
+      0 0 0 36px transparent;
+  }
+}
+@keyframes usage-drop-cell {
+  0% { opacity: 0; transform: translate(-50%, -72px) scale(1.72); }
+  12% { opacity: 1; transform: translate(-50%, -64px) scale(1.56); }
+  48% { opacity: 1; transform: translate(-50%, -7px) scale(1.08); }
+  58% { transform: translate(-50%, 0) scale(1.12, 0.82); }
+  70% { transform: translate(-50%, -3px) scale(0.94, 1.08); }
+  84% { transform: translate(-50%, 0) scale(1.04, 0.96); }
+  100% { opacity: 0; transform: translate(-50%, 0) scale(1); }
+}
+@keyframes impact-shake {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-1px); }
+  40% { transform: translateX(1px); }
+  60% { transform: translateX(-1px); }
+  80% { transform: translateX(1px); }
+}
+@keyframes usage-particle-burst {
+  0%, 34% { opacity: 0; transform: translate(-50%, -50%) scale(.4); }
+  44% { opacity: .95; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(calc(-50% + var(--particle-x)), calc(-50% + var(--particle-y))) scale(.35); }
+}
 
 .usage-meta {
   position: relative;
@@ -631,6 +870,35 @@ h2 {
   font: 750 10px/1 var(--font-mono);
   letter-spacing: 0.06em;
   text-transform: uppercase;
+}
+.effect-settings {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.effect-settings summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  color: var(--muted);
+  font: 750 11px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.effect-settings summary strong {
+  color: var(--accent);
+  font: inherit;
+}
+.settings-card .toggle-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+.settings-card .toggle-row input {
+  width: 16px;
+  min-height: 16px;
+  accent-color: var(--accent);
 }
 input, select {
   width: 100%;

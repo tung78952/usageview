@@ -30,6 +30,11 @@ type Settings = {
   uiScale: number;
   alwaysOnTop: boolean;
   refreshIntervalSec: number;
+  effectsEnabled: boolean;
+  effectDurationMs: number;
+  effectBarBrightness: number;
+  effectDeltaBrightness: number;
+  effectDropCell: boolean;
   corner: "top-left" | "top-right" | "bottom-left" | "bottom-right";
   showClaude: boolean;
   showCodex: boolean;
@@ -54,6 +59,11 @@ const defaultSettings: Settings = {
   uiScale: 0.9,
   alwaysOnTop: true,
   refreshIntervalSec: 60,
+  effectsEnabled: true,
+  effectDurationMs: 4000,
+  effectBarBrightness: 1.25,
+  effectDeltaBrightness: 2,
+  effectDropCell: true,
   corner: "top-right",
   showClaude: true,
   showCodex: true,
@@ -65,6 +75,19 @@ const WIDGET_MIN_WIDTH = 320;
 const WIDGET_MIN_HEIGHT_FALLBACK = 260;
 const COMPACT_MIN_WIDTH = 260;
 const COMPACT_MIN_HEIGHT_FALLBACK = 130;
+
+type EffectParticle = {
+  x: number;
+  y: number;
+  size: number;
+  delay: number;
+};
+
+type UsageEffect = {
+  from: number;
+  to: number;
+  particles: EffectParticle[];
+};
 
 const emptySnapshot = (provider: Provider): UsageSnapshot => ({
   provider,
@@ -81,6 +104,11 @@ function loadSettings(): Settings {
       ...loaded,
       uiScale: 1,
       theme: loaded.theme === "light" ? "light" : "terminal", // glass/dark themes were removed
+      effectsEnabled: loaded.effectsEnabled ?? true,
+      effectDurationMs: clampNumber(loaded.effectDurationMs, 800, 8000, 4000),
+      effectBarBrightness: clampNumber(loaded.effectBarBrightness, 0.45, 1.8, 1.25),
+      effectDeltaBrightness: clampNumber(loaded.effectDeltaBrightness, 0.45, 2.2, 2),
+      effectDropCell: loaded.effectDropCell ?? true,
       showClaude: loaded.showClaude ?? true,
       showCodex: loaded.showCodex ?? true,
       showCodex1: loaded.showCodex1 ?? false,
@@ -88,6 +116,12 @@ function loadSettings(): Settings {
   } catch {
     return { ...defaultSettings, uiScale: 1, showClaude: true, showCodex: true, showCodex1: false };
   }
+}
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
 }
 
 function saveSettings(settings: Settings) {
@@ -104,6 +138,9 @@ function panelStyle(settings: Settings): React.CSSProperties {
     "--ui-scale": 1,
     "--panel-opacity": settings.opacity,
     "--panel-opacity-pct": `${Math.round(settings.opacity * 100)}%`,
+    "--effect-duration": `${settings.effectDurationMs}ms`,
+    "--effect-bar-brightness": settings.effectBarBrightness,
+    "--effect-delta-brightness": settings.effectDeltaBrightness,
   } as React.CSSProperties;
 }
 
@@ -321,21 +358,25 @@ function resetLabelToClock(label?: string) {
   const parsed = Date.parse(text);
   if (Number.isFinite(parsed)) return `Reset ${formatCompactDate(new Date(parsed))}`;
 
+  // Relative "resets in Xh Ym" — only trust short, reset-shaped strings, never long scraped page
+  // text (Claude's DOM fallback can grab promo/Fable copy). Otherwise report no clean reset.
   const lower = label.toLowerCase();
-  if (!lower.includes("in")) return label;
-  const hours = Number(lower.match(/(\d+)\s*h/)?.[1] ?? lower.match(/(\d+)\s*hr/)?.[1] ?? 0);
-  const minutes = Number(lower.match(/(\d+)\s*m/)?.[1] ?? lower.match(/(\d+)\s*min/)?.[1] ?? 0);
-  if (!hours && !minutes) return label;
-
-  return `Reset ${formatCompactDate(new Date(Date.now() + (hours * 60 + minutes) * 60 * 1000))}`;
+  if (label.length <= 40 && lower.includes("in")) {
+    const hours = Number(lower.match(/(\d+)\s*h/)?.[1] ?? lower.match(/(\d+)\s*hr/)?.[1] ?? 0);
+    const minutes = Number(lower.match(/(\d+)\s*m/)?.[1] ?? lower.match(/(\d+)\s*min/)?.[1] ?? 0);
+    if (hours || minutes) return `Reset ${formatCompactDate(new Date(Date.now() + (hours * 60 + minutes) * 60 * 1000))}`;
+  }
+  return undefined;
 }
 
-function usageMetaLeft(snapshot: UsageSnapshot, percent?: number) {
+function usageMetaLeft(snapshot: UsageSnapshot, _percent?: number) {
+  // Only ever show a clean "Weekly left X%" (or a placeholder) — never raw scraped text, which for
+  // Claude's DOM fallback can contain promo/Fable copy.
   const weeklyUsed = snapshot.weeklyLabel?.match(/Weekly\s+(\d{1,3})(?:\.\d+)?%\s+used/i)?.[1];
   if (weeklyUsed !== undefined) return `Weekly left ${100 - Number(weeklyUsed)}%`;
-  if (snapshot.remainingLabel?.toLowerCase().includes("weekly")) return snapshot.remainingLabel;
-  if (percent !== undefined) return `Remaining ${100 - Math.round(percent)}%`;
-  return snapshot.remainingLabel || "Weekly left --";
+  const weeklyLeft = snapshot.remainingLabel?.match(/Weekly left\s+(\d{1,3})%/i)?.[1];
+  if (weeklyLeft !== undefined) return `Weekly left ${weeklyLeft}%`;
+  return "Weekly left --";
 }
 
 function usageMetaRight(snapshot: UsageSnapshot) {
@@ -544,6 +585,7 @@ function WidgetApp() {
   const [compactTimerSet, setCompactTimerSet] = useState<Set<Provider>>(new Set());
   const [compactHovered, setCompactHovered] = useState<Provider | null>(null);
   const [settings, setSettings] = useState(loadSettings);
+  const settingsRef = useRef(settings);
   const [snapshots, setSnapshots] = useState<Record<Provider, UsageSnapshot>>({
     claude: loadSnapshot("claude"),
     codex: loadSnapshot("codex"),
@@ -553,9 +595,13 @@ function WidgetApp() {
   const refreshInFlightRef = useRef<Set<Provider>>(new Set());
   const lastLimitedAutoRefreshRef = useRef<Record<Provider, number>>({ claude: 0, codex: 0, "codex-1": 0 });
   const prevFlashTokenRef = useRef<Partial<Record<Provider, string>>>({});
+  const prevEffectPercentRef = useRef<Partial<Record<Provider, number>>>({});
+  const runtimeValidReadRef = useRef<Partial<Record<Provider, boolean>>>({});
   const lastFreshAtRef = useRef<Partial<Record<Provider, string>>>({});
   const flashTimersRef = useRef<Partial<Record<Provider, number>>>({});
+  const effectTimersRef = useRef<Partial<Record<Provider, number>>>({});
   const [flashSet, setFlashSet] = useState<Set<Provider>>(new Set());
+  const [activeEffects, setActiveEffects] = useState<Partial<Record<Provider, UsageEffect>>>({});
   const [, setAgoTick] = useState(0);
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [busy, setBusy] = useState<Provider | `${Provider}-open` | `${Provider}-close` | `${Provider}-reload` | `${Provider}-logout` | `${Provider}-discover` | null>(null);
@@ -568,6 +614,44 @@ function WidgetApp() {
     saveSettings(next);
     setSettingsSavedAt(new Date());
   }
+
+  function activateUsageEffects(effectPayloads: Partial<Record<Provider, UsageEffect>>) {
+    if (!settingsRef.current.effectsEnabled) return;
+    const effectProviders = (["claude", "codex", "codex-1"] as Provider[]).filter((provider) => effectPayloads[provider]);
+    if (!effectProviders.length) return;
+
+    for (const provider of effectProviders) {
+      const existingTimer = effectTimersRef.current[provider];
+      if (existingTimer !== undefined) window.clearTimeout(existingTimer);
+    }
+
+    setActiveEffects((prev) => ({ ...prev, ...effectPayloads }));
+    const duration = clampNumber(settingsRef.current.effectDurationMs, 800, 8000, 4000) + 900;
+    for (const provider of effectProviders) {
+      effectTimersRef.current[provider] = window.setTimeout(() => {
+        setActiveEffects((prev) => {
+          const next = { ...prev };
+          delete next[provider];
+          return next;
+        });
+        delete effectTimersRef.current[provider];
+      }, duration);
+    }
+  }
+
+  function triggerManualReplay(provider: Provider, snapshot: UsageSnapshot) {
+    const percent = snapshotPercent(snapshot);
+    if (!flashToken(snapshot) || typeof percent !== "number" || percent <= 0) {
+      return;
+    }
+    prevEffectPercentRef.current[provider] = percent;
+    runtimeValidReadRef.current[provider] = true;
+    activateUsageEffects({ [provider]: makeUsageEffect(0, percent) });
+  }
+
+  useEffect(() => {
+    settingsRef.current = settings;
+  }, [settings]);
 
   useEffect(() => {
     void getCurrentWindow().setAlwaysOnTop(settings.alwaysOnTop);
@@ -703,7 +787,22 @@ function WidgetApp() {
       for (const timer of Object.values(flashTimersRef.current)) {
         if (timer !== undefined) window.clearTimeout(timer);
       }
+      for (const timer of Object.values(effectTimersRef.current)) {
+        if (timer !== undefined) window.clearTimeout(timer);
+      }
     };
+  }, []);
+
+  useEffect(() => {
+    const effectPayloads: Partial<Record<Provider, UsageEffect>> = {};
+    for (const provider of ["claude", "codex", "codex-1"] as Provider[]) {
+      const percent = snapshotPercent(snapshotsRef.current[provider]);
+      if (typeof percent !== "number") continue;
+      prevEffectPercentRef.current[provider] = percent;
+      runtimeValidReadRef.current[provider] = true;
+      if (percent > 0) effectPayloads[provider] = makeUsageEffect(0, percent);
+    }
+    activateUsageEffects(effectPayloads);
   }, []);
 
   // Close the compact context menu whenever the window loses focus. This also covers
@@ -809,6 +908,7 @@ function WidgetApp() {
   async function refresh(provider: Provider) {
     setBusy(provider);
     const snapshot = await guardedRefresh(provider, providerUrl(provider, settings), false);
+    triggerManualReplay(provider, snapshot);
     setSnapshots((currentSnapshots) => ({ ...currentSnapshots, [provider]: snapshot }));
     setMessage(`${providerLabel(provider)}: ${snapshot.message}`);
     setBusy(null);
@@ -830,12 +930,26 @@ function WidgetApp() {
 
   useEffect(() => {
     const newly: Provider[] = [];
+    const effectPayloads: Partial<Record<Provider, UsageEffect>> = {};
     for (const p of ["claude", "codex", "codex-1"] as Provider[]) {
       const token = flashToken(snapshots[p]);
       const previousToken = prevFlashTokenRef.current[p];
+      const previousPercent = prevEffectPercentRef.current[p];
+      const nextPercent = snapshotPercent(snapshots[p]);
+      const hasRuntimeValidRead = runtimeValidReadRef.current[p] === true;
       prevFlashTokenRef.current[p] = token;
       if (previousToken !== undefined && token && token !== previousToken) {
         newly.push(p);
+        if (typeof nextPercent === "number" && nextPercent > 0) {
+          const isStartupReveal = !hasRuntimeValidRead;
+          const increased = hasRuntimeValidRead && typeof previousPercent === "number" && nextPercent > previousPercent;
+          if (isStartupReveal || increased) {
+            const fromPercent = isStartupReveal ? 0 : Number(previousPercent);
+            effectPayloads[p] = makeUsageEffect(fromPercent, nextPercent);
+          }
+        }
+        runtimeValidReadRef.current[p] = true;
+        if (typeof nextPercent === "number") prevEffectPercentRef.current[p] = nextPercent;
       }
     }
     if (!newly.length) return;
@@ -850,7 +964,9 @@ function WidgetApp() {
       newly.forEach((p) => next.add(p));
       return next;
     });
+    activateUsageEffects(effectPayloads);
     for (const p of newly) {
+      const duration = 2000;
       flashTimersRef.current[p] = window.setTimeout(() => {
         setFlashSet((prev) => {
           const next = new Set(prev);
@@ -858,7 +974,7 @@ function WidgetApp() {
           return next;
         });
         delete flashTimersRef.current[p];
-      }, 2000);
+      }, duration);
     }
   }, [snapshots]);
 
@@ -875,6 +991,7 @@ function WidgetApp() {
     const results = await Promise.all(
       (["claude", "codex", "codex-1"] as Provider[]).map((provider) => guardedRefresh(provider, providerUrl(provider, settings), false)),
     );
+    results.forEach((snapshot) => triggerManualReplay(snapshot.provider, snapshot));
     setSnapshots((currentSnapshots) => results.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), currentSnapshots));
     setLastUpdated(new Date());
     setMessage("Usage refreshed.");
@@ -1013,9 +1130,9 @@ function WidgetApp() {
             >
               {compactTimerSet.has(provider)
                 ? <CompactTimerView snapshot={snapshots[provider]} onBack={() => toggleCompactTimer(provider)} paused={isPaused(provider)} />
-                : compactHovered === provider
-                ? <UsageBlock snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} />
-                : <CompactUsageBlock snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} />
+              : compactHovered === provider
+                ? <UsageBlock snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} />
+                : <CompactUsageBlock snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} />
               }
             </div>
           )) : <EmptyProviderState />}
@@ -1131,7 +1248,7 @@ function WidgetApp() {
         </div>
       </div>
       <div ref={providersRef} className="providers" data-tauri-drag-region>
-        {shown.length > 0 ? shown.map((provider) => <UsageBlock key={provider} snapshot={snapshots[provider]} compact flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} />) : <EmptyProviderState />}
+        {shown.length > 0 ? shown.map((provider) => <UsageBlock key={provider} snapshot={snapshots[provider]} compact flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} />) : <EmptyProviderState />}
       </div>
       </div>
     </main>
@@ -1401,6 +1518,41 @@ function WidgetSettings({ settings, savedAt, onChange }: { settings: Settings; s
           </div>
         </div>
       )}
+      <details className="effect-settings">
+        <summary><span>Usage effect</span><strong>{settings.effectsEnabled ? "on" : "off"}</strong></summary>
+        <label className="toggle-row">
+          <span>Enable effect</span>
+          <input type="checkbox" checked={settings.effectsEnabled} onChange={(event) => patch({ effectsEnabled: event.target.checked })} />
+        </label>
+        <label>Effect duration <span>{(settings.effectDurationMs / 1000).toFixed(1)}s</span><input
+          type="range"
+          min="800"
+          max="8000"
+          step="100"
+          value={settings.effectDurationMs}
+          onChange={(event) => patch({ effectDurationMs: Number(event.target.value) })}
+        /></label>
+        <label>Bar brightness <span>{settings.effectBarBrightness.toFixed(2)}x</span><input
+          type="range"
+          min="0.45"
+          max="1.8"
+          step="0.05"
+          value={settings.effectBarBrightness}
+          onChange={(event) => patch({ effectBarBrightness: Number(event.target.value) })}
+        /></label>
+        <label>Delta brightness <span>{settings.effectDeltaBrightness.toFixed(2)}x</span><input
+          type="range"
+          min="0.45"
+          max="2.2"
+          step="0.05"
+          value={settings.effectDeltaBrightness}
+          onChange={(event) => patch({ effectDeltaBrightness: Number(event.target.value) })}
+        /></label>
+        <label className="toggle-row">
+          <span>Drop cell effect</span>
+          <input type="checkbox" checked={settings.effectDropCell} onChange={(event) => patch({ effectDropCell: event.target.checked })} />
+        </label>
+      </details>
     </section>
   );
 }
@@ -1457,11 +1609,101 @@ function CompactTimerView({ snapshot, onBack, paused = false }: { snapshot: Usag
   );
 }
 
+function snapshotPercent(snapshot: UsageSnapshot): number | undefined {
+  return typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
+}
 
-function CompactUsageBlock({ snapshot, flash = false, paused = false, updatedAgo }: { snapshot: UsageSnapshot; flash?: boolean; paused?: boolean; updatedAgo?: string }) {
+function makeUsageEffect(from: number, to: number): UsageEffect {
+  return { from, to, particles: makeEffectParticles() };
+}
+
+function makeEffectParticles(): EffectParticle[] {
+  const count = 12 + Math.floor(Math.random() * 6);
+  return Array.from({ length: count }, (_, index) => {
+    const angle = (Math.PI * 2 * index) / count + (Math.random() - 0.5) * 1.1;
+    const distance = 20 + Math.random() * 44;
+    return {
+      x: Math.round(Math.cos(angle) * distance + (Math.random() - 0.5) * 12),
+      y: Math.round(Math.sin(angle) * distance * 0.8 + (Math.random() - 0.5) * 14),
+      size: Math.random() > 0.72 ? 5 : Math.random() > 0.35 ? 4 : 3,
+      delay: Math.round(Math.random() * 150),
+    };
+  });
+}
+
+function effectStyle(effect: UsageEffect | undefined, fallbackPercent: number | undefined, compact = false): React.CSSProperties {
+  const from = effect ? Math.max(0, Math.min(100, effect.from)) : fallbackPercent ?? 0;
+  const to = effect ? Math.max(0, Math.min(100, effect.to)) : fallbackPercent ?? 0;
+  const start = Math.min(from, to);
+  const width = Math.abs(to - from);
+  const dropMinWidth = compact ? 6 : 8;
+  const dropWidth = width > 0 ? `max(${dropMinWidth}px, ${width}%)` : `${dropMinWidth}px`;
+  return {
+    "--delta-start": `${start}%`,
+    "--delta-width": `${width}%`,
+    "--delta-edge": `${to}%`,
+    "--drop-left": `${start + width / 2}%`,
+    "--drop-width": dropWidth,
+  } as React.CSSProperties;
+}
+
+function EffectOverlays({ effect, dropCell }: { effect?: UsageEffect; dropCell: boolean }) {
+  if (!effect) return null;
+  return (
+    <>
+      <span className="effect-delta-range" aria-hidden="true" />
+      <span className="effect-edge-glow" aria-hidden="true" />
+      <span className="effect-ripple" aria-hidden="true" />
+      {dropCell && <span className="effect-drop-cell" aria-hidden="true" />}
+      {effect.particles.map((particle, index) => (
+        <span
+          key={index}
+          className="effect-particle"
+          style={{
+            "--particle-x": `${particle.x}px`,
+            "--particle-y": `${particle.y}px`,
+            "--particle-size": `${particle.size}px`,
+            "--particle-delay": `${particle.delay}ms`,
+          } as React.CSSProperties}
+          aria-hidden="true"
+        />
+      ))}
+    </>
+  );
+}
+
+function buildUsageCells(percent: number | undefined, cellCount: number, showFxPartial: boolean): ReactNode[] {
+  const normalized = Math.max(0, Math.min(100, Number(percent ?? 0)));
+  const cellWidth = 100 / cellCount;
+  const fullCells = Math.floor(normalized / cellWidth);
+  const remainder = normalized - fullCells * cellWidth;
+  const partialRatio = remainder > 0 && fullCells < cellCount ? Math.max(0.04, Math.min(0.96, remainder / cellWidth)) : 0;
+  const miniCount = Math.max(1, Math.min(5, Math.ceil(partialRatio * 5)));
+
+  return Array.from({ length: cellCount }, (_, index) => {
+    if (index < fullCells) {
+      return <span key={index} className={`cell active${index === fullCells - 1 && partialRatio === 0 ? " current" : ""}`} />;
+    }
+    if (index === fullCells && partialRatio > 0) {
+      if (showFxPartial) {
+        return (
+          <span key={index} className="cell partial current fx-partial" style={{ "--partial-ratio": partialRatio } as React.CSSProperties}>
+            {Array.from({ length: 5 }, (_, mini) => (
+              <span key={mini} className={`mini-cell ${mini < miniCount ? `on${mini === miniCount - 1 ? " edge" : ""}` : ""}`} />
+            ))}
+          </span>
+        );
+      }
+      return <span key={index} className="cell partial current" style={{ "--partial-ratio": partialRatio } as React.CSSProperties} />;
+    }
+    return <span key={index} className="cell" />;
+  });
+}
+
+
+function CompactUsageBlock({ snapshot, flash = false, paused = false, updatedAgo, effect, dropCell = false }: { snapshot: UsageSnapshot; flash?: boolean; paused?: boolean; updatedAgo?: string; effect?: UsageEffect; dropCell?: boolean }) {
   const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
   const stale = isStale(snapshot);
-  const activeCells = Math.max(0, Math.min(12, Math.round((percent ?? 0) / 8.333)));
   const metaLeft = usageMetaLeft(snapshot, percent);
   const metaRight = usageMetaRight(snapshot);
   return (
@@ -1477,8 +1719,9 @@ function CompactUsageBlock({ snapshot, flash = false, paused = false, updatedAgo
         <span className="compact-percent">{percent !== undefined ? `${Math.round(percent)}%` : "--"}</span>
         <span className="compact-message">{providerMessage(snapshot)}</span>
       </div>
-      <div className="compact-bar" aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
-        {Array.from({ length: 12 }, (_, index) => <span key={index} className={index < activeCells ? "cell active" : "cell"} />)}
+      <div className={`compact-bar${effect ? " usage-effect-bar" : ""}${effect && dropCell ? " drop-impact" : ""}`} style={effectStyle(effect, percent, true)} aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
+        {buildUsageCells(percent, 12, !!effect)}
+        <EffectOverlays effect={effect} dropCell={dropCell} />
       </div>
       <div className="compact-meta">
         <span>{metaLeft}</span>
@@ -1488,10 +1731,9 @@ function CompactUsageBlock({ snapshot, flash = false, paused = false, updatedAgo
   );
 }
 
-function UsageBlock({ snapshot, compact = false, flash = false, paused = false, updatedAgo }: { snapshot: UsageSnapshot; compact?: boolean; flash?: boolean; paused?: boolean; updatedAgo?: string }) {
+function UsageBlock({ snapshot, compact = false, flash = false, paused = false, updatedAgo, effect, dropCell = false }: { snapshot: UsageSnapshot; compact?: boolean; flash?: boolean; paused?: boolean; updatedAgo?: string; effect?: UsageEffect; dropCell?: boolean }) {
   const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
   const stale = isStale(snapshot);
-  const activeCells = Math.max(0, Math.min(20, Math.round((percent ?? 0) / 5)));
   const metaLeft = usageMetaLeft(snapshot, percent);
   const metaRight = usageMetaRight(snapshot);
   return (
@@ -1507,8 +1749,9 @@ function UsageBlock({ snapshot, compact = false, flash = false, paused = false, 
         <span className="percent">{percent !== undefined ? `${Math.round(percent)}%` : "--"}</span>
         <span className="message">{providerMessage(snapshot)}</span>
       </div>
-      <div className="bar" aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
-        {Array.from({ length: 20 }, (_, index) => <span key={index} className={index < activeCells ? "cell active" : "cell"} />)}
+      <div className={`bar${effect ? " usage-effect-bar" : ""}${effect && dropCell ? " drop-impact" : ""}`} style={effectStyle(effect, percent)} aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
+        {buildUsageCells(percent, 20, !!effect)}
+        <EffectOverlays effect={effect} dropCell={dropCell} />
       </div>
       <div className="usage-meta" data-tip={`${metaLeft}\n${metaRight}`}>
         <span>{metaLeft}</span>
