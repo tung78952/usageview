@@ -608,7 +608,7 @@ function SettingsWindowApp() {
   const [discovery, setDiscovery] = useState<Partial<Record<Provider, string>>>({});
   const [busy, setBusy] = useState<Provider | `${Provider}-open` | `${Provider}-close` | `${Provider}-reload` | `${Provider}-logout` | `${Provider}-discover` | null>(null);
   const [message, setMessage] = useState("Settings");
-  const [pinned, setPinned] = useState(() => loadSettings().alwaysOnTop);
+  const [pinned, setPinned] = useState(true);
 
   useEffect(() => {
     void getCurrentWindow().setAlwaysOnTop(pinned);
@@ -1300,7 +1300,7 @@ function WidgetApp() {
           <div className="compact-menu" role="menu" onClick={(event) => event.stopPropagation()}>
             <button onClick={() => { togglePinned(); setCompactMenuOpen(false); }}>{settings.alwaysOnTop ? "Unpin" : "Pin"}</button>
             <button onClick={() => { setCompactMenuOpen(false); void refreshAll(); }}>Refresh</button>
-            <button onClick={() => { setCompactMenuOpen(false); void invoke("open_settings_window"); }}>Settings</button>
+            <button onClick={() => { setCompactMenuOpen(false); void invoke("toggle_settings_window"); }}>Settings</button>
             <button onClick={() => { setCompactMenuOpen(false); setMode("widget"); }}>Full view</button>
             <button className="danger" onClick={() => { setCompactMenuOpen(false); void closeWindow(); }}>Close</button>
           </div>
@@ -1318,7 +1318,7 @@ function WidgetApp() {
         </div>
         <div className="header-actions">
           <button className={`window-control refresh${busy !== null ? " spinning" : ""}`} type="button" title="Refresh now" aria-label="Refresh now" onClick={() => void refreshAll()} disabled={busy !== null}><RefreshIcon /></button>
-          <button className="window-control gear" type="button" title="Settings" aria-label="Settings" onClick={() => void invoke("open_settings_window")}><GearIcon /></button>
+          <button className="window-control gear" type="button" title="Settings" aria-label="Settings" onClick={() => void invoke("toggle_settings_window")}><GearIcon /></button>
           <button className="window-control compact" type="button" title="Compact mode" aria-label="Compact mode" onClick={() => setMode("compact")}><CompactIcon /></button>
           <WindowControls pinned={settings.alwaysOnTop} onTogglePin={togglePinned} onMinimize={() => void minimizeWindow()} onMaximize={() => void toggleMaximizeWindow()} onClose={() => void closeWindow()} showMinimize={false} showMaximize={false} />
         </div>

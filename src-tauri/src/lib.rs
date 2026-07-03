@@ -114,11 +114,27 @@ fn hide_widget_window(app: &tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+  show_settings_window(&app)
+}
+
+// Gear button toggles: hide when already visible, otherwise show.
+#[tauri::command]
+fn toggle_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+  if let Some(window) = app.get_webview_window("settings") {
+    if window.is_visible().unwrap_or(false) {
+      window.hide().map_err(|error| error.to_string())?;
+      return Ok(());
+    }
+  }
+  show_settings_window(&app)
+}
+
+fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
   // Rebuild the window if it was destroyed (e.g. the user hit the native close button); state lives in
   // localStorage so a fresh window comes back identical.
   let window = match app.get_webview_window("settings") {
     Some(window) => window,
-    None => WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("index.html".into()))
+    None => WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
       .title("UsageView - Settings")
       .inner_size(460.0, 780.0)
       .min_inner_size(430.0, 560.0)
@@ -126,6 +142,7 @@ fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
       .decorations(false)
       .transparent(true)
       .shadow(false)
+      .always_on_top(true)
       .skip_taskbar(true)
       .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows")
       .build()
@@ -420,6 +437,7 @@ pub fn run() {
       prepare_provider_refresh,
       open_widget_window,
       open_settings_window,
+      toggle_settings_window,
       update_tray_tooltip,
       open_in_chrome,
       logout_provider,
