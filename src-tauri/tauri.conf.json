@@ -52,6 +52,21 @@
         "resizable": true,
         "center": true,
         "visible": false
+      },
+      {
+        "label": "settings",
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows",
+        "title": "UsageView - Settings",
+        "width": 460,
+        "height": 780,
+        "minWidth": 430,
+        "minHeight": 560,
+        "resizable": true,
+        "center": true,
+        "skipTaskbar": false,
+        "decorations": true,
+        "transparent": false,
+        "visible": false
       }
     ],
     "security": {

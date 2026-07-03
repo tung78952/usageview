@@ -112,6 +112,44 @@ fn hide_widget_window(app: &tauri::AppHandle) -> Result<(), String> {
   Ok(())
 }
 
+#[tauri::command]
+fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
+  // Rebuild the window if it was destroyed (e.g. the user hit the native close button); state lives in
+  // localStorage so a fresh window comes back identical.
+  let window = match app.get_webview_window("settings") {
+    Some(window) => window,
+    None => WebviewWindowBuilder::new(&app, "settings", WebviewUrl::App("index.html".into()))
+      .title("UsageView - Settings")
+      .inner_size(460.0, 780.0)
+      .min_inner_size(430.0, 560.0)
+      .resizable(true)
+      .decorations(true)
+      .transparent(false)
+      .skip_taskbar(false)
+      .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows")
+      .build()
+      .map_err(|error| error.to_string())?,
+  };
+
+  // Place the settings window next to the widget so both stay visible side by side.
+  if let Some(widget) = app.get_webview_window("widget") {
+    if let (Ok(wpos), Ok(wsize), Ok(ssize)) =
+      (widget.outer_position(), widget.outer_size(), window.outer_size())
+    {
+      let gap: i32 = 12;
+      let left = wpos.x - ssize.width as i32 - gap;
+      let x = if left >= 0 { left } else { wpos.x + wsize.width as i32 + gap };
+      let y = wpos.y.max(0);
+      let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+  }
+
+  window.unminimize().map_err(|error| error.to_string())?;
+  window.show().map_err(|error| error.to_string())?;
+  window.set_focus().map_err(|error| error.to_string())?;
+  Ok(())
+}
+
 fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
   let show = MenuItem::with_id(app, TRAY_SHOW_WIDGET, "Show UsageView", true, None::<&str>)?;
   let hide = MenuItem::with_id(app, TRAY_HIDE_WIDGET, "Hide UsageView", true, None::<&str>)?;
@@ -380,6 +418,7 @@ pub fn run() {
       refresh_provider_page,
       prepare_provider_refresh,
       open_widget_window,
+      open_settings_window,
       update_tray_tooltip,
       open_in_chrome,
       logout_provider,

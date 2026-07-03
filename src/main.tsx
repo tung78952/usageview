@@ -571,7 +571,177 @@ function App() {
   const label = getCurrentWindow().label;
   const provider = providerForLabel(label);
   if (provider) return <ProviderLoginApp provider={provider} />;
+  if (label === "settings") return <SettingsWindowApp />;
   return <WidgetApp />;
+}
+
+// Cross-window command bus: the detached Settings window can't touch the widget's tile/engine directly.
+// Effect-tester and per-account "Refresh now" are posted to localStorage; the widget window runs them via
+// its "storage" listener (single owner of the extract engine + in-flight guard). Other account actions
+// (login/logout/reload/browser/find-api) act on global provider windows and run locally in either window.
+const APP_CMD_KEY = "usageview.appcmd";
+type AppCommand =
+  | { nonce: string; type: "play"; provider: Provider; from: number; to: number; driveBar: boolean }
+  | { nonce: string; type: "restore" }
+  | { nonce: string; type: "refresh"; provider: Provider };
+
+function postAppCommand(command: AppCommand) {
+  localStorage.setItem(APP_CMD_KEY, JSON.stringify(command));
+}
+
+function newNonce() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+// Detached Settings window: same bundle, rendered when the window label is "settings". Hosts the full
+// settings screen (Status + Accounts + Widget config) reusing the same components. Settings persist to
+// localStorage (widget mirrors them via its "storage" listener). Snapshots shown here come from
+// localStorage and update when the widget saves a fresh read. Tester + Refresh route through the bus.
+function SettingsWindowApp() {
+  const [settings, setSettings] = useState(loadSettings);
+  const [savedAt, setSavedAt] = useState<Date | null>(null);
+  const [snapshots, setSnapshots] = useState<Record<Provider, UsageSnapshot>>({
+    claude: loadSnapshot("claude"),
+    codex: loadSnapshot("codex"),
+    "codex-1": loadSnapshot("codex-1"),
+  });
+  const [discovery, setDiscovery] = useState<Partial<Record<Provider, string>>>({});
+  const [busy, setBusy] = useState<Provider | `${Provider}-open` | `${Provider}-close` | `${Provider}-reload` | `${Provider}-logout` | `${Provider}-discover` | null>(null);
+  const [message, setMessage] = useState("Settings");
+
+  useEffect(() => {
+    function reload() {
+      setSettings(loadSettings());
+      setSnapshots({ claude: loadSnapshot("claude"), codex: loadSnapshot("codex"), "codex-1": loadSnapshot("codex-1") });
+    }
+    window.addEventListener("storage", reload);
+    window.addEventListener("usageview:settings", reload);
+    window.addEventListener("usageview:snapshot", reload);
+    return () => {
+      window.removeEventListener("storage", reload);
+      window.removeEventListener("usageview:settings", reload);
+      window.removeEventListener("usageview:snapshot", reload);
+    };
+  }, []);
+
+  function handleChange(next: Settings) {
+    setSettings(next);
+    saveSettings(next);
+    setSavedAt(new Date());
+  }
+
+  async function openInApp(provider: Provider) {
+    setBusy(`${provider}-open`);
+    try { await openProvider(provider, settings); setMessage(`${providerLabel(provider)} login window opened.`); }
+    catch (error) { setMessage(`${providerLabel(provider)} open failed: ${String(error)}`); }
+    setBusy(null);
+  }
+  async function closeInApp(provider: Provider) {
+    setBusy(`${provider}-close`);
+    try { await closeProvider(provider); setMessage(`${providerLabel(provider)} window hidden.`); }
+    catch (error) { setMessage(`${providerLabel(provider)} close failed: ${String(error)}`); }
+    setBusy(null);
+  }
+  async function reloadInApp(provider: Provider) {
+    setBusy(`${provider}-reload`);
+    try { await refreshProviderPage(provider, providerUrl(provider, settings)); setMessage(`${providerLabel(provider)} usage page opened.`); }
+    catch (error) { setMessage(`${providerLabel(provider)} reload failed: ${String(error)}`); }
+    setBusy(null);
+  }
+  async function openBrowser(provider: Provider) {
+    const via = await openInChrome(providerUrl(provider, settings));
+    setMessage(via === "chrome" ? `${providerLabel(provider)} opened in Chrome.` : `${providerLabel(provider)} opened in default browser (Chrome not found).`);
+  }
+  async function findApi(provider: Provider) {
+    setBusy(`${provider}-discover`);
+    try {
+      const result = await discoverProviderApi(provider, providerUrl(provider, settings));
+      setDiscovery((current) => ({ ...current, [provider]: result }));
+      setMessage(`${providerLabel(provider)}: API discovery done.`);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      setDiscovery((current) => ({ ...current, [provider]: `Error: ${msg}` }));
+      setMessage(`${providerLabel(provider)} discovery failed: ${msg}`);
+    }
+    setBusy(null);
+  }
+  async function logoutInApp(provider: Provider) {
+    setBusy(`${provider}-logout`);
+    try { await logoutProvider(provider, providerUrl(provider, settings)); setMessage(`${providerLabel(provider)} signed out.`); }
+    catch (error) { setMessage(`${providerLabel(provider)} logout failed: ${String(error)}`); }
+    setBusy(null);
+  }
+  // Refresh runs on the widget (single engine owner) via the command bus; the fresh snapshot comes back
+  // here through the storage event that saveSnapshot fires.
+  function refresh(provider: Provider) {
+    postAppCommand({ nonce: newNonce(), type: "refresh", provider });
+    setMessage(`${providerLabel(provider)}: refresh requested.`);
+  }
+
+  const providerPercents: Partial<Record<Provider, number>> = {
+    claude: snapshotPercent(snapshots.claude),
+    codex: snapshotPercent(snapshots.codex),
+    "codex-1": snapshotPercent(snapshots["codex-1"]),
+  };
+  const providerFields: [Provider, keyof Settings, keyof Settings, keyof Settings][] = [
+    ["claude", "claudeUrl", "showClaude", "showClaude"],
+    ["codex", "codexUrl", "showCodex", "showCodex"],
+    ["codex-1", "codex1Url", "showCodex1", "showCodex1"],
+  ];
+
+  return (
+    <main className={`control-shell ${themeClass(settings.theme)}`} style={panelStyle(settings)}>
+      <div className="scale-shell">
+        <header className="titlebar">
+          <div className="window-title">
+            <strong>UsageView.cfg</strong>
+            <span>{savedAt ? `Saved ${savedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Auto-save on"}</span>
+          </div>
+          <div className="title-actions">
+            <button className="back-btn" onClick={() => void getCurrentWindow().hide()}>Close</button>
+          </div>
+        </header>
+
+        <section className="settings-section">
+          <h2>Status</h2>
+          <div className="status-line"><span />{message}<strong>{settings.alwaysOnTop ? "pinned" : "unpinned"}</strong></div>
+        </section>
+
+        <section className="settings-section">
+          <h2>Accounts</h2>
+          {providerFields.map(([provider, urlKey, showKey]) => (
+            <ProviderPanel
+              key={provider}
+              provider={provider}
+              url={settings[urlKey] as string}
+              snapshot={snapshots[provider]}
+              busy={busy}
+              onOpen={() => void openInApp(provider)}
+              onBrowser={() => void openBrowser(provider)}
+              onReload={() => void reloadInApp(provider)}
+              onClose={() => void closeInApp(provider)}
+              onLogout={() => void logoutInApp(provider)}
+              onDiscover={() => void findApi(provider)}
+              discovery={discovery[provider]}
+              onExtract={() => refresh(provider)}
+              onUrlChange={(url) => handleChange({ ...settings, [urlKey]: url })}
+              shownInWidget={settings[showKey] as boolean}
+              onToggleShown={() => handleChange({ ...settings, [showKey]: !(settings[showKey] as boolean) })}
+            />
+          ))}
+        </section>
+
+        <WidgetSettings
+          settings={settings}
+          savedAt={savedAt}
+          onChange={handleChange}
+          onEffectPlay={(provider, from, to, driveBar) => postAppCommand({ nonce: newNonce(), type: "play", provider, from, to, driveBar })}
+          onEffectRestore={() => postAppCommand({ nonce: newNonce(), type: "restore" })}
+          providerPercents={providerPercents}
+        />
+      </div>
+    </main>
+  );
 }
 
 function WidgetApp() {
@@ -600,13 +770,12 @@ function WidgetApp() {
   const lastFreshAtRef = useRef<Partial<Record<Provider, string>>>({});
   const flashTimersRef = useRef<Partial<Record<Provider, number>>>({});
   const effectTimersRef = useRef<Partial<Record<Provider, number>>>({});
+  const lastCmdNonceRef = useRef<string | null>(null);
   const [flashSet, setFlashSet] = useState<Set<Provider>>(new Set());
   const [activeEffects, setActiveEffects] = useState<Partial<Record<Provider, UsageEffect>>>({});
   const [, setAgoTick] = useState(0);
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [busy, setBusy] = useState<Provider | `${Provider}-open` | `${Provider}-close` | `${Provider}-reload` | `${Provider}-logout` | `${Provider}-discover` | null>(null);
-  const [discovery, setDiscovery] = useState<Partial<Record<Provider, string>>>({});
-  const [message, setMessage] = useState("Login inside app windows, then extract usage.");
   const [settingsSavedAt, setSettingsSavedAt] = useState<Date | null>(null);
 
   function updateSettings(next: Settings) {
@@ -941,7 +1110,6 @@ function WidgetApp() {
     const snapshot = await guardedRefresh(provider, providerUrl(provider, settings), false);
     triggerManualReplay(provider, snapshot);
     setSnapshots((currentSnapshots) => ({ ...currentSnapshots, [provider]: snapshot }));
-    setMessage(`${providerLabel(provider)}: ${snapshot.message}`);
     setBusy(null);
   }
 
@@ -1017,6 +1185,22 @@ function WidgetApp() {
     });
   }
 
+  // Execute commands posted by the detached Settings window (single engine owner lives here).
+  useEffect(() => {
+    function onStorage(event: StorageEvent) {
+      if (event.key !== APP_CMD_KEY || !event.newValue) return;
+      let command: AppCommand;
+      try { command = JSON.parse(event.newValue) as AppCommand; } catch { return; }
+      if (!command?.nonce || command.nonce === lastCmdNonceRef.current) return;
+      lastCmdNonceRef.current = command.nonce;
+      if (command.type === "play") playTestEffect(command.provider, command.from, command.to, command.driveBar);
+      else if (command.type === "restore") void restoreTestEffect();
+      else if (command.type === "refresh") void refresh(command.provider);
+    }
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [settings]);
+
   async function refreshAll() {
     setBusy("claude");
     const results = await Promise.all(
@@ -1025,75 +1209,6 @@ function WidgetApp() {
     results.forEach((snapshot) => triggerManualReplay(snapshot.provider, snapshot));
     setSnapshots((currentSnapshots) => results.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), currentSnapshots));
     setLastUpdated(new Date());
-    setMessage("Usage refreshed.");
-    setBusy(null);
-  }
-
-  async function openInApp(provider: Provider) {
-    setBusy(`${provider}-open`);
-    try {
-      await openProvider(provider, settings);
-      setMessage(`${providerLabel(provider)} login window opened.`);
-    } catch (error) {
-      setMessage(`${providerLabel(provider)} open failed: ${String(error)}`);
-    }
-    setBusy(null);
-  }
-
-  async function closeInApp(provider: Provider) {
-    setBusy(`${provider}-close`);
-    try {
-      await closeProvider(provider);
-      setMessage(`${providerLabel(provider)} window hidden.`);
-    } catch (error) {
-      setMessage(`${providerLabel(provider)} close failed: ${String(error)}`);
-    }
-    setBusy(null);
-  }
-
-  async function reloadInApp(provider: Provider) {
-    setBusy(`${provider}-reload`);
-    try {
-      await refreshProviderPage(provider, providerUrl(provider, settings));
-      setMessage(`${providerLabel(provider)} usage page opened.`);
-    } catch (error) {
-      setMessage(`${providerLabel(provider)} reload failed: ${String(error)}`);
-    }
-    setBusy(null);
-  }
-
-  async function openBrowser(provider: Provider) {
-    const url = providerUrl(provider, settings);
-    const via = await openInChrome(url);
-    setMessage(
-      via === "chrome"
-        ? `${providerLabel(provider)} opened in Chrome. Browser view cannot be extracted.`
-        : `${providerLabel(provider)} opened in default browser (Chrome not found).`,
-    );
-  }
-
-  async function findApi(provider: Provider) {
-    setBusy(`${provider}-discover`);
-    try {
-      const result = await discoverProviderApi(provider, providerUrl(provider, settings));
-      setDiscovery((current) => ({ ...current, [provider]: result }));
-      setMessage(`${providerLabel(provider)}: API discovery done — see "Discovered API" below.`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setDiscovery((current) => ({ ...current, [provider]: `Error: ${message}` }));
-      setMessage(`${providerLabel(provider)} discovery failed: ${message}`);
-    }
-    setBusy(null);
-  }
-
-  async function logoutInApp(provider: Provider) {
-    setBusy(`${provider}-logout`);
-    try {
-      await logoutProvider(provider, providerUrl(provider, settings));
-      setMessage(`${providerLabel(provider)} signed out — in-app session cleared.`);
-    } catch (error) {
-      setMessage(`${providerLabel(provider)} logout failed: ${String(error)}`);
-    }
     setBusy(null);
   }
 
@@ -1172,101 +1287,11 @@ function WidgetApp() {
           <div className="compact-menu" role="menu" onClick={(event) => event.stopPropagation()}>
             <button onClick={() => { togglePinned(); setCompactMenuOpen(false); }}>{settings.alwaysOnTop ? "Unpin" : "Pin"}</button>
             <button onClick={() => { setCompactMenuOpen(false); void refreshAll(); }}>Refresh</button>
-            <button onClick={() => { setCompactMenuOpen(false); setMode("settings"); }}>Settings</button>
+            <button onClick={() => { setCompactMenuOpen(false); void invoke("open_settings_window"); }}>Settings</button>
             <button onClick={() => { setCompactMenuOpen(false); setMode("widget"); }}>Full view</button>
             <button className="danger" onClick={() => { setCompactMenuOpen(false); void closeWindow(); }}>Close</button>
           </div>
         )}
-      </main>
-    );
-  }
-
-  if (mode === "settings") {
-    return (
-      <main className={`control-shell ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag}>
-        <div className="scale-shell">
-        <header className="titlebar" data-tauri-drag-region>
-          <div className="window-title" data-tauri-drag-region>
-            <strong data-tauri-drag-region>UsageView.cfg</strong>
-            <span data-tauri-drag-region>{settingsSavedAt ? `Saved ${settingsSavedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Auto-save on"}</span>
-          </div>
-          <div className="title-actions">
-            <button className="back-btn" onClick={() => setMode("widget")}>Back</button>
-            <WindowControls pinned={settings.alwaysOnTop} onTogglePin={togglePinned} onMinimize={() => void minimizeWindow()} onMaximize={() => void toggleMaximizeWindow()} onClose={() => void closeWindow()} showMinimize={false} showMaximize={false} />
-          </div>
-        </header>
-
-        <section className="settings-section">
-          <h2>Status</h2>
-          <div className="status-line"><span />{message}<strong>{settings.alwaysOnTop ? "pinned" : "unpinned"}</strong></div>
-        </section>
-
-        <section className="settings-section">
-          <h2>Accounts</h2>
-        <ProviderPanel
-          provider="claude"
-          url={settings.claudeUrl}
-          snapshot={snapshots.claude}
-          busy={busy}
-          onOpen={() => void openInApp("claude")}
-          onBrowser={() => void openBrowser("claude")}
-          onReload={() => void reloadInApp("claude")}
-          onClose={() => void closeInApp("claude")}
-          onLogout={() => void logoutInApp("claude")}
-          onDiscover={() => void findApi("claude")}
-          discovery={discovery.claude}
-          onExtract={() => void refresh("claude")}
-          onUrlChange={(url) => updateSettings({ ...settings, claudeUrl: url })}
-          shownInWidget={settings.showClaude}
-          onToggleShown={() => updateSettings({ ...settings, showClaude: !settings.showClaude })}
-        />
-
-        <ProviderPanel
-          provider="codex"
-          url={settings.codexUrl}
-          snapshot={snapshots.codex}
-          busy={busy}
-          onOpen={() => void openInApp("codex")}
-          onBrowser={() => void openBrowser("codex")}
-          onReload={() => void reloadInApp("codex")}
-          onClose={() => void closeInApp("codex")}
-          onLogout={() => void logoutInApp("codex")}
-          onDiscover={() => void findApi("codex")}
-          discovery={discovery.codex}
-          onExtract={() => void refresh("codex")}
-          onUrlChange={(url) => updateSettings({ ...settings, codexUrl: url })}
-          shownInWidget={settings.showCodex}
-          onToggleShown={() => updateSettings({ ...settings, showCodex: !settings.showCodex })}
-        />
-
-        <ProviderPanel
-          provider="codex-1"
-          url={settings.codex1Url}
-          snapshot={snapshots["codex-1"]}
-          busy={busy}
-          onOpen={() => void openInApp("codex-1")}
-          onBrowser={() => void openBrowser("codex-1")}
-          onReload={() => void reloadInApp("codex-1")}
-          onClose={() => void closeInApp("codex-1")}
-          onLogout={() => void logoutInApp("codex-1")}
-          onDiscover={() => void findApi("codex-1")}
-          discovery={discovery["codex-1"]}
-          onExtract={() => void refresh("codex-1")}
-          onUrlChange={(url) => updateSettings({ ...settings, codex1Url: url })}
-          shownInWidget={settings.showCodex1}
-          onToggleShown={() => updateSettings({ ...settings, showCodex1: !settings.showCodex1 })}
-        />
-        </section>
-
-        <WidgetSettings
-          settings={settings}
-          savedAt={settingsSavedAt}
-          onChange={updateSettings}
-          onEffectPlay={playTestEffect}
-          onEffectRestore={restoreTestEffect}
-          providerPercents={{ claude: snapshotPercent(snapshots.claude), codex: snapshotPercent(snapshots.codex), "codex-1": snapshotPercent(snapshots["codex-1"]) }}
-        />
-        </div>
       </main>
     );
   }
@@ -1280,7 +1305,7 @@ function WidgetApp() {
         </div>
         <div className="header-actions">
           <button className={`window-control refresh${busy !== null ? " spinning" : ""}`} type="button" title="Refresh now" aria-label="Refresh now" onClick={() => void refreshAll()} disabled={busy !== null}><RefreshIcon /></button>
-          <button className="window-control gear" type="button" title="Settings" aria-label="Settings" onClick={() => setMode("settings")}><GearIcon /></button>
+          <button className="window-control gear" type="button" title="Settings" aria-label="Settings" onClick={() => void invoke("open_settings_window")}><GearIcon /></button>
           <button className="window-control compact" type="button" title="Compact mode" aria-label="Compact mode" onClick={() => setMode("compact")}><CompactIcon /></button>
           <WindowControls pinned={settings.alwaysOnTop} onTogglePin={togglePinned} onMinimize={() => void minimizeWindow()} onMaximize={() => void toggleMaximizeWindow()} onClose={() => void closeWindow()} showMinimize={false} showMaximize={false} />
         </div>
