@@ -649,6 +649,37 @@ function WidgetApp() {
     activateUsageEffects({ [provider]: makeUsageEffect(0, percent) });
   }
 
+  // Effect tester (Settings > Usage effect): self-drive the status-line effect without waiting for real
+  // usage to move. Play/Step/preset only fire the visual overlay (auto-refresh keeps reading real usage);
+  // "drive bar too" additionally fakes the tile percent so the underlying cells match — it is overwritten
+  // by the next real read (or immediately by Restore).
+  function playTestEffect(provider: Provider, from: number, to: number, driveBar: boolean) {
+    const clampP = (v: number) => Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
+    const f = clampP(from);
+    const t = clampP(to);
+    if (driveBar) {
+      const base = snapshotsRef.current[provider];
+      const synthetic: UsageSnapshot = { ...base, provider, status: "ok", percentUsed: t, updatedAt: base.updatedAt };
+      // Neutralize the auto-trigger for this synthetic write so our from->to wins (no double-fire).
+      prevFlashTokenRef.current[provider] = flashToken(synthetic);
+      prevEffectPercentRef.current[provider] = t;
+      runtimeValidReadRef.current[provider] = true;
+      setSnapshots((current) => ({ ...current, [provider]: synthetic }));
+    }
+    activateUsageEffects({ [provider]: makeUsageEffect(f, t) });
+  }
+
+  async function restoreTestEffect() {
+    for (const timer of Object.values(effectTimersRef.current)) {
+      if (timer !== undefined) window.clearTimeout(timer);
+    }
+    effectTimersRef.current = {};
+    setActiveEffects({});
+    const providers = ["claude", "codex", "codex-1"] as Provider[];
+    const results = await Promise.all(providers.map((p) => guardedRefresh(p, providerUrl(p, settings), true)));
+    setSnapshots((current) => results.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), current));
+  }
+
   useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
@@ -1227,7 +1258,14 @@ function WidgetApp() {
         />
         </section>
 
-        <WidgetSettings settings={settings} savedAt={settingsSavedAt} onChange={updateSettings} />
+        <WidgetSettings
+          settings={settings}
+          savedAt={settingsSavedAt}
+          onChange={updateSettings}
+          onEffectPlay={playTestEffect}
+          onEffectRestore={restoreTestEffect}
+          providerPercents={{ claude: snapshotPercent(snapshots.claude), codex: snapshotPercent(snapshots.codex), "codex-1": snapshotPercent(snapshots["codex-1"]) }}
+        />
         </div>
       </main>
     );
@@ -1441,9 +1479,39 @@ function ProviderPanel({
   );
 }
 
-function WidgetSettings({ settings, savedAt, onChange }: { settings: Settings; savedAt: Date | null; onChange: (settings: Settings) => void }) {
+function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRestore, providerPercents }: {
+  settings: Settings;
+  savedAt: Date | null;
+  onChange: (settings: Settings) => void;
+  onEffectPlay?: (provider: Provider, from: number, to: number, driveBar: boolean) => void;
+  onEffectRestore?: () => void;
+  providerPercents?: Partial<Record<Provider, number>>;
+}) {
   function patch(next: Partial<Settings>) {
     onChange({ ...settings, ...next });
+  }
+
+  // Effect tester local state. Fields walk upward as you click Step so you can eyeball 1->2->3->4...
+  const [testProvider, setTestProvider] = useState<Provider>("codex");
+  const [testFrom, setTestFrom] = useState(36);
+  const [testTo, setTestTo] = useState(37);
+  const [driveBar, setDriveBar] = useState(false);
+  const testable = !!onEffectPlay && settings.effectsEnabled;
+  const presets: [string, number, number][] = [["36→37", 36, 37], ["80→81", 80, 81], ["0→63", 0, 63], ["99→100", 99, 100], ["0→100", 0, 100]];
+
+  function play(from: number, to: number) {
+    onEffectPlay?.(testProvider, from, to, driveBar);
+  }
+  function stepUp() {
+    const from = Math.max(0, Math.min(100, testTo));
+    const to = Math.min(100, from + 1);
+    play(from, to);
+    setTestFrom(from);
+    setTestTo(to);
+  }
+  function loadCurrent() {
+    const cur = providerPercents?.[testProvider];
+    if (typeof cur === "number") { setTestFrom(cur); setTestTo(Math.min(100, cur + 1)); }
   }
 
   // The refresh interval applies to ALL providers. Values >=60s apply immediately; values below 60s
@@ -1552,6 +1620,38 @@ function WidgetSettings({ settings, savedAt, onChange }: { settings: Settings; s
           <span>Drop cell effect</span>
           <input type="checkbox" checked={settings.effectDropCell} onChange={(event) => patch({ effectDropCell: event.target.checked })} />
         </label>
+        {onEffectPlay && (
+          <div className="effect-tester">
+            <div className="effect-tester-head">
+              <span>Test / replay</span>
+              {!settings.effectsEnabled && <em>enable effect to test</em>}
+            </div>
+            <div className="effect-tester-row">
+              <label>Account<select value={testProvider} onChange={(event) => setTestProvider(event.target.value as Provider)}>
+                <option value="claude">Claude</option>
+                <option value="codex">Codex</option>
+                <option value="codex-1">Codex 2</option>
+              </select></label>
+              <label>From<input type="number" min="0" max="100" value={testFrom} onChange={(event) => setTestFrom(Number(event.target.value))} /></label>
+              <label>To<input type="number" min="0" max="100" value={testTo} onChange={(event) => setTestTo(Number(event.target.value))} /></label>
+              <button type="button" onClick={loadCurrent} title="Load this account's current %">current</button>
+            </div>
+            <label className="toggle-row">
+              <span>Drive bar too (fake %, restores on next read)</span>
+              <input type="checkbox" checked={driveBar} onChange={(event) => setDriveBar(event.target.checked)} />
+            </label>
+            <div className="effect-tester-actions">
+              <button type="button" className="primary" disabled={!testable} onClick={() => play(testFrom, testTo)}>Play</button>
+              <button type="button" disabled={!testable} onClick={stepUp}>Step +1%</button>
+              <button type="button" onClick={() => onEffectRestore?.()}>Restore</button>
+            </div>
+            <div className="effect-tester-presets">
+              {presets.map(([label, from, to]) => (
+                <button type="button" key={label} disabled={!testable} onClick={() => { setTestFrom(from); setTestTo(to); play(from, to); }}>{label}</button>
+              ))}
+            </div>
+          </div>
+        )}
       </details>
     </section>
   );
