@@ -1276,14 +1276,18 @@ function WidgetApp() {
   const agoFor = (p: Provider) => formatAgo(lastFreshAtRef.current[p]);
 
   if (mode === "compact") {
+    // While a usage effect is running, freeze hover so a stray cursor move across a tile edge
+    // doesn't swap UsageBlock<->CompactUsageBlock — that remount restarts the CSS animation and
+    // replays the effect. Check any provider: hovering B while A animates would collapse A too.
+    const effectRunning = (["claude", "codex", "codex-1"] as Provider[]).some((p) => activeEffects[p] !== undefined);
     return (
       <main className={`compact-widget ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={prepareCompactDrag} onMouseMove={maybeStartCompactDrag} onContextMenu={openCompactMenu} onClick={() => { if (compactMenuOpen) setCompactMenuOpen(false); }}>
         <div ref={compactProvidersRef} className="compact-providers">
           {shown.length > 0 ? shown.map((provider) => (
             <div
               key={provider}
-              onMouseEnter={() => setCompactHovered(provider)}
-              onMouseLeave={() => setCompactHovered(null)}
+              onMouseEnter={() => { if (effectRunning) return; setCompactHovered(provider); }}
+              onMouseLeave={() => { if (effectRunning) return; setCompactHovered(null); }}
               onClick={() => { if (compactMenuOpen) { setCompactMenuOpen(false); return; } if (!compactTimerSet.has(provider)) toggleCompactTimer(provider); }}
               style={{ cursor: compactTimerSet.has(provider) ? "default" : "pointer" }}
             >
