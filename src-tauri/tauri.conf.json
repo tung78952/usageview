@@ -63,9 +63,10 @@
         "minHeight": 560,
         "resizable": true,
         "center": true,
-        "skipTaskbar": false,
-        "decorations": true,
-        "transparent": false,
+        "skipTaskbar": true,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
         "visible": false
       }
     ],

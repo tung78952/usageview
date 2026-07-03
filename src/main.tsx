@@ -608,6 +608,11 @@ function SettingsWindowApp() {
   const [discovery, setDiscovery] = useState<Partial<Record<Provider, string>>>({});
   const [busy, setBusy] = useState<Provider | `${Provider}-open` | `${Provider}-close` | `${Provider}-reload` | `${Provider}-logout` | `${Provider}-discover` | null>(null);
   const [message, setMessage] = useState("Settings");
+  const [pinned, setPinned] = useState(() => loadSettings().alwaysOnTop);
+
+  useEffect(() => {
+    void getCurrentWindow().setAlwaysOnTop(pinned);
+  }, [pinned]);
 
   useEffect(() => {
     function reload() {
@@ -690,15 +695,23 @@ function SettingsWindowApp() {
   ];
 
   return (
-    <main className={`control-shell ${themeClass(settings.theme)}`} style={panelStyle(settings)}>
-      <div className="scale-shell">
-        <header className="titlebar">
-          <div className="window-title">
-            <strong>UsageView.cfg</strong>
-            <span>{savedAt ? `Saved ${savedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Auto-save on"}</span>
+    <main className={`control-shell ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag} data-tauri-drag-region>
+      <div className="scale-shell" data-tauri-drag-region>
+        <header className="titlebar" data-tauri-drag-region>
+          <div className="window-title" data-tauri-drag-region>
+            <strong data-tauri-drag-region>UsageView.cfg</strong>
+            <span data-tauri-drag-region>{savedAt ? `Saved ${savedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Auto-save on"}</span>
           </div>
           <div className="title-actions">
-            <button className="back-btn" onClick={() => void getCurrentWindow().hide()}>Close</button>
+            <WindowControls
+              pinned={pinned}
+              onTogglePin={() => setPinned((prev) => !prev)}
+              onMinimize={() => undefined}
+              onMaximize={() => undefined}
+              onClose={() => void getCurrentWindow().hide()}
+              showMinimize={false}
+              showMaximize={false}
+            />
           </div>
         </header>
 

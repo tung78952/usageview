@@ -123,9 +123,10 @@ fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
       .inner_size(460.0, 780.0)
       .min_inner_size(430.0, 560.0)
       .resizable(true)
-      .decorations(true)
-      .transparent(false)
-      .skip_taskbar(false)
+      .decorations(false)
+      .transparent(true)
+      .shadow(false)
+      .skip_taskbar(true)
       .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows")
       .build()
       .map_err(|error| error.to_string())?,
