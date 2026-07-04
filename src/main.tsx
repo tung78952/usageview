@@ -72,13 +72,8 @@ const defaultSettings: Settings = {
 
 const GEOMETRY_KEY = "usageview.windowGeometry.v6";
 const WIDGET_MIN_WIDTH = 320;
+const WIDGET_MAX_WIDTH = 900;
 const WIDGET_MIN_HEIGHT_FALLBACK = 260;
-// Reference inner width that maps to --ui-scale = 1. Because .scale-shell lays out at
-// width:calc(100%/scale), the content's natural (unzoomed) width is always BASE_WIDTH, so its natural
-// height is constant — dragging the window bigger just zooms everything proportionally.
-const WIDGET_BASE_WIDTH = 392;
-const WIDGET_SCALE_MIN = 0.7;
-const WIDGET_SCALE_MAX = 2.5;
 const COMPACT_MIN_WIDTH = 260;
 const COMPACT_MIN_HEIGHT_FALLBACK = 130;
 
@@ -790,10 +785,6 @@ function WidgetApp() {
   const flashTimersRef = useRef<Partial<Record<Provider, number>>>({});
   const effectTimersRef = useRef<Partial<Record<Provider, number>>>({});
   const lastCmdNonceRef = useRef<string | null>(null);
-  const naturalHRef = useRef(WIDGET_MIN_HEIGHT_FALLBACK);
-  const uiScaleRef = useRef(1);
-  const lastWidthRef = useRef(0);
-  const [uiScale, setUiScale] = useState(1);
   const [flashSet, setFlashSet] = useState<Set<Provider>>(new Set());
   const [activeEffects, setActiveEffects] = useState<Partial<Record<Provider, UsageEffect>>>({});
   const [, setAgoTick] = useState(0);
@@ -890,20 +881,6 @@ function WidgetApp() {
     void resizeWindowForMode(mode);
   }, [mode]);
 
-  useEffect(() => {
-    uiScaleRef.current = uiScale;
-  }, [uiScale]);
-
-  // Widget resize = proportional zoom. Width drives --ui-scale; the layout effect then sets the window
-  // height to fit content at that scale, so the widget always stays flush (no dead space) and keeps its
-  // aspect ratio. Called from onResized when the user drags a width/corner handle.
-  function applyProportional(innerWidth: number) {
-    const scale = Math.max(WIDGET_SCALE_MIN, Math.min(WIDGET_SCALE_MAX, innerWidth / WIDGET_BASE_WIDTH));
-    if (Math.abs(scale - uiScaleRef.current) > 0.002) {
-      uiScaleRef.current = scale;
-      setUiScale(scale);
-    }
-  }
 
   useEffect(() => {
     if (mode !== "widget" && mode !== "compact") {
@@ -914,10 +891,8 @@ function WidgetApp() {
     if (mode === "compact") {
       const appWindow = getCurrentWindow();
       let animationFrame = 0;
-      // Clear the widget mode's height clamp so compact can size itself freely; reset the zoom driver so
-      // returning to widget re-adopts the current width.
+      // Clear the widget mode's height clamp so compact can size itself freely.
       void appWindow.setMaxSize(new LogicalSize(4000, 4000)).catch(() => undefined);
-      lastWidthRef.current = 0;
 
       function updateCompactLayout() {
         window.cancelAnimationFrame(animationFrame);
@@ -949,11 +924,9 @@ function WidgetApp() {
     const appWindow = getCurrentWindow();
     let animationFrame = 0;
 
-    // Proportional zoom: measure the content's natural (unzoomed) height, then force the window height
-    // to fit it at the current --ui-scale. Because .scale-shell lays out at width:calc(100%/scale), the
-    // content's natural width is constant, so its natural height is scale-independent — the window height
-    // that fits is naturalH * scale. Always sets height (grow AND shrink) so there is never dead space,
-    // and clamps width so scale stays in [MIN, MAX]. Height follows width => dragging a corner zooms.
+    // Auto-fit: window height always equals content height (grow AND shrink) so there is never dead
+    // space at the bottom, and it adapts when providers are added/removed. Height is locked (min==max)
+    // so the window can't be dragged vertically into empty space; width stays freely resizable.
     function updateLayout() {
       window.cancelAnimationFrame(animationFrame);
       animationFrame = window.requestAnimationFrame(() => {
@@ -962,26 +935,19 @@ function WidgetApp() {
         const providers = providersRef.current;
         if (!widget || !header || !providers) return;
 
-        const scale = uiScaleRef.current || 1;
-        // header + providers are inside .scale-shell (zoomed by `scale`); divide back to natural px.
-        const naturalContent = (header.getBoundingClientRect().height + providers.scrollHeight) / scale;
-        naturalHRef.current = Math.max(WIDGET_MIN_HEIGHT_FALLBACK / WIDGET_SCALE_MAX, naturalContent);
+        const widgetStyle = window.getComputedStyle(widget);
+        const borderHeight = (Number.parseFloat(widgetStyle.borderTopWidth) || 0) + (Number.parseFloat(widgetStyle.borderBottomWidth) || 0);
+        const boxesMin = Math.ceil(header.getBoundingClientRect().height + providers.scrollHeight + borderHeight);
+        const contentH = Math.max(WIDGET_MIN_HEIGHT_FALLBACK, boxesMin);
 
         const rect = widget.getBoundingClientRect();
         const innerWidth = Math.round(rect.width);
         const innerHeight = Math.round(rect.height);
 
-        // On first pass, adopt the restored width as the zoom driver.
-        if (lastWidthRef.current === 0) {
-          lastWidthRef.current = innerWidth;
-          applyProportional(innerWidth);
-        }
-
-        const targetHeight = Math.max(WIDGET_MIN_HEIGHT_FALLBACK, Math.round(naturalHRef.current * scale));
-        void appWindow.setMinSize(new LogicalSize(Math.round(WIDGET_BASE_WIDTH * WIDGET_SCALE_MIN), Math.round(naturalHRef.current * WIDGET_SCALE_MIN))).catch(() => undefined);
-        void appWindow.setMaxSize(new LogicalSize(Math.round(WIDGET_BASE_WIDTH * WIDGET_SCALE_MAX), Math.round(naturalHRef.current * WIDGET_SCALE_MAX))).catch(() => undefined);
-        if (Math.abs(innerHeight - targetHeight) > 1) {
-          void appWindow.setSize(new LogicalSize(innerWidth, targetHeight)).catch(() => undefined);
+        void appWindow.setMinSize(new LogicalSize(WIDGET_MIN_WIDTH, contentH)).catch(() => undefined);
+        void appWindow.setMaxSize(new LogicalSize(WIDGET_MAX_WIDTH, contentH)).catch(() => undefined);
+        if (Math.abs(innerHeight - contentH) > 1) {
+          void appWindow.setSize(new LogicalSize(Math.max(WIDGET_MIN_WIDTH, innerWidth), contentH)).catch(() => undefined);
         }
       });
     }
@@ -997,7 +963,7 @@ function WidgetApp() {
       window.cancelAnimationFrame(animationFrame);
       observer.disconnect();
     };
-  }, [mode, uiScale, settings.theme, snapshots.claude, snapshots.codex, snapshots["codex-1"], settings.showClaude, settings.showCodex, settings.showCodex1]);
+  }, [mode, settings.theme, snapshots.claude, snapshots.codex, snapshots["codex-1"], settings.showClaude, settings.showCodex, settings.showCodex1]);
 
   useEffect(() => {
     const appWindow = getCurrentWindow();
@@ -1013,27 +979,8 @@ function WidgetApp() {
       }, 250);
     }
 
-    // When the user drags a width/corner handle, re-derive the zoom from the new width. Height-only
-    // resizes (our own setSize to fit) leave width unchanged and are ignored here, so no feedback loop.
-    async function onResized() {
-      if (mode === "widget") {
-        try {
-          const sf = await appWindow.scaleFactor();
-          const size = (await appWindow.innerSize()).toLogical(sf);
-          const width = Math.round(size.width);
-          if (Math.abs(width - lastWidthRef.current) > 1) {
-            lastWidthRef.current = width;
-            applyProportional(width);
-          }
-        } catch {
-          // ignore
-        }
-      }
-      scheduleSave();
-    }
-
     void Promise.all([
-      appWindow.onResized(onResized),
+      appWindow.onResized(scheduleSave),
       appWindow.onMoved(scheduleSave),
     ]).then(([resizeUnlisten, moveUnlisten]) => {
       unlistenResize = resizeUnlisten;
@@ -1375,7 +1322,7 @@ function WidgetApp() {
   }
 
   return (
-    <main ref={widgetRef} className={`widget ${themeClass(settings.theme)}`} style={{ ...panelStyle(settings), "--ui-scale": uiScale } as React.CSSProperties} onMouseDown={startWindowDrag}>
+    <main ref={widgetRef} className={`widget ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag}>
       <div className="scale-shell">
       <div ref={widgetHeaderRef} className="widget-header">
         <div className="window-title">
