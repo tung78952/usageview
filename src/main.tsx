@@ -73,6 +73,12 @@ const defaultSettings: Settings = {
 const GEOMETRY_KEY = "usageview.windowGeometry.v6";
 const WIDGET_MIN_WIDTH = 320;
 const WIDGET_MIN_HEIGHT_FALLBACK = 260;
+// Reference inner width that maps to --ui-scale = 1. Because .scale-shell lays out at
+// width:calc(100%/scale), the content's natural (unzoomed) width is always BASE_WIDTH, so its natural
+// height is constant — dragging the window bigger just zooms everything proportionally.
+const WIDGET_BASE_WIDTH = 392;
+const WIDGET_SCALE_MIN = 0.7;
+const WIDGET_SCALE_MAX = 2.5;
 const COMPACT_MIN_WIDTH = 260;
 const COMPACT_MIN_HEIGHT_FALLBACK = 130;
 
@@ -695,12 +701,12 @@ function SettingsWindowApp() {
   ];
 
   return (
-    <main className={`control-shell ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag} data-tauri-drag-region>
-      <div className="scale-shell" data-tauri-drag-region>
-        <header className="titlebar" data-tauri-drag-region>
-          <div className="window-title" data-tauri-drag-region>
-            <strong data-tauri-drag-region>UsageView.cfg</strong>
-            <span data-tauri-drag-region>{savedAt ? `Saved ${savedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Auto-save on"}</span>
+    <main className={`control-shell ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag}>
+      <div className="scale-shell">
+        <header className="titlebar">
+          <div className="window-title">
+            <strong>UsageView.cfg</strong>
+            <span>{savedAt ? `Saved ${savedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Auto-save on"}</span>
           </div>
           <div className="title-actions">
             <WindowControls
@@ -784,6 +790,10 @@ function WidgetApp() {
   const flashTimersRef = useRef<Partial<Record<Provider, number>>>({});
   const effectTimersRef = useRef<Partial<Record<Provider, number>>>({});
   const lastCmdNonceRef = useRef<string | null>(null);
+  const naturalHRef = useRef(WIDGET_MIN_HEIGHT_FALLBACK);
+  const uiScaleRef = useRef(1);
+  const lastWidthRef = useRef(0);
+  const [uiScale, setUiScale] = useState(1);
   const [flashSet, setFlashSet] = useState<Set<Provider>>(new Set());
   const [activeEffects, setActiveEffects] = useState<Partial<Record<Provider, UsageEffect>>>({});
   const [, setAgoTick] = useState(0);
@@ -881,6 +891,21 @@ function WidgetApp() {
   }, [mode]);
 
   useEffect(() => {
+    uiScaleRef.current = uiScale;
+  }, [uiScale]);
+
+  // Widget resize = proportional zoom. Width drives --ui-scale; the layout effect then sets the window
+  // height to fit content at that scale, so the widget always stays flush (no dead space) and keeps its
+  // aspect ratio. Called from onResized when the user drags a width/corner handle.
+  function applyProportional(innerWidth: number) {
+    const scale = Math.max(WIDGET_SCALE_MIN, Math.min(WIDGET_SCALE_MAX, innerWidth / WIDGET_BASE_WIDTH));
+    if (Math.abs(scale - uiScaleRef.current) > 0.002) {
+      uiScaleRef.current = scale;
+      setUiScale(scale);
+    }
+  }
+
+  useEffect(() => {
     if (mode !== "widget" && mode !== "compact") {
       void getCurrentWindow().setMinSize(new LogicalSize(430, 620)).catch(() => undefined);
       return;
@@ -889,6 +914,10 @@ function WidgetApp() {
     if (mode === "compact") {
       const appWindow = getCurrentWindow();
       let animationFrame = 0;
+      // Clear the widget mode's height clamp so compact can size itself freely; reset the zoom driver so
+      // returning to widget re-adopts the current width.
+      void appWindow.setMaxSize(new LogicalSize(4000, 4000)).catch(() => undefined);
+      lastWidthRef.current = 0;
 
       function updateCompactLayout() {
         window.cancelAnimationFrame(animationFrame);
@@ -920,8 +949,11 @@ function WidgetApp() {
     const appWindow = getCurrentWindow();
     let animationFrame = 0;
 
-    // Minimum height keeps the last provider tile flush at the bottom. Uses providers.scrollHeight
-    // and observes each tile, so it adapts automatically when providers are added/removed.
+    // Proportional zoom: measure the content's natural (unzoomed) height, then force the window height
+    // to fit it at the current --ui-scale. Because .scale-shell lays out at width:calc(100%/scale), the
+    // content's natural width is constant, so its natural height is scale-independent — the window height
+    // that fits is naturalH * scale. Always sets height (grow AND shrink) so there is never dead space,
+    // and clamps width so scale stays in [MIN, MAX]. Height follows width => dragging a corner zooms.
     function updateLayout() {
       window.cancelAnimationFrame(animationFrame);
       animationFrame = window.requestAnimationFrame(() => {
@@ -930,16 +962,26 @@ function WidgetApp() {
         const providers = providersRef.current;
         if (!widget || !header || !providers) return;
 
-        const widgetStyle = window.getComputedStyle(widget);
-        const borderHeight = (Number.parseFloat(widgetStyle.borderTopWidth) || 0) + (Number.parseFloat(widgetStyle.borderBottomWidth) || 0);
-        const boxesMin = Math.ceil(header.getBoundingClientRect().height + providers.scrollHeight + borderHeight);
-        const innerHeight = widget.getBoundingClientRect().height;
+        const scale = uiScaleRef.current || 1;
+        // header + providers are inside .scale-shell (zoomed by `scale`); divide back to natural px.
+        const naturalContent = (header.getBoundingClientRect().height + providers.scrollHeight) / scale;
+        naturalHRef.current = Math.max(WIDGET_MIN_HEIGHT_FALLBACK / WIDGET_SCALE_MAX, naturalContent);
 
-        const minHeight = Math.max(WIDGET_MIN_HEIGHT_FALLBACK, boxesMin + 4);
-        void appWindow.setMinSize(new LogicalSize(WIDGET_MIN_WIDTH, minHeight)).catch(() => undefined);
-        if (innerHeight < minHeight) {
-          const innerWidth = Math.ceil(widget.getBoundingClientRect().width);
-          void appWindow.setSize(new LogicalSize(Math.max(WIDGET_MIN_WIDTH, innerWidth), minHeight)).catch(() => undefined);
+        const rect = widget.getBoundingClientRect();
+        const innerWidth = Math.round(rect.width);
+        const innerHeight = Math.round(rect.height);
+
+        // On first pass, adopt the restored width as the zoom driver.
+        if (lastWidthRef.current === 0) {
+          lastWidthRef.current = innerWidth;
+          applyProportional(innerWidth);
+        }
+
+        const targetHeight = Math.max(WIDGET_MIN_HEIGHT_FALLBACK, Math.round(naturalHRef.current * scale));
+        void appWindow.setMinSize(new LogicalSize(Math.round(WIDGET_BASE_WIDTH * WIDGET_SCALE_MIN), Math.round(naturalHRef.current * WIDGET_SCALE_MIN))).catch(() => undefined);
+        void appWindow.setMaxSize(new LogicalSize(Math.round(WIDGET_BASE_WIDTH * WIDGET_SCALE_MAX), Math.round(naturalHRef.current * WIDGET_SCALE_MAX))).catch(() => undefined);
+        if (Math.abs(innerHeight - targetHeight) > 1) {
+          void appWindow.setSize(new LogicalSize(innerWidth, targetHeight)).catch(() => undefined);
         }
       });
     }
@@ -955,7 +997,7 @@ function WidgetApp() {
       window.cancelAnimationFrame(animationFrame);
       observer.disconnect();
     };
-  }, [mode, settings.theme, snapshots.claude, snapshots.codex, settings.showClaude, settings.showCodex]);
+  }, [mode, uiScale, settings.theme, snapshots.claude, snapshots.codex, snapshots["codex-1"], settings.showClaude, settings.showCodex, settings.showCodex1]);
 
   useEffect(() => {
     const appWindow = getCurrentWindow();
@@ -971,8 +1013,27 @@ function WidgetApp() {
       }, 250);
     }
 
+    // When the user drags a width/corner handle, re-derive the zoom from the new width. Height-only
+    // resizes (our own setSize to fit) leave width unchanged and are ignored here, so no feedback loop.
+    async function onResized() {
+      if (mode === "widget") {
+        try {
+          const sf = await appWindow.scaleFactor();
+          const size = (await appWindow.innerSize()).toLogical(sf);
+          const width = Math.round(size.width);
+          if (Math.abs(width - lastWidthRef.current) > 1) {
+            lastWidthRef.current = width;
+            applyProportional(width);
+          }
+        } catch {
+          // ignore
+        }
+      }
+      scheduleSave();
+    }
+
     void Promise.all([
-      appWindow.onResized(scheduleSave),
+      appWindow.onResized(onResized),
       appWindow.onMoved(scheduleSave),
     ]).then(([resizeUnlisten, moveUnlisten]) => {
       unlistenResize = resizeUnlisten;
@@ -1314,11 +1375,11 @@ function WidgetApp() {
   }
 
   return (
-    <main ref={widgetRef} className={`widget ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag} data-tauri-drag-region>
-      <div className="scale-shell" data-tauri-drag-region>
-      <div ref={widgetHeaderRef} className="widget-header" data-tauri-drag-region>
-        <div className="window-title" data-tauri-drag-region>
-          <span data-tauri-drag-region>updated {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+    <main ref={widgetRef} className={`widget ${themeClass(settings.theme)}`} style={{ ...panelStyle(settings), "--ui-scale": uiScale } as React.CSSProperties} onMouseDown={startWindowDrag}>
+      <div className="scale-shell">
+      <div ref={widgetHeaderRef} className="widget-header">
+        <div className="window-title">
+          <span>updated {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
         </div>
         <div className="header-actions">
           <button className={`window-control refresh${busy !== null ? " spinning" : ""}`} type="button" title="Refresh now" aria-label="Refresh now" onClick={() => void refreshAll()} disabled={busy !== null}><RefreshIcon /></button>
@@ -1327,7 +1388,7 @@ function WidgetApp() {
           <WindowControls pinned={settings.alwaysOnTop} onTogglePin={togglePinned} onMinimize={() => void minimizeWindow()} onMaximize={() => void toggleMaximizeWindow()} onClose={() => void closeWindow()} showMinimize={false} showMaximize={false} />
         </div>
       </div>
-      <div ref={providersRef} className="providers" data-tauri-drag-region>
+      <div ref={providersRef} className="providers">
         {shown.length > 0 ? shown.map((provider) => <UsageBlock key={provider} snapshot={snapshots[provider]} compact flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} />) : <EmptyProviderState />}
       </div>
       </div>
