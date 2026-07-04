@@ -911,6 +911,8 @@ function WidgetApp() {
       const appWindow = getCurrentWindow();
       let animationFrame = 0;
       let lastCompactHeight = -1;
+      // Compact is not resizable at all — no resize handles, can't be dragged bigger.
+      void appWindow.setResizable(false).catch(() => undefined);
 
       // Compact is locked at a fixed compact size: width is constant and min==max on BOTH axes, so the
       // window can't be resized at all. Height still auto-fits content (grows/shrinks when providers are
@@ -944,6 +946,8 @@ function WidgetApp() {
 
     const appWindow = getCurrentWindow();
     let animationFrame = 0;
+    // Full view is width-resizable again (compact turned this off).
+    void appWindow.setResizable(true).catch(() => undefined);
 
     // Auto-fit: window height always equals content height (grow AND shrink) so there is never dead
     // space at the bottom, and it adapts when providers are added/removed. Height is locked (min==max)
