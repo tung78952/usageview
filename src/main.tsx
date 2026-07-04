@@ -75,7 +75,23 @@ const WIDGET_MIN_WIDTH = 320;
 const WIDGET_MAX_WIDTH = 900;
 const WIDGET_MIN_HEIGHT_FALLBACK = 260;
 const COMPACT_MIN_WIDTH = 260;
+const COMPACT_MAX_WIDTH = 640;
 const COMPACT_MIN_HEIGHT_FALLBACK = 130;
+const MODE_KEY = "usageview.mode";
+
+function loadMode(): AppMode {
+  try {
+    const saved = localStorage.getItem(MODE_KEY);
+    if (saved === "compact" || saved === "widget") return saved;
+  } catch {
+    // ignore
+  }
+  return "widget";
+}
+
+function saveMode(mode: AppMode) {
+  if (mode === "widget" || mode === "compact") localStorage.setItem(MODE_KEY, mode);
+}
 
 type EffectParticle = {
   x: number;
@@ -764,7 +780,7 @@ function WidgetApp() {
   const providersRef = useRef<HTMLDivElement | null>(null);
   const compactProvidersRef = useRef<HTMLDivElement | null>(null);
   const compactPointerRef = useRef<{ x: number; y: number; dragged: boolean } | null>(null);
-  const [mode, setMode] = useState<AppMode>("widget");
+  const [mode, setMode] = useState<AppMode>(loadMode);
   const [compactMenuOpen, setCompactMenuOpen] = useState(false);
   const [compactTimerSet, setCompactTimerSet] = useState<Set<Provider>>(new Set());
   const [compactHovered, setCompactHovered] = useState<Provider | null>(null);
@@ -874,10 +890,12 @@ function WidgetApp() {
   useEffect(() => {
     const appWindow = getCurrentWindow();
     void appWindow.clearEffects().catch(() => undefined);
-    void recoverVisibleWindow("widget", settings.corner);
+    // Reopen in the last-used mode + its saved geometry (mode here is the value restored by loadMode).
+    void recoverVisibleWindow(mode, settings.corner);
   }, []);
 
   useEffect(() => {
+    saveMode(mode);
     void resizeWindowForMode(mode);
   }, [mode]);
 
@@ -891,22 +909,23 @@ function WidgetApp() {
     if (mode === "compact") {
       const appWindow = getCurrentWindow();
       let animationFrame = 0;
-      // Clear the widget mode's height clamp so compact can size itself freely.
-      void appWindow.setMaxSize(new LogicalSize(4000, 4000)).catch(() => undefined);
 
+      // Auto-fit like the full view: height always equals content (grow AND shrink) so there is no dead
+      // space, and it is locked (min==max) against vertical dragging; width stays resizable in range.
       function updateCompactLayout() {
         window.cancelAnimationFrame(animationFrame);
         animationFrame = window.requestAnimationFrame(() => {
           const providers = compactProvidersRef.current;
           if (!providers) return;
           const height = Math.max(COMPACT_MIN_HEIGHT_FALLBACK, Math.ceil(providers.scrollHeight + 14));
+          void appWindow.setMinSize(new LogicalSize(COMPACT_MIN_WIDTH, height)).catch(() => undefined);
+          void appWindow.setMaxSize(new LogicalSize(COMPACT_MAX_WIDTH, height)).catch(() => undefined);
           void appWindow.innerSize().then((size) => {
-            if (size.height < height) {
-              return appWindow.setSize(new LogicalSize(size.width, height));
+            if (Math.abs(size.height - height) > 1) {
+              return appWindow.setSize(new LogicalSize(Math.max(COMPACT_MIN_WIDTH, Math.round(size.width)), height));
             }
             return undefined;
           }).catch(() => undefined);
-          void appWindow.setMinSize(new LogicalSize(COMPACT_MIN_WIDTH, height)).catch(() => undefined);
         });
       }
 
