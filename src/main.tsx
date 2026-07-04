@@ -1,8 +1,8 @@
 import React, { Component, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import "./styles.css";
 
 type Provider = "claude" | "codex" | "codex-1";
@@ -76,6 +76,7 @@ const WIDGET_MAX_WIDTH = 900;
 const WIDGET_MIN_HEIGHT_FALLBACK = 260;
 const COMPACT_MIN_WIDTH = 260;
 const COMPACT_MAX_WIDTH = 640;
+const COMPACT_LOCK_WIDTH = 320;
 const COMPACT_MIN_HEIGHT_FALLBACK = 130;
 const MODE_KEY = "usageview.mode";
 
@@ -516,7 +517,8 @@ async function logoutProvider(provider: Provider, url: string) {
   await invoke("logout_provider", { provider, url });
 }
 
-// Open in Chrome; fall back to the OS default browser if Chrome isn't installed.
+// Open in Chrome; fall back to the OS default browser if Chrome isn't installed. Used by the provider
+// login window's "Open Browser" button (the per-account Settings button was removed).
 async function openInChrome(url: string): Promise<"chrome" | "default"> {
   try {
     await invoke("open_in_chrome", { url });
@@ -674,10 +676,6 @@ function SettingsWindowApp() {
     catch (error) { setMessage(`${providerLabel(provider)} reload failed: ${String(error)}`); }
     setBusy(null);
   }
-  async function openBrowser(provider: Provider) {
-    const via = await openInChrome(providerUrl(provider, settings));
-    setMessage(via === "chrome" ? `${providerLabel(provider)} opened in Chrome.` : `${providerLabel(provider)} opened in default browser (Chrome not found).`);
-  }
   async function findApi(provider: Provider) {
     setBusy(`${provider}-discover`);
     try {
@@ -751,7 +749,6 @@ function SettingsWindowApp() {
               snapshot={snapshots[provider]}
               busy={busy}
               onOpen={() => void openInApp(provider)}
-              onBrowser={() => void openBrowser(provider)}
               onReload={() => void reloadInApp(provider)}
               onClose={() => void closeInApp(provider)}
               onLogout={() => void logoutInApp(provider)}
@@ -913,28 +910,23 @@ function WidgetApp() {
     if (mode === "compact") {
       const appWindow = getCurrentWindow();
       let animationFrame = 0;
+      let lastCompactHeight = -1;
 
-      // Auto-fit like the full view: height always equals content (grow AND shrink) so there is no dead
-      // space, and it is locked (min==max) against vertical dragging; width stays resizable in range.
+      // Compact is locked at a fixed compact size: width is constant and min==max on BOTH axes, so the
+      // window can't be resized at all. Height still auto-fits content (grows/shrinks when providers are
+      // shown/hidden). Width is a constant (not read from innerSize) so there is no physical/logical unit
+      // pitfall and no runaway.
       function updateCompactLayout() {
         window.cancelAnimationFrame(animationFrame);
-        animationFrame = window.requestAnimationFrame(async () => {
+        animationFrame = window.requestAnimationFrame(() => {
           const providers = compactProvidersRef.current;
           if (!providers) return;
           const height = Math.max(COMPACT_MIN_HEIGHT_FALLBACK, Math.ceil(providers.scrollHeight + 14));
-          void appWindow.setMinSize(new LogicalSize(COMPACT_MIN_WIDTH, height)).catch(() => undefined);
-          void appWindow.setMaxSize(new LogicalSize(COMPACT_MAX_WIDTH, height)).catch(() => undefined);
-          try {
-            // innerSize() is PHYSICAL px; convert to logical before feeding LogicalSize, otherwise every
-            // pass multiplies width by the DPI scale factor and the window runs away to full-screen.
-            const scaleFactor = await appWindow.scaleFactor();
-            const logical = (await appWindow.innerSize()).toLogical(scaleFactor);
-            const width = Math.min(COMPACT_MAX_WIDTH, Math.max(COMPACT_MIN_WIDTH, Math.round(logical.width)));
-            if (Math.abs(logical.height - height) > 1 || Math.abs(logical.width - width) > 1) {
-              void appWindow.setSize(new LogicalSize(width, height)).catch(() => undefined);
-            }
-          } catch {
-            // ignore
+          void appWindow.setMinSize(new LogicalSize(COMPACT_LOCK_WIDTH, height)).catch(() => undefined);
+          void appWindow.setMaxSize(new LogicalSize(COMPACT_LOCK_WIDTH, height)).catch(() => undefined);
+          if (height !== lastCompactHeight) {
+            lastCompactHeight = height;
+            void appWindow.setSize(new LogicalSize(COMPACT_LOCK_WIDTH, height)).catch(() => undefined);
           }
         });
       }
@@ -967,7 +959,8 @@ function WidgetApp() {
         const widgetStyle = window.getComputedStyle(widget);
         const borderHeight = (Number.parseFloat(widgetStyle.borderTopWidth) || 0) + (Number.parseFloat(widgetStyle.borderBottomWidth) || 0);
         const boxesMin = Math.ceil(header.getBoundingClientRect().height + providers.scrollHeight + borderHeight);
-        const contentH = Math.max(WIDGET_MIN_HEIGHT_FALLBACK, boxesMin);
+        // Fit the actual content (down to a small safety floor) so hiding accounts leaves no dead space.
+        const contentH = Math.max(96, boxesMin);
 
         const rect = widget.getBoundingClientRect();
         const innerWidth = Math.round(rect.width);
@@ -1486,7 +1479,6 @@ function ProviderPanel({
   snapshot,
   busy,
   onOpen,
-  onBrowser,
   onReload,
   onClose,
   onLogout,
@@ -1502,7 +1494,6 @@ function ProviderPanel({
   snapshot: UsageSnapshot;
   busy: Provider | `${Provider}-open` | `${Provider}-close` | `${Provider}-reload` | `${Provider}-logout` | `${Provider}-discover` | null;
   onOpen: () => void;
-  onBrowser: () => void;
   onReload: () => void;
   onClose: () => void;
   onLogout: () => void;
@@ -1537,7 +1528,6 @@ function ProviderPanel({
         <div className="button-grid">
           <button onClick={onReload} disabled={busy === `${provider}-reload`}>Reload page</button>
           <button onClick={onClose} disabled={busy === `${provider}-close`}>Hide window</button>
-          <button onClick={onBrowser}>Open Chrome</button>
           <button onClick={onDiscover} disabled={busy === `${provider}-discover`}>{busy === `${provider}-discover` ? "Finding API..." : "Find API"}</button>
         </div>
         <p className="hint">Log out clears the shared in-app browser session for both providers.</p>
