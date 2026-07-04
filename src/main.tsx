@@ -208,7 +208,11 @@ function normalizeWindowGeometry(mode: AppMode, geometry: Partial<WindowGeometry
   const fallbackSize = defaultWindowSize(mode);
   const minWidth = mode === "settings" ? 430 : mode === "compact" ? COMPACT_MIN_WIDTH : WIDGET_MIN_WIDTH;
   const minHeight = mode === "settings" ? 620 : mode === "compact" ? COMPACT_MIN_HEIGHT_FALLBACK : WIDGET_MIN_HEIGHT_FALLBACK;
-  const maxWidth = Math.max(minWidth, window.screen.availWidth || fallbackSize.width);
+  const maxWidth = mode === "compact"
+    ? COMPACT_MAX_WIDTH
+    : mode === "widget"
+      ? WIDGET_MAX_WIDTH
+      : Math.max(minWidth, window.screen.availWidth || fallbackSize.width);
   const maxHeight = Math.max(minHeight, window.screen.availHeight || fallbackSize.height);
   const width = Number.isFinite(geometry?.width) ? Math.min(maxWidth, Math.max(minWidth, Math.round(geometry!.width!))) : fallbackSize.width;
   const height = Number.isFinite(geometry?.height) ? Math.min(maxHeight, Math.max(minHeight, Math.round(geometry!.height!))) : fallbackSize.height;
@@ -914,18 +918,24 @@ function WidgetApp() {
       // space, and it is locked (min==max) against vertical dragging; width stays resizable in range.
       function updateCompactLayout() {
         window.cancelAnimationFrame(animationFrame);
-        animationFrame = window.requestAnimationFrame(() => {
+        animationFrame = window.requestAnimationFrame(async () => {
           const providers = compactProvidersRef.current;
           if (!providers) return;
           const height = Math.max(COMPACT_MIN_HEIGHT_FALLBACK, Math.ceil(providers.scrollHeight + 14));
           void appWindow.setMinSize(new LogicalSize(COMPACT_MIN_WIDTH, height)).catch(() => undefined);
           void appWindow.setMaxSize(new LogicalSize(COMPACT_MAX_WIDTH, height)).catch(() => undefined);
-          void appWindow.innerSize().then((size) => {
-            if (Math.abs(size.height - height) > 1) {
-              return appWindow.setSize(new LogicalSize(Math.max(COMPACT_MIN_WIDTH, Math.round(size.width)), height));
+          try {
+            // innerSize() is PHYSICAL px; convert to logical before feeding LogicalSize, otherwise every
+            // pass multiplies width by the DPI scale factor and the window runs away to full-screen.
+            const scaleFactor = await appWindow.scaleFactor();
+            const logical = (await appWindow.innerSize()).toLogical(scaleFactor);
+            const width = Math.min(COMPACT_MAX_WIDTH, Math.max(COMPACT_MIN_WIDTH, Math.round(logical.width)));
+            if (Math.abs(logical.height - height) > 1 || Math.abs(logical.width - width) > 1) {
+              void appWindow.setSize(new LogicalSize(width, height)).catch(() => undefined);
             }
-            return undefined;
-          }).catch(() => undefined);
+          } catch {
+            // ignore
+          }
         });
       }
 
