@@ -362,7 +362,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   font: 11px/1 var(--font-mono);
   letter-spacing: 0.04em;
 }
-.gear, .back-btn, .window-btn { min-width: 76px; }
+.back-btn, .window-btn { min-width: 76px; }
 
 .providers { min-width: 0; flex: 0 0 auto; padding: 10px; display: grid; gap: 10px; align-content: start; }
 
