@@ -255,6 +255,17 @@ async fn extract_provider(app: tauri::AppHandle, provider: String, url: String) 
   let window = get_or_create_provider_window(&app, &label)?;
   let expected_host = provider_host(&provider)?;
 
+  // A freshly-created dynamic window (Codex 2 / provider_codex_1) isn't ready right after build();
+  // calling url()/navigate()/eval() too early throws "failed to receive message from webview" and the
+  // first read fails until a manual refresh. Wait until the webview responds. Predeclared windows
+  // (Claude/Codex) answer immediately, so this adds no delay for them.
+  for _ in 0..20 {
+    if window.url().is_ok() {
+      break;
+    }
+    std::thread::sleep(Duration::from_millis(100));
+  }
+
   // Silent background refresh: if the window is hidden and not already on the provider site
   // (e.g. right after launch it sits on the local wrapper), navigate it there without showing
   // it. The login cookie persists, so the usage page loads logged in. We never navigate a
