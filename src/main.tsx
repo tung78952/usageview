@@ -401,8 +401,19 @@ function usageMetaLeft(snapshot: UsageSnapshot, _percent?: number) {
   return "Weekly left --";
 }
 
+function weeklyResetLabel(snapshot: UsageSnapshot) {
+  // The weekly reset clock is carried inside weeklyLabel as ".../ Reset <clock>" (both Claude and
+  // Codex now emit that shape). Pull out the "Reset ..." segment and normalize it, so the meta-right
+  // cell (next to "Weekly left X%") shows the WEEKLY reset — the 5-hour reset already lives in the
+  // message countdown ("resets in Xh Ym") and the flip-timer.
+  const resetPart = snapshot.weeklyLabel
+    ?.split(" / ")
+    .find((part) => /^\s*Reset\b/i.test(part));
+  return resetLabelToClock(resetPart) || "Reset --";
+}
+
 function usageMetaRight(snapshot: UsageSnapshot) {
-  return resetLabelToClock(snapshot.resetLabel) || "Reset --";
+  return weeklyResetLabel(snapshot);
 }
 
 function hasUsageDisplayValue(snapshot: UsageSnapshot) {

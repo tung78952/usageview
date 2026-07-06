@@ -635,7 +635,7 @@ fn extract_script(provider: &str, marker: &str) -> Result<String, String> {
       percentUsed,
       resetLabel: reset,
       weeklyLabel: weeklyPercent !== undefined
-        ? `Weekly ${{Math.round(weeklyPercent)}}% used`
+        ? `Weekly ${{Math.round(weeklyPercent)}}% used${{weeklyReset ? ' / ' + weeklyReset : ''}}`
         : weeklyReset,
       debugText: raw.slice(0, 600)
     }});
