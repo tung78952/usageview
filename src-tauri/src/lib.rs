@@ -878,30 +878,33 @@ fn extract_script(provider: &str, marker: &str) -> Result<String, String> {
       perfNames = performance.getEntriesByType('resource').map((entry) => entry.name).filter((name) => name.indexOf(origin) === 0);
     } catch (e) {}
 
-    // Resolve the organization uuid from the organizations API, or from any org-scoped URL the
-    // page already called (works even if /api/organizations rejects a header-less fetch).
-    let orgUuid;
+    // Resolve organization uuids from the organizations API, plus any org-scoped URL the page
+    // already called (works even if /api/organizations rejects a header-less fetch). A user can
+    // belong to several orgs where only one has real usage (the others return utilization 0 /
+    // resets_at null); we must try EVERY org's usage endpoint, not just the first, otherwise an
+    // empty personal org shadows the org that actually holds the plan usage.
+    let orgUuids = [];
     try {
       const orgResp = await fetch(origin + '/api/organizations', { credentials: 'include' });
       apiLog.push('organizations ' + orgResp.status);
       if (orgResp.ok) {
         const orgs = await orgResp.clone().json();
         if (Array.isArray(orgs)) {
-          const found = orgs.find((o) => o && o.uuid);
-          if (found) orgUuid = found.uuid;
+          for (const o of orgs) {
+            if (o && o.uuid && orgUuids.indexOf(o.uuid) === -1) orgUuids.push(o.uuid);
+          }
         }
       }
     } catch (e) { apiLog.push('organizations error'); }
-    if (!orgUuid) {
-      for (const name of perfNames) {
-        const match = name.match(/\/api\/organizations\/([0-9a-fA-F-]{36})/);
-        if (match) { orgUuid = match[1]; break; }
-      }
+    for (const name of perfNames) {
+      const match = name.match(/\/api\/organizations\/([0-9a-fA-F-]{36})/);
+      if (match && orgUuids.indexOf(match[1]) === -1) orgUuids.push(match[1]);
     }
 
-    // Candidates: the exact usage endpoint first, then any usage-looking call the page made.
+    // Candidates: every org's usage endpoint (the loop below skips empty/secondary orgs because
+    // fromApi() returns undefined for them), then any usage-looking call the page already made.
     const candidates = [];
-    if (orgUuid) candidates.push(origin + '/api/organizations/' + orgUuid + '/usage');
+    for (const uuid of orgUuids) candidates.push(origin + '/api/organizations/' + uuid + '/usage');
     for (const name of perfNames) {
       if (/usage|rate.?limit|limits|quota/i.test(name) && candidates.indexOf(name) === -1) candidates.push(name);
     }
