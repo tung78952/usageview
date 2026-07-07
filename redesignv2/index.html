@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>UsageView Redesign v2 - Color Lab</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main class="lab-shell">
+    <section class="preview-pane">
+      <header class="lab-topbar">
+        <div>
+          <strong>UsageView Color Lab</strong>
+          <span>clone of the current widget surface</span>
+        </div>
+        <div class="view-tabs" role="tablist" aria-label="Preview mode">
+          <button class="tab active" type="button" data-view="full">Full</button>
+          <button class="tab" type="button" data-view="compact">Compact</button>
+          <button class="tab" type="button" data-view="settings">Settings</button>
+          <button class="tab" type="button" data-view="all">All</button>
+        </div>
+      </header>
+
+      <div class="preview-stage">
+        <section class="preview-card preview-full" data-preview="full">
+          <div class="widget-shell">
+            <header class="widget-header">
+              <div class="window-title">
+                <span>updated 08:47 PM</span>
+              </div>
+              <div class="header-actions">
+                <button class="window-control refresh" type="button" title="Refresh now" aria-label="Refresh now">
+                  <svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36" /><path d="M21 3v6h-6" /></svg>
+                </button>
+                <button class="window-control gear" type="button" title="Settings" aria-label="Settings">
+                  <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+                </button>
+                <button class="window-control compact" type="button" title="Compact mode" aria-label="Compact mode">
+                  <svg viewBox="0 0 24 24"><path d="M7 8l5 5 5-5" /><path d="M7 16l5-5 5 5" /></svg>
+                </button>
+                <button class="window-control pin active" type="button">PIN</button>
+                <button class="window-control close" type="button">x</button>
+              </div>
+            </header>
+            <div class="providers" id="fullProviders"></div>
+          </div>
+        </section>
+
+        <section class="preview-card preview-compact" data-preview="compact">
+          <div class="compact-widget-shell">
+            <div class="compact-providers" id="compactProviders"></div>
+            <div class="compact-menu ghost-menu">
+              <button type="button">Pin</button>
+              <button type="button">Refresh</button>
+              <button type="button">Settings</button>
+              <button type="button">Full view</button>
+              <button class="danger" type="button">Close</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="preview-card preview-settings" data-preview="settings">
+          <div class="control-shell">
+            <header class="titlebar">
+              <div class="title-row">
+                <span class="mark codex-mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3l7 4v10l-7 4-7-4V7z" /><path d="M12 3v6l5 3M19 7l-5 3v6M19 17l-7-4-7 4M5 7l7 4v10" /></svg></span>
+                <div>
+                  <strong>UsageView Settings</strong>
+                  <span>widget controls and accounts</span>
+                </div>
+              </div>
+              <button class="window-control close" type="button">x</button>
+            </header>
+
+            <section class="settings-section">
+              <div class="status-line"><span></span>Ready. Last refresh completed from API.</div>
+            </section>
+
+            <section class="mini-card">
+              <div class="mini-head">
+                <div>
+                  <h2><span class="mark claude-mark"></span>Claude</h2>
+                  <p>Claude account session.</p>
+                </div>
+                <span class="pill ok">ok</span>
+              </div>
+              <div class="settings-actions">
+                <button class="primary" type="button">Login</button>
+                <button type="button">Refresh now</button>
+                <button type="button">Hide widget</button>
+                <button class="danger" type="button">Log out</button>
+              </div>
+              <details class="advanced-tools">
+                <summary>Advanced</summary>
+                <label>Login / usage link<input value="https://claude.ai/settings/usage" /></label>
+                <div class="button-grid">
+                  <button type="button">Reload page</button>
+                  <button type="button">Hide window</button>
+                  <button type="button">Find API</button>
+                </div>
+              </details>
+            </section>
+
+            <section class="mini-card settings-card">
+              <div class="mini-head">
+                <div>
+                  <h2>Widget</h2>
+                  <p>Auto-saves when changed.</p>
+                </div>
+                <span class="save-state">Saved 08:47</span>
+              </div>
+              <div class="settings-row">
+                <label>Theme<select><option>Dark</option><option>Light</option></select></label>
+                <label>Opacity<input type="range" value="96" /></label>
+              </div>
+              <label class="toggle-row"><span>Enable effect</span><input type="checkbox" checked /></label>
+            </section>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <aside class="color-panel">
+      <header class="panel-head">
+        <div>
+          <strong>Color Panel</strong>
+          <span>deep tune every token</span>
+        </div>
+        <button id="resetBtn" type="button">Reset</button>
+      </header>
+
+      <section class="panel-tools">
+        <label>Preset
+          <select id="presetSelect"></select>
+        </label>
+        <div class="tool-row">
+          <button id="copyBtn" class="primary" type="button">Copy CSS variables</button>
+          <button id="randomBtn" type="button">Random vibe</button>
+        </div>
+        <textarea id="exportBox" readonly spellcheck="false" aria-label="Exported CSS variables"></textarea>
+      </section>
+
+      <section class="panel-tools">
+        <h2 class="panel-section-title">Preview Controls</h2>
+        <div id="previewControls" class="preview-controls"></div>
+      </section>
+
+      <section id="colorGroups" class="color-groups"></section>
+    </aside>
+  </main>
+
+  <template id="providerTemplate">
+    <article class="usage provider-tile">
+      <div class="usage-top">
+        <strong><span class="mark"></span><span class="provider-name"></span></strong>
+        <span class="tile-status">
+          <span class="updated-ago">2m ago</span>
+          <span class="source-pill">live</span>
+        </span>
+      </div>
+      <div class="metric">
+        <span class="percent"></span>
+        <span class="message"></span>
+      </div>
+      <div class="bar"></div>
+      <div class="usage-meta">
+        <span class="meta-left"></span>
+        <span class="meta-right"></span>
+      </div>
+    </article>
+  </template>
+
+  <template id="compactTemplate">
+    <article class="compact-usage provider-tile">
+      <div class="compact-usage-head">
+        <strong><span class="mark"></span><span class="provider-name"></span></strong>
+        <span class="tile-status">
+          <span class="updated-ago">2m ago</span>
+          <span class="source-pill">live</span>
+        </span>
+      </div>
+      <div class="compact-usage-main">
+        <span class="compact-percent"></span>
+        <span class="compact-message"></span>
+      </div>
+      <div class="compact-bar"></div>
+      <div class="compact-meta">
+        <span class="meta-left"></span>
+        <span class="meta-right"></span>
+      </div>
+    </article>
+  </template>
+
+  <script src="./app.js"></script>
+</body>
+</html>
