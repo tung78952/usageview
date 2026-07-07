@@ -37,6 +37,16 @@ const stateMessages = {
   error: "error",
 };
 
+const statusClassByState = {
+  live: "ok",
+  cached: "stale",
+  paused: "paused",
+  login: "warn",
+  error: "warn",
+};
+
+let effectPreview = true;
+
 const tokenGroups = [
   {
     title: "Window",
@@ -59,6 +69,7 @@ const tokenGroups = [
       ["--percent-text", "Percent number"],
       ["--message-text", "Message text"],
       ["--meta-text", "Meta text"],
+      ["--updated-ago-text", "Updated ago text"],
     ],
   },
   {
@@ -108,8 +119,19 @@ const tokenGroups = [
       ["--bar-current", "Current cell"],
       ["--bar-border", "Cell border"],
       ["--bar-glow", "Glow"],
+    ],
+  },
+  {
+    title: "Usage Effect",
+    tokens: [
+      ["--effect-sweep", "Sweep overlay"],
       ["--effect-delta", "Delta highlight"],
-      ["--drop-cell", "Drop cell"],
+      ["--effect-delta-border", "Delta border"],
+      ["--effect-particle", "Particle color"],
+      ["--effect-drop-cell", "Drop cell"],
+      ["--effect-drop-shadow", "Drop shadow"],
+      ["--effect-partial-on", "Partial on"],
+      ["--effect-partial-edge", "Partial edge"],
     ],
   },
   {
@@ -162,13 +184,20 @@ const presets = {
     "--pill-error-bg": "rgba(219, 107, 88, 0.14)",
     "--pill-error-border": "rgba(219, 107, 88, 0.46)",
     "--pill-error-text": "#db6b58",
+    "--updated-ago-text": "#8f8a82",
     "--bar-empty": "rgba(255, 255, 255, 0.075)",
     "--bar-active": "var(--tone)",
     "--bar-current": "#fff1d8",
     "--bar-border": "rgba(255, 255, 255, 0.07)",
     "--bar-glow": "rgba(196, 111, 66, 0.38)",
+    "--effect-sweep": "rgba(255, 241, 216, 0.34)",
     "--effect-delta": "#fff1d8",
-    "--drop-cell": "#ffd28a",
+    "--effect-delta-border": "rgba(255, 241, 216, 0.78)",
+    "--effect-particle": "rgba(255, 210, 138, 0.88)",
+    "--effect-drop-cell": "#ffd28a",
+    "--effect-drop-shadow": "rgba(255, 210, 138, 0.5)",
+    "--effect-partial-on": "#fff1d8",
+    "--effect-partial-edge": "#ffd28a",
     "--button-bg": "rgba(40, 39, 38, 0.58)",
     "--button-hover-bg": "rgba(255, 255, 255, 0.08)",
     "--button-border": "#42403b",
@@ -350,11 +379,12 @@ function renderProvider(provider, compact = false) {
   node.querySelector(".meta-right").textContent = provider.state === "error" ? "Check API" : provider.metaRight;
 
   const pill = node.querySelector(".source-pill");
-  pill.className = `source-pill ${provider.state}`;
+  pill.className = `source-pill ${statusClassByState[provider.state]}`;
   pill.textContent = stateMessages[provider.state];
 
   const bar = node.querySelector(compact ? ".compact-bar" : ".bar");
   buildCells(bar, provider.state === "login" ? undefined : provider.percent, compact ? 12 : 20);
+  bar.classList.toggle("effect-on", effectPreview && provider.state !== "login");
 
   node.addEventListener("click", () => {
     const index = states.indexOf(provider.state);
@@ -373,6 +403,7 @@ function buildCells(container, percent, total) {
     cell.className = "cell";
     if (i < active) cell.classList.add("active");
     if (i === active - 1 && active > 0) cell.classList.add("current");
+    if (i === active && active > 0 && active < total) cell.classList.add("fx-partial");
     container.appendChild(cell);
   }
 }
@@ -525,6 +556,7 @@ function init() {
 
   const saved = localStorage.getItem("usageview.redesignv2.palette");
   applyTokens(saved ? JSON.parse(saved) : presets["Current App"]);
+  document.getElementById("effectToggle").checked = effectPreview;
 
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => setView(tab.dataset.view));
@@ -533,6 +565,12 @@ function init() {
 
   document.getElementById("resetBtn").addEventListener("click", () => applyTokens(presets["Current App"]));
   document.getElementById("randomBtn").addEventListener("click", randomVibe);
+  document.getElementById("darkModeBtn").addEventListener("click", () => applyTokens(presets["Current App"]));
+  document.getElementById("lightModeBtn").addEventListener("click", () => applyTokens({ ...presets["Current App"], ...presets["Light Paper"] }));
+  document.getElementById("effectToggle").addEventListener("change", (event) => {
+    effectPreview = event.target.checked;
+    renderProviders();
+  });
   document.getElementById("copyBtn").addEventListener("click", async () => {
     updateExport();
     const value = document.getElementById("exportBox").value;
