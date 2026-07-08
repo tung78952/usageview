@@ -46,6 +46,24 @@ const statusClassByState = {
 };
 
 let effectPreview = true;
+const inspectTargets = [
+  { selector: ".source-pill, .pill", label: "Status pill", tokens: ["--pill-live-bg", "--pill-live-border", "--pill-live-text", "--pill-cached-bg", "--pill-cached-border", "--pill-cached-text", "--pill-paused-bg", "--pill-paused-border", "--pill-paused-text", "--pill-error-bg", "--pill-error-border", "--pill-error-text"] },
+  { selector: ".bar, .compact-bar, .cell", label: "Usage bar and effect", tokens: ["--bar-empty", "--bar-active", "--bar-current", "--bar-border", "--bar-glow", "--effect-sweep", "--effect-delta", "--effect-delta-border", "--effect-particle", "--effect-drop-cell", "--effect-drop-shadow", "--effect-partial-on", "--effect-partial-edge"] },
+  { selector: ".percent, .compact-percent", label: "Percent number", tokens: ["--percent-text", "--fg", "--claude", "--codex", "--codex-2"] },
+  { selector: ".message, .compact-message", label: "Reset/message text", tokens: ["--message-text", "--muted", "--warn", "--danger"] },
+  { selector: ".usage-meta, .compact-meta, .meta-left, .meta-right", label: "Meta text", tokens: ["--meta-text", "--muted", "--updated-ago-text"] },
+  { selector: ".updated-ago", label: "Updated ago text", tokens: ["--updated-ago-text", "--muted"] },
+  { selector: ".mark, .provider-name", label: "Provider mark/name", tokens: ["--claude", "--codex", "--codex-2", "--header-text", "--bg"] },
+  { selector: ".usage, .compact-usage, .mini-card", label: "Provider tile/card", tokens: ["--card-bg", "--card-bg-strong", "--border", "--claude", "--codex", "--codex-2", "--accent", "--shadow"] },
+  { selector: "button, .window-control", label: "Button/control", tokens: ["--button-bg", "--button-hover-bg", "--button-border", "--button-text", "--primary-bg", "--primary-border", "--primary-text", "--danger", "--accent"] },
+  { selector: "input, select, textarea", label: "Input/select", tokens: ["--input-bg", "--input-border", "--fg", "--muted", "--focus", "--accent"] },
+  { selector: ".status-line", label: "Settings status line", tokens: ["--card-bg", "--border", "--muted", "--accent", "--fg"] },
+  { selector: ".widget-header, .titlebar", label: "Header/titlebar", tokens: ["--surface", "--border", "--header-text", "--muted", "--button-bg", "--button-border", "--button-text", "--accent", "--danger"] },
+  { selector: ".widget-shell, .compact-widget-shell, .control-shell", label: "Window shell", tokens: ["--bg", "--surface", "--surface-2", "--border", "--shadow", "--inset-highlight", "--panel-opacity", "--lab-bg"] },
+  { selector: ".lab-topbar, .panel-head, .panel-tools, .color-group", label: "Color lab panel", tokens: ["--lab-bg", "--surface", "--surface-2", "--border", "--shadow", "--header-text", "--muted", "--button-bg"] },
+];
+
+let selectedInspectElement = null;
 
 const tokenGroups = [
   {
@@ -462,6 +480,7 @@ function renderColorPanel() {
     group.tokens.forEach(([token, label]) => {
       const row = document.createElement("div");
       row.className = "color-row";
+      row.dataset.token = token;
       row.innerHTML = `
         <label for="${token.slice(2)}">${label}</label>
         <input id="${token.slice(2)}" type="color" data-token="${token}" />
@@ -483,6 +502,51 @@ function renderColorPanel() {
   });
 }
 
+function filterColorRows(tokens = null) {
+  const tokenSet = tokens ? new Set(tokens) : null;
+  document.querySelectorAll(".color-row").forEach((row) => {
+    const token = row.dataset.token;
+    const match = !tokenSet || tokenSet.has(token);
+    row.classList.toggle("is-hidden", !match);
+    row.classList.toggle("is-match", !!tokenSet && match);
+  });
+  document.querySelectorAll(".color-group").forEach((group) => {
+    const hasVisible = !!group.querySelector(".color-row:not(.is-hidden)");
+    group.classList.toggle("is-hidden", !hasVisible);
+  });
+}
+
+function clearInspection() {
+  selectedInspectElement?.classList.remove("inspect-selected");
+  selectedInspectElement = null;
+  const status = document.getElementById("inspectStatus");
+  if (status) status.textContent = "Click any part of the preview to show only the related color controls.";
+  filterColorRows(null);
+}
+
+function selectInspectTarget(config, element) {
+  selectedInspectElement?.classList.remove("inspect-selected");
+  selectedInspectElement = element;
+  selectedInspectElement.classList.add("inspect-selected");
+  const status = document.getElementById("inspectStatus");
+  if (status) status.textContent = `${config.label}: showing ${config.tokens.length} related color controls.`;
+  filterColorRows(config.tokens);
+  const firstToken = config.tokens[0];
+  const firstRow = document.querySelector(`.color-row[data-token="${firstToken}"]`);
+  firstRow?.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+function setupInspector() {
+  document.querySelector(".preview-pane")?.addEventListener("click", (event) => {
+    if (event.target.closest(".view-tabs")) return;
+    const match = inspectTargets.find((target) => event.target.closest(target.selector));
+    if (!match) return;
+    event.preventDefault();
+    event.stopPropagation();
+    selectInspectTarget(match, event.target.closest(match.selector));
+  }, true);
+  document.getElementById("showAllColorsBtn")?.addEventListener("click", clearInspection);
+}
 function syncControls() {
   editableTokens.forEach((token) => {
     const value = cssValue(token);
@@ -553,6 +617,7 @@ function init() {
   renderPreviewControls();
   renderPresets();
   renderColorPanel();
+  setupInspector();
 
   const saved = localStorage.getItem("usageview.redesignv2.palette");
   applyTokens(saved ? JSON.parse(saved) : presets["Current App"]);

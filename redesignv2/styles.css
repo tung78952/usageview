@@ -474,6 +474,28 @@ input:focus, select:focus, textarea:focus { outline: 1px solid var(--focus); }
 }
 .preview-control input { grid-column: 1 / -1; padding: 0; }
 .preview-control button { grid-column: 1 / -1; min-height: 28px; }
+.inspect-status {
+  margin: 0 0 9px;
+  color: var(--muted);
+  font: 650 11px/1.4 var(--font-body);
+}
+.inspect-selected {
+  position: relative;
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--focus) 22%, transparent), 0 0 18px color-mix(in srgb, var(--focus) 35%, transparent) !important;
+}
+.color-group.is-hidden,
+.color-row.is-hidden { display: none; }
+.color-row.is-match {
+  margin: -2px;
+  padding: 2px;
+  border-left: 3px solid var(--focus);
+  background: color-mix(in srgb, var(--focus) 10%, transparent);
+}
+.color-row.is-match label { color: var(--header-text); }
+.preview-stage { cursor: crosshair; }
+.view-tabs, .view-tabs * { cursor: default; }
 .color-groups { display: grid; gap: 12px; }
 .color-group h2 {
   margin: 0 0 10px;
