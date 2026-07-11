@@ -43,7 +43,7 @@ type Settings = {
   showCodex1: boolean;
 };
 
-type AppMode = "widget" | "settings" | "compact";
+type AppMode = "widget" | "settings" | "compact" | "mini";
 
 type WindowGeometry = {
   width: number;
@@ -86,13 +86,15 @@ const COMPACT_MIN_WIDTH = 260;
 const COMPACT_MAX_WIDTH = 640;
 const COMPACT_LOCK_WIDTH = 260;
 const COMPACT_MIN_HEIGHT_FALLBACK = 130;
+const MINI_LOCK_WIDTH = 240;
+const MINI_MIN_HEIGHT_FALLBACK = 54;
 const MODE_KEY = "usageview.mode";
 let windowGeometryCache: Partial<Record<AppMode, WindowGeometry>> | undefined;
 
 function loadMode(): AppMode {
   try {
     const saved = localStorage.getItem(MODE_KEY);
-    if (saved === "compact" || saved === "widget") return saved;
+    if (saved === "mini" || saved === "compact" || saved === "widget") return saved;
   } catch {
     // ignore
   }
@@ -100,7 +102,7 @@ function loadMode(): AppMode {
 }
 
 function saveMode(mode: AppMode) {
-  if (mode === "widget" || mode === "compact") localStorage.setItem(MODE_KEY, mode);
+  if (mode === "widget" || mode === "compact" || mode === "mini") localStorage.setItem(MODE_KEY, mode);
 }
 
 type EffectParticle = {
@@ -238,6 +240,7 @@ function saveWindowGeometry(mode: AppMode, geometry: WindowGeometry) {
 
 function defaultWindowSize(mode: AppMode) {
   if (mode === "settings") return { width: 460, height: 760 };
+  if (mode === "mini") return { width: MINI_LOCK_WIDTH, height: 124 };
   if (mode === "compact") return { width: 320, height: 238 };
   return { width: 392, height: 500 };
 }
@@ -336,9 +339,9 @@ function normalizeWindowGeometry(mode: AppMode, geometry: Partial<WindowGeometry
   const targetRect = nearestScreenRect(positionProbe, fallbackPosition, screenRects);
   const scale = targetRect?.scale ?? (window.devicePixelRatio || 1);
   const fallbackSize = defaultWindowSize(mode);
-  const minWidthL = mode === "settings" ? 430 : mode === "compact" ? COMPACT_MIN_WIDTH : WIDGET_MIN_WIDTH;
-  const minHeightL = mode === "settings" ? 620 : mode === "compact" ? COMPACT_MIN_HEIGHT_FALLBACK : WIDGET_MIN_HEIGHT_FALLBACK;
-  const maxWidthL = mode === "compact" ? COMPACT_MAX_WIDTH : mode === "widget" ? WIDGET_MAX_WIDTH : Math.max(minWidthL, fallbackSize.width);
+  const minWidthL = mode === "settings" ? 430 : mode === "mini" ? MINI_LOCK_WIDTH : mode === "compact" ? COMPACT_MIN_WIDTH : WIDGET_MIN_WIDTH;
+  const minHeightL = mode === "settings" ? 620 : mode === "mini" ? MINI_MIN_HEIGHT_FALLBACK : mode === "compact" ? COMPACT_MIN_HEIGHT_FALLBACK : WIDGET_MIN_HEIGHT_FALLBACK;
+  const maxWidthL = mode === "mini" ? MINI_LOCK_WIDTH : mode === "compact" ? COMPACT_MAX_WIDTH : mode === "widget" ? WIDGET_MAX_WIDTH : Math.max(minWidthL, fallbackSize.width);
   const minWidth = Math.round(minWidthL * scale);
   const minHeight = Math.round(minHeightL * scale);
   const maxWindowWidth = mode === "settings"
@@ -1059,12 +1062,12 @@ function WidgetApp() {
 
 
   useEffect(() => {
-    if (mode !== "widget" && mode !== "compact") {
+    if (mode !== "widget" && mode !== "compact" && mode !== "mini") {
       void getCurrentWindow().setMinSize(new LogicalSize(430, 620)).catch(() => undefined);
       return;
     }
 
-    if (mode === "compact") {
+    if (mode === "compact" || mode === "mini") {
       const appWindow = getCurrentWindow();
       let animationFrame = 0;
       let lastCompactHeight = -1;
@@ -1080,12 +1083,15 @@ function WidgetApp() {
         animationFrame = window.requestAnimationFrame(() => {
           const providers = compactProvidersRef.current;
           if (!providers) return;
-          const height = Math.max(COMPACT_MIN_HEIGHT_FALLBACK, Math.ceil(providers.scrollHeight + 14));
-          void appWindow.setMinSize(new LogicalSize(COMPACT_LOCK_WIDTH, height)).catch(() => undefined);
-          void appWindow.setMaxSize(new LogicalSize(COMPACT_LOCK_WIDTH, height)).catch(() => undefined);
+          const lockWidth = mode === "mini" ? MINI_LOCK_WIDTH : COMPACT_LOCK_WIDTH;
+          const minHeight = mode === "mini" ? MINI_MIN_HEIGHT_FALLBACK : COMPACT_MIN_HEIGHT_FALLBACK;
+          const menuHeight = compactMenuOpen ? Math.ceil((document.querySelector<HTMLElement>(".compact-menu")?.scrollHeight ?? 0) + 18) : 0;
+          const height = Math.max(minHeight, Math.ceil(providers.scrollHeight + 14), menuHeight);
+          void appWindow.setMinSize(new LogicalSize(lockWidth, height)).catch(() => undefined);
+          void appWindow.setMaxSize(new LogicalSize(lockWidth, height)).catch(() => undefined);
           if (height !== lastCompactHeight) {
             lastCompactHeight = height;
-            void appWindow.setSize(new LogicalSize(COMPACT_LOCK_WIDTH, height)).catch(() => undefined);
+            void appWindow.setSize(new LogicalSize(lockWidth, height)).catch(() => undefined);
           }
         });
       }
@@ -1146,7 +1152,7 @@ function WidgetApp() {
       window.cancelAnimationFrame(animationFrame);
       observer.disconnect();
     };
-  }, [mode, settings.theme, snapshots.claude, snapshots.codex, snapshots["codex-1"], settings.showClaude, settings.showCodex, settings.showCodex1]);
+  }, [mode, settings.theme, snapshots.claude, snapshots.codex, snapshots["codex-1"], settings.showClaude, settings.showCodex, settings.showCodex1, compactMenuOpen]);
 
   async function saveCurrentGeometryNow(targetMode = modeRef.current) {
     // Never persist before the saved geometry has been restored, or a startup resize event would
@@ -1495,6 +1501,29 @@ function WidgetApp() {
     !shouldAutoRefreshProvider(p, snapshots[p], now, lastLimitedAutoRefreshRef.current);
   const agoFor = (p: Provider) => formatAgo(lastFreshAtRef.current[p]);
 
+  if (mode === "mini") {
+    return (
+      <main className={`compact-widget mini-widget ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={prepareCompactDrag} onMouseMove={maybeStartCompactDrag} onContextMenu={openCompactMenu} onClick={() => { if (compactMenuOpen) setCompactMenuOpen(false); }}>
+        <div ref={compactProvidersRef} className="mini-providers">
+          {shown.length > 0 ? shown.map((provider) => (
+            <MiniUsageRow key={provider} snapshot={snapshots[provider]} paused={isPaused(provider)} updatedAgo={agoFor(provider)} flash={flashSet.has(provider)} />
+          )) : <EmptyProviderState />}
+        </div>
+        {compactMenuOpen && (
+          <div className="compact-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+            <button className="mode-current" disabled>Mini view</button>
+            <button onClick={() => { setCompactMenuOpen(false); setMode("compact"); }}>Compact view</button>
+            <button onClick={() => { setCompactMenuOpen(false); setMode("widget"); }}>Full view</button>
+            <button onClick={() => { togglePinned(); setCompactMenuOpen(false); }}>{settings.alwaysOnTop ? "Unpin" : "Pin"}</button>
+            <button onClick={() => { setCompactMenuOpen(false); void refreshAll(); }}>Refresh</button>
+            <button onClick={() => { setCompactMenuOpen(false); void invoke("toggle_settings_window"); }}>Settings</button>
+            <button className="danger" onClick={() => { setCompactMenuOpen(false); void closeWindow(); }}>Close</button>
+          </div>
+        )}
+      </main>
+    );
+  }
+
   if (mode === "compact") {
     // Hover no longer swaps to the full UsageBlock (that resized the tile / grew the widget). Instead the
     // compact tile stays put and its .compact-meta[data-tip] tooltip fades up in place on hover.
@@ -1516,10 +1545,12 @@ function WidgetApp() {
         </div>
         {compactMenuOpen && (
           <div className="compact-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+            <button onClick={() => { setCompactMenuOpen(false); setMode("mini"); }}>Mini view</button>
+            <button className="mode-current" disabled>Compact view</button>
+            <button onClick={() => { setCompactMenuOpen(false); setMode("widget"); }}>Full view</button>
             <button onClick={() => { togglePinned(); setCompactMenuOpen(false); }}>{settings.alwaysOnTop ? "Unpin" : "Pin"}</button>
             <button onClick={() => { setCompactMenuOpen(false); void refreshAll(); }}>Refresh</button>
             <button onClick={() => { setCompactMenuOpen(false); void invoke("toggle_settings_window"); }}>Settings</button>
-            <button onClick={() => { setCompactMenuOpen(false); setMode("widget"); }}>Full view</button>
             <button className="danger" onClick={() => { setCompactMenuOpen(false); void closeWindow(); }}>Close</button>
           </div>
         )}
@@ -2159,6 +2190,24 @@ function CompactUsageBlock({ snapshot, flash = false, paused = false, updatedAgo
   );
 }
 
+function MiniUsageRow({ snapshot, paused = false, updatedAgo, flash = false }: { snapshot: UsageSnapshot; paused?: boolean; updatedAgo?: string; flash?: boolean }) {
+  const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
+  const stale = isStale(snapshot);
+  const state = stale ? "stale" : snapshot.status !== "ok" ? "warn" : paused ? "paused" : "ok";
+  const metaLeft = usageMetaLeft(snapshot, percent);
+  const metaRight = usageMetaRight(snapshot);
+  const tooltip = `${providerLabel(snapshot.provider)} · ${readableStatus(snapshot.status)}${updatedAgo ? ` · updated ${updatedAgo}` : ""}\n${metaLeft} · ${metaRight}`;
+  return (
+    <article className={`mini-usage provider-tile ${snapshot.provider}${flash ? " mark-flash" : ""}`} data-tip={tooltip}>
+      <span className={`mini-status ${state}`} aria-label={state} />
+      <span className="mini-provider"><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</span>
+      <strong className="mini-percent">{percent !== undefined ? `${Math.round(percent)}%` : "--"}</strong>
+      <span className="mini-bar" aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
+        {buildUsageCells(percent, 8, false)}
+      </span>
+    </article>
+  );
+}
 function UsageBlock({ snapshot, compact = false, flash = false, paused = false, updatedAgo, effect, dropCell = false }: { snapshot: UsageSnapshot; compact?: boolean; flash?: boolean; paused?: boolean; updatedAgo?: string; effect?: UsageEffect; dropCell?: boolean }) {
   const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
   const stale = isStale(snapshot);
