@@ -111,6 +111,7 @@ type EffectParticle = {
   y: number;
   size: number;
   delay: number;
+  position: number;
 };
 
 type UsageEffect = {
@@ -2024,11 +2025,12 @@ function snapshotPercent(snapshot: UsageSnapshot): number | undefined {
 }
 
 function makeUsageEffect(from: number, to: number): UsageEffect {
-  return { from, to, particles: makeEffectParticles() };
+  return { from, to, particles: makeEffectParticles(from, to) };
 }
 
-function makeEffectParticles(): EffectParticle[] {
-  const count = 12 + Math.floor(Math.random() * 6);
+function makeEffectParticles(from: number, to: number): EffectParticle[] {
+  const delta = Math.abs(to - from);
+  const count = Math.max(10, Math.min(30, 10 + Math.ceil(delta * 0.65)));
   return Array.from({ length: count }, (_, index) => {
     const angle = (Math.PI * 2 * index) / count + (Math.random() - 0.5) * 1.1;
     const distance = 20 + Math.random() * 44;
@@ -2037,6 +2039,7 @@ function makeEffectParticles(): EffectParticle[] {
       y: Math.round(Math.sin(angle) * distance * 0.8 + (Math.random() - 0.5) * 14),
       size: Math.random() > 0.72 ? 5 : Math.random() > 0.35 ? 4 : 3,
       delay: Math.round(Math.random() * 150),
+      position: delta <= 1 ? 1 : Math.max(0, Math.min(1, (index + Math.random()) / count)),
     };
   });
 }
@@ -2131,6 +2134,7 @@ function EffectOverlays({ effect, dropCell }: { effect?: UsageEffect; dropCell: 
             "--particle-y": `${particle.y}px`,
             "--particle-size": `${particle.size}px`,
             "--particle-delay": `${particle.delay}ms`,
+            "--particle-left": `${Math.min(effect.from, effect.to) + Math.abs(effect.to - effect.from) * particle.position}%`,
           } as React.CSSProperties}
           aria-hidden="true"
         />
@@ -2139,28 +2143,36 @@ function EffectOverlays({ effect, dropCell }: { effect?: UsageEffect; dropCell: 
   );
 }
 
-function buildUsageCells(percent: number | undefined, cellCount: number, showFxPartial: boolean): ReactNode[] {
+function buildUsageCells(percent: number | undefined, cellCount: number, effect?: UsageEffect): ReactNode[] {
   const normalized = Math.max(0, Math.min(100, Number(percent ?? 0)));
   const cellWidth = 100 / cellCount;
   const fullCells = Math.floor(normalized / cellWidth);
   const remainder = normalized - fullCells * cellWidth;
   const partialRatio = remainder > 0 && fullCells < cellCount ? Math.max(0.04, Math.min(0.96, remainder / cellWidth)) : 0;
-  const miniCount = Math.max(1, Math.min(5, Math.ceil(partialRatio * 5)));
+  const effectStart = effect ? Math.min(effect.from, effect.to) : 0;
+  const effectEnd = effect ? Math.max(effect.from, effect.to) : 0;
 
   return Array.from({ length: cellCount }, (_, index) => {
+    const cellStart = index * cellWidth;
+    const cellEnd = cellStart + cellWidth;
+    const intersectsEffect = !!effect && effectEnd > cellStart && effectStart < cellEnd;
+    if (intersectsEffect) {
+      const filledMinis = Math.max(0, Math.min(10, Math.ceil(((normalized - cellStart) / cellWidth) * 10)));
+      return (
+        <span key={index} className="cell partial current fx-partial">
+          {Array.from({ length: 10 }, (_, mini) => {
+            const miniStart = cellStart + mini * (cellWidth / 10);
+            const on = mini < filledMinis;
+            const added = on && miniStart >= effectStart && miniStart < effectEnd;
+            return <span key={mini} className={`mini-cell${on ? " on" : ""}${added ? " added" : ""}${on && mini === filledMinis - 1 ? " edge" : ""}`} />;
+          })}
+        </span>
+      );
+    }
     if (index < fullCells) {
       return <span key={index} className={`cell active${index === fullCells - 1 && partialRatio === 0 ? " current" : ""}`} />;
     }
     if (index === fullCells && partialRatio > 0) {
-      if (showFxPartial) {
-        return (
-          <span key={index} className="cell partial current fx-partial" style={{ "--partial-ratio": partialRatio } as React.CSSProperties}>
-            {Array.from({ length: 5 }, (_, mini) => (
-              <span key={mini} className={`mini-cell ${mini < miniCount ? `on${mini === miniCount - 1 ? " edge" : ""}` : ""}`} />
-            ))}
-          </span>
-        );
-      }
       return <span key={index} className="cell partial current" style={{ "--partial-ratio": partialRatio } as React.CSSProperties} />;
     }
     return <span key={index} className="cell" />;
@@ -2187,7 +2199,7 @@ function CompactUsageBlock({ snapshot, flash = false, paused = false, updatedAgo
         <span className="compact-message">{providerMessage(snapshot)}</span>
       </div>
       <div className={`compact-bar${effect ? " usage-effect-bar" : ""}${effect && dropCell ? " drop-impact" : ""}`} style={effectStyle(effect, percent, true)} aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
-        {buildUsageCells(percent, 12, !!effect)}
+        {buildUsageCells(percent, 10, effect)}
         <EffectOverlays effect={effect} dropCell={dropCell} />
         <LiquidLayers />
       </div>
@@ -2213,7 +2225,7 @@ function MiniUsageRow({ snapshot, paused = false, updatedAgo, flash = false }: {
       <span className="mini-provider"><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</span>
       <strong className="mini-percent">{percent !== undefined ? `${Math.round(percent)}%` : "--"}</strong>
       <span className="mini-bar" style={{ "--bar-fill": `${percent ?? 0}%` } as React.CSSProperties} aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
-        {buildUsageCells(percent, 8, false)}
+        {buildUsageCells(percent, 8)}
       </span>
       <span className="mini-details" aria-hidden="true">
         <span className="mini-reset">{resetLabel}</span>
@@ -2241,7 +2253,7 @@ function UsageBlock({ snapshot, compact = false, flash = false, paused = false, 
         <span className="message">{providerMessage(snapshot)}</span>
       </div>
       <div className={`bar${effect ? " usage-effect-bar" : ""}${effect && dropCell ? " drop-impact" : ""}`} style={effectStyle(effect, percent)} aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
-        {buildUsageCells(percent, 10, !!effect)}
+        {buildUsageCells(percent, 10, effect)}
         <EffectOverlays effect={effect} dropCell={dropCell} />
         <LiquidLayers />
       </div>

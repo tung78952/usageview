@@ -241,7 +241,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   height: 12px;
   padding: 2px;
   display: grid;
-  grid-template-columns: repeat(12, 1fr);
+  grid-template-columns: repeat(10, 1fr);
   gap: 1px;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -516,7 +516,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
    ==== USAGE EFFECT START ==== */
 .cell.partial.fx-partial {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(10, 1fr);
   column-gap: 1px;
   padding: 0;
   background: color-mix(in srgb, var(--fg) 9%, transparent);
@@ -546,6 +546,9 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
     0 0 22px color-mix(in srgb, var(--tone) 42%, transparent),
     1px 0 0 color-mix(in srgb, var(--tone) 78%, #fff),
     inset 0 0 0 1px rgba(255, 255, 255, 0.34);
+}
+.cell.partial.fx-partial .mini-cell.added {
+  animation: usage-mini-cell-land var(--effect-duration, 4000ms) cubic-bezier(.16, 1, .3, 1) both;
 }
 .compact-bar .cell.partial.fx-partial {
   column-gap: 1px;
@@ -659,7 +662,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   animation: usage-drop-cell calc(var(--effect-duration, 4000ms) * 0.46) cubic-bezier(0.22, 0.9, 0.22, 1) forwards;
 }
 .effect-particle {
-  left: var(--delta-edge);
+  left: var(--particle-left, var(--delta-edge));
   top: 50%;
   width: var(--particle-size);
   height: var(--particle-size);
@@ -684,6 +687,11 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   0%, 26% { filter: brightness(1); }
   42%, 62% { filter: brightness(var(--effect-bar-brightness, 1)); }
   100% { filter: brightness(1); }
+}
+@keyframes usage-mini-cell-land {
+  0%, 34% { opacity: .18; transform: translateY(-5px); filter: brightness(1); }
+  46%, 64% { opacity: 1; transform: translateY(0); filter: brightness(1.45); }
+  100% { opacity: 1; transform: translateY(0); filter: brightness(1); }
 }
 @keyframes usage-delta-range {
   0%, 12% { opacity: 0; transform: scaleX(.72); transform-origin: right center; }
