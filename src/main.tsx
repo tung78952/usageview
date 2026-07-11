@@ -1,9 +1,11 @@
 import React, { Component, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow, LogicalPosition, LogicalSize } from "@tauri-apps/api/window";
+import { availableMonitors, getCurrentWindow, LogicalSize, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "./styles.css";
+import "./glass-theme.css";
+import "./glass-effect.css";
 
 type Provider = "claude" | "codex" | "codex-1";
 type UsageStatus = "ok" | "not_open" | "not_logged_in" | "not_found" | "parser_failed" | "page_unavailable";
@@ -25,7 +27,7 @@ type Settings = {
   claudeUrl: string;
   codexUrl: string;
   codex1Url: string;
-  theme: "terminal" | "light";
+  theme: "terminal" | "light" | "glass-light" | "glass-dark";
   opacity: number;
   uiScale: number;
   alwaysOnTop: boolean;
@@ -50,6 +52,12 @@ type WindowGeometry = {
   y: number;
 };
 
+// All window geometry (WindowGeometry) and screen rects below are in PHYSICAL pixels: they live in the
+// OS virtual-desktop coordinate space (what outerPosition()/availableMonitors() return). Physical is the
+// only unambiguous space across multiple monitors with different DPI/scale — mixing logical spaces per
+// monitor is what previously made a saved position on a scaled 2nd monitor look "off-screen" and reset.
+type ScreenRect = WindowGeometry & { scale: number };
+
 const defaultSettings: Settings = {
   claudeUrl: "https://claude.ai/settings/usage",
   codexUrl: "https://chatgpt.com/codex/cloud/settings/analytics#usage",
@@ -70,7 +78,7 @@ const defaultSettings: Settings = {
   showCodex1: false,
 };
 
-const GEOMETRY_KEY = "usageview.windowGeometry.v6";
+const GEOMETRY_KEY = "usageview.windowGeometry.v7";
 const WIDGET_MIN_WIDTH = 320;
 const WIDGET_MAX_WIDTH = 900;
 const WIDGET_MIN_HEIGHT_FALLBACK = 260;
@@ -79,6 +87,7 @@ const COMPACT_MAX_WIDTH = 640;
 const COMPACT_LOCK_WIDTH = 260;
 const COMPACT_MIN_HEIGHT_FALLBACK = 130;
 const MODE_KEY = "usageview.mode";
+let windowGeometryCache: Partial<Record<AppMode, WindowGeometry>> | undefined;
 
 function loadMode(): AppMode {
   try {
@@ -121,7 +130,7 @@ function loadSettings(): Settings {
     return {
       ...loaded,
       uiScale: 1,
-      theme: loaded.theme === "light" ? "light" : "terminal", // glass/dark themes were removed
+      theme: normalizeTheme(loaded.theme),
       effectsEnabled: loaded.effectsEnabled ?? true,
       effectDurationMs: clampNumber(loaded.effectDurationMs, 800, 8000, 4000),
       effectBarBrightness: clampNumber(loaded.effectBarBrightness, 0.45, 1.8, 1.25),
@@ -147,8 +156,45 @@ function saveSettings(settings: Settings) {
   window.dispatchEvent(new Event("usageview:settings"));
 }
 
+// Legacy/unknown theme values normalize to a supported one. `glass` was an old experimental value.
+function normalizeTheme(value: unknown): Settings["theme"] {
+  switch (value) {
+    case "light":
+    case "glass-light":
+    case "glass-dark":
+      return value;
+    case "glass":
+      return "glass-light";
+    default:
+      return "terminal";
+  }
+}
+
 function themeClass(theme: Settings["theme"]) {
-  return theme === "light" ? "theme-light" : "theme-terminal";
+  switch (theme) {
+    case "light":
+      return "theme-light";
+    case "glass-light":
+      return "theme-glass theme-glass-light";
+    case "glass-dark":
+      return "theme-glass theme-glass-dark";
+    default:
+      return "theme-terminal";
+  }
+}
+
+// Theme is the single source of truth; the Settings UI presents it as two segmented controls (Style + Mode).
+type ThemeStyle = "pixel" | "glass";
+type ThemeMode = "light" | "dark";
+function themeStyle(theme: Settings["theme"]): ThemeStyle {
+  return theme === "glass-light" || theme === "glass-dark" ? "glass" : "pixel";
+}
+function themeMode(theme: Settings["theme"]): ThemeMode {
+  return theme === "light" || theme === "glass-light" ? "light" : "dark";
+}
+function composeTheme(style: ThemeStyle, mode: ThemeMode): Settings["theme"] {
+  if (style === "glass") return mode === "light" ? "glass-light" : "glass-dark";
+  return mode === "light" ? "light" : "terminal";
 }
 
 function panelStyle(settings: Settings): React.CSSProperties {
@@ -171,10 +217,23 @@ function loadWindowGeometry(): Partial<Record<AppMode, WindowGeometry>> {
   }
 }
 
+async function loadWindowGeometryAsync(): Promise<Partial<Record<AppMode, WindowGeometry>>> {
+  if (windowGeometryCache) return windowGeometryCache;
+  const localGeometry = loadWindowGeometry();
+  try {
+    const stored = await invoke<Partial<Record<AppMode, WindowGeometry>>>("load_window_geometry");
+    windowGeometryCache = Object.keys(stored).length ? stored : localGeometry;
+  } catch {
+    windowGeometryCache = localGeometry;
+  }
+  return windowGeometryCache;
+}
+
 function saveWindowGeometry(mode: AppMode, geometry: WindowGeometry) {
-  const normalized = normalizeWindowGeometry(mode, geometry, defaultWindowPosition(defaultSettings.corner));
-  const current = loadWindowGeometry();
-  localStorage.setItem(GEOMETRY_KEY, JSON.stringify({ ...current, [mode]: normalized }));
+  const current = windowGeometryCache ?? loadWindowGeometry();
+  windowGeometryCache = { ...current, [mode]: geometry };
+  localStorage.setItem(GEOMETRY_KEY, JSON.stringify(windowGeometryCache));
+  void invoke("save_window_geometry", { mode, geometry }).catch(() => undefined);
 }
 
 function defaultWindowSize(mode: AppMode) {
@@ -183,70 +242,139 @@ function defaultWindowSize(mode: AppMode) {
   return { width: 392, height: 500 };
 }
 
+// Fallback corner position in PHYSICAL px on the primary monitor. window.screen.* is CSS/logical px, so
+// scale by devicePixelRatio to land in the same physical space as everything else.
 function defaultWindowPosition(corner: Settings["corner"]) {
+  const dpr = window.devicePixelRatio || 1;
   const safeInset = Math.max(20, Math.min(80, Math.floor((window.screen.availWidth || 900) * 0.04)));
   const safeWidth = Math.max(360, window.screen.availWidth || 900);
   const safeHeight = Math.max(500, window.screen.availHeight || 700);
+  const widget = defaultWindowSize("widget");
   const positions: Record<Settings["corner"], { x: number; y: number }> = {
     "top-left": { x: safeInset, y: safeInset },
-    "top-right": { x: Math.max(safeInset, safeWidth - defaultWindowSize("widget").width - safeInset), y: safeInset },
-    "bottom-left": { x: safeInset, y: Math.max(safeInset, safeHeight - defaultWindowSize("widget").height - safeInset) },
-    "bottom-right": { x: Math.max(safeInset, safeWidth - defaultWindowSize("widget").width - safeInset), y: Math.max(safeInset, safeHeight - defaultWindowSize("widget").height - safeInset) },
+    "top-right": { x: Math.max(safeInset, safeWidth - widget.width - safeInset), y: safeInset },
+    "bottom-left": { x: safeInset, y: Math.max(safeInset, safeHeight - widget.height - safeInset) },
+    "bottom-right": { x: Math.max(safeInset, safeWidth - widget.width - safeInset), y: Math.max(safeInset, safeHeight - widget.height - safeInset) },
   };
-  return positions[corner];
+  const pos = positions[corner];
+  return { x: Math.round(pos.x * dpr), y: Math.round(pos.y * dpr) };
 }
 
-function isGeometryVisible(geometry: WindowGeometry) {
-  const screenWidth = window.screen.availWidth || 0;
-  const screenHeight = window.screen.availHeight || 0;
-  if (!screenWidth || !screenHeight) return true;
-  const visibleWidth = Math.min(screenWidth, geometry.x + geometry.width) - Math.max(0, geometry.x);
-  const visibleHeight = Math.min(screenHeight, geometry.y + geometry.height) - Math.max(0, geometry.y);
-  return visibleWidth >= 120 && visibleHeight >= 80;
+// Physical rect of the (single) browser screen — logical CSS px scaled by devicePixelRatio. Only a
+// fallback when availableMonitors() is unavailable; the origin is assumed at 0,0 (primary monitor).
+function browserScreenRects(): ScreenRect[] {
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.round((window.screen.availWidth || window.screen.width || 0) * dpr);
+  const height = Math.round((window.screen.availHeight || window.screen.height || 0) * dpr);
+  return width && height ? [{ x: 0, y: 0, width, height, scale: dpr }] : [];
 }
 
-function normalizeWindowGeometry(mode: AppMode, geometry: Partial<WindowGeometry> | undefined, fallbackPosition: { x: number; y: number }): WindowGeometry {
+// availableMonitors() returns position/size in PHYSICAL px already — use them directly (no dividing by
+// scaleFactor). scale is kept so size min/max bounds (declared in logical px) can be converted per-monitor.
+async function monitorScreenRects(): Promise<ScreenRect[]> {
+  try {
+    const monitors = await availableMonitors();
+    return monitors
+      .map((monitor) => ({
+        x: Math.round(monitor.position.x),
+        y: Math.round(monitor.position.y),
+        width: Math.round(monitor.size.width),
+        height: Math.round(monitor.size.height),
+        scale: monitor.scaleFactor || 1,
+      }))
+      .filter((rect) => rect.width > 0 && rect.height > 0);
+  } catch {
+    return [];
+  }
+}
+
+function visibleArea(geometry: WindowGeometry, rect: ScreenRect) {
+  const visibleWidth = Math.min(rect.x + rect.width, geometry.x + geometry.width) - Math.max(rect.x, geometry.x);
+  const visibleHeight = Math.min(rect.y + rect.height, geometry.y + geometry.height) - Math.max(rect.y, geometry.y);
+  return Math.max(0, visibleWidth) * Math.max(0, visibleHeight);
+}
+
+function isGeometryVisible(geometry: WindowGeometry, screenRects = browserScreenRects()) {
+  if (!screenRects.length) return true;
+  return screenRects.some((rect) => visibleArea(geometry, rect) >= 120 * 80);
+}
+
+function nearestScreenRect(geometry: WindowGeometry, fallbackPosition: { x: number; y: number }, screenRects: ScreenRect[]) {
+  if (!screenRects.length) return undefined;
+  const centerX = Number.isFinite(geometry.x) ? geometry.x + geometry.width / 2 : fallbackPosition.x;
+  const centerY = Number.isFinite(geometry.y) ? geometry.y + geometry.height / 2 : fallbackPosition.y;
+  return screenRects.reduce((nearest, rect) => {
+    const nearestX = Math.min(nearest.x + nearest.width, Math.max(nearest.x, centerX));
+    const nearestY = Math.min(nearest.y + nearest.height, Math.max(nearest.y, centerY));
+    const rectX = Math.min(rect.x + rect.width, Math.max(rect.x, centerX));
+    const rectY = Math.min(rect.y + rect.height, Math.max(rect.y, centerY));
+    const nearestDistance = (nearestX - centerX) ** 2 + (nearestY - centerY) ** 2;
+    const rectDistance = (rectX - centerX) ** 2 + (rectY - centerY) ** 2;
+    return rectDistance < nearestDistance ? rect : nearest;
+  }, screenRects[0]);
+}
+
+function clampPositionToScreen(geometry: WindowGeometry, fallbackPosition: { x: number; y: number }, screenRects: ScreenRect[]) {
+  const screenRect = nearestScreenRect(geometry, fallbackPosition, screenRects);
+  if (!screenRect) return geometry;
+  return {
+    ...geometry,
+    x: Math.min(screenRect.x + screenRect.width - geometry.width, Math.max(screenRect.x, geometry.x)),
+    y: Math.min(screenRect.y + screenRect.height - geometry.height, Math.max(screenRect.y, geometry.y)),
+  };
+}
+
+function normalizeWindowGeometry(mode: AppMode, geometry: Partial<WindowGeometry> | undefined, fallbackPosition: { x: number; y: number }, screenRects = browserScreenRects()): WindowGeometry {
+  // Pick the monitor the window will sit on (by position) so we can convert the logical-px size bounds
+  // below into this monitor's physical px. Position drives the choice; size fed as 0 to avoid NaN.
+  const positionProbe: WindowGeometry = {
+    width: Number.isFinite(geometry?.width) ? geometry!.width! : 0,
+    height: Number.isFinite(geometry?.height) ? geometry!.height! : 0,
+    x: Number.isFinite(geometry?.x) ? geometry!.x! : fallbackPosition.x,
+    y: Number.isFinite(geometry?.y) ? geometry!.y! : fallbackPosition.y,
+  };
+  const targetRect = nearestScreenRect(positionProbe, fallbackPosition, screenRects);
+  const scale = targetRect?.scale ?? (window.devicePixelRatio || 1);
   const fallbackSize = defaultWindowSize(mode);
-  const minWidth = mode === "settings" ? 430 : mode === "compact" ? COMPACT_MIN_WIDTH : WIDGET_MIN_WIDTH;
-  const minHeight = mode === "settings" ? 620 : mode === "compact" ? COMPACT_MIN_HEIGHT_FALLBACK : WIDGET_MIN_HEIGHT_FALLBACK;
-  const maxWidth = mode === "compact"
-    ? COMPACT_MAX_WIDTH
-    : mode === "widget"
-      ? WIDGET_MAX_WIDTH
-      : Math.max(minWidth, window.screen.availWidth || fallbackSize.width);
-  const maxHeight = Math.max(minHeight, window.screen.availHeight || fallbackSize.height);
-  const width = Number.isFinite(geometry?.width) ? Math.min(maxWidth, Math.max(minWidth, Math.round(geometry!.width!))) : fallbackSize.width;
-  const height = Number.isFinite(geometry?.height) ? Math.min(maxHeight, Math.max(minHeight, Math.round(geometry!.height!))) : fallbackSize.height;
-  const maxX = Math.max(0, maxWidth - width);
-  const maxY = Math.max(0, maxHeight - height);
+  const minWidthL = mode === "settings" ? 430 : mode === "compact" ? COMPACT_MIN_WIDTH : WIDGET_MIN_WIDTH;
+  const minHeightL = mode === "settings" ? 620 : mode === "compact" ? COMPACT_MIN_HEIGHT_FALLBACK : WIDGET_MIN_HEIGHT_FALLBACK;
+  const maxWidthL = mode === "compact" ? COMPACT_MAX_WIDTH : mode === "widget" ? WIDGET_MAX_WIDTH : Math.max(minWidthL, fallbackSize.width);
+  const minWidth = Math.round(minWidthL * scale);
+  const minHeight = Math.round(minHeightL * scale);
+  const maxWindowWidth = mode === "settings"
+    ? Math.max(minWidth, targetRect?.width ?? Math.round(maxWidthL * scale))
+    : Math.round(maxWidthL * scale);
+  const maxWindowHeight = Math.max(minHeight, targetRect?.height ?? Math.round(Math.max(minHeightL, fallbackSize.height) * scale));
+  const width = Number.isFinite(geometry?.width) ? Math.min(maxWindowWidth, Math.max(minWidth, Math.round(geometry!.width!))) : Math.round(fallbackSize.width * scale);
+  const height = Number.isFinite(geometry?.height) ? Math.min(maxWindowHeight, Math.max(minHeight, Math.round(geometry!.height!))) : Math.round(fallbackSize.height * scale);
   const rawX = Number.isFinite(geometry?.x) ? Math.round(geometry!.x!) : fallbackPosition.x;
   const rawY = Number.isFinite(geometry?.y) ? Math.round(geometry!.y!) : fallbackPosition.y;
 
-  const normalized = {
-    width,
-    height,
-    x: Math.min(maxX, Math.max(0, rawX)),
-    y: Math.min(maxY, Math.max(0, rawY)),
-  };
-  if (!isGeometryVisible(normalized)) {
-    return { width: fallbackSize.width, height: fallbackSize.height, x: fallbackPosition.x, y: fallbackPosition.y };
+  const normalized = { width, height, x: rawX, y: rawY };
+  if (isGeometryVisible(normalized, screenRects)) {
+    return clampPositionToScreen(normalized, fallbackPosition, screenRects);
   }
-  return normalized;
+  return clampPositionToScreen({ width, height, x: fallbackPosition.x, y: fallbackPosition.y }, fallbackPosition, screenRects);
+}
+
+async function normalizeWindowGeometryForMonitors(mode: AppMode, geometry: Partial<WindowGeometry> | undefined, fallbackPosition: { x: number; y: number }) {
+  const screenRects = await monitorScreenRects();
+  return normalizeWindowGeometry(mode, geometry, fallbackPosition, screenRects.length ? screenRects : browserScreenRects());
 }
 
 async function recoverVisibleWindow(mode: AppMode, corner: Settings["corner"]) {
   const appWindow = getCurrentWindow();
   const fallbackPosition = defaultWindowPosition(corner);
-  const saved = loadWindowGeometry()[mode];
-  const geometry = normalizeWindowGeometry(mode, saved, fallbackPosition);
+  const saved = (await loadWindowGeometryAsync())[mode];
+  const geometry = await normalizeWindowGeometryForMonitors(mode, saved, fallbackPosition);
   try {
     if (await appWindow.isMaximized()) await appWindow.unmaximize();
   } catch {
     // no-op: older platforms can reject this while the window is being created.
   }
   await appWindow.unminimize().catch(() => undefined);
-  await appWindow.setSize(new LogicalSize(geometry.width, geometry.height)).catch(() => undefined);
-  await appWindow.setPosition(new LogicalPosition(geometry.x, geometry.y)).catch(() => undefined);
+  await appWindow.setSize(new PhysicalSize(geometry.width, geometry.height)).catch(() => undefined);
+  await appWindow.setPosition(new PhysicalPosition(geometry.x, geometry.y)).catch(() => undefined);
   await appWindow.show().catch(() => undefined);
   await appWindow.setFocus().catch(() => undefined);
 }
@@ -256,14 +384,13 @@ async function recoverVisibleWindow(mode: AppMode, corner: Settings["corner"]) {
 // taller mode stays on-screen).
 async function resizeWindowForMode(mode: AppMode) {
   const appWindow = getCurrentWindow();
-  const scaleFactor = await appWindow.scaleFactor();
-  const position = (await appWindow.outerPosition()).toLogical(scaleFactor);
+  // Keep the current top-left (physical px); only change size. Saved size is physical too.
+  const position = await appWindow.outerPosition();
   const here = { x: Math.round(position.x), y: Math.round(position.y) };
-  const saved = loadWindowGeometry()[mode];
-  const size = defaultWindowSize(mode);
-  const geometry = normalizeWindowGeometry(
+  const saved = (await loadWindowGeometryAsync())[mode];
+  const geometry = await normalizeWindowGeometryForMonitors(
     mode,
-    { width: saved?.width ?? size.width, height: saved?.height ?? size.height, x: here.x, y: here.y },
+    { width: saved?.width, height: saved?.height, x: here.x, y: here.y },
     here,
   );
   try {
@@ -272,15 +399,16 @@ async function resizeWindowForMode(mode: AppMode) {
     // no-op
   }
   await appWindow.unminimize().catch(() => undefined);
-  await appWindow.setSize(new LogicalSize(geometry.width, geometry.height)).catch(() => undefined);
-  await appWindow.setPosition(new LogicalPosition(geometry.x, geometry.y)).catch(() => undefined);
+  await appWindow.setSize(new PhysicalSize(geometry.width, geometry.height)).catch(() => undefined);
+  await appWindow.setPosition(new PhysicalPosition(geometry.x, geometry.y)).catch(() => undefined);
 }
 
+// Returns the window geometry in PHYSICAL px (outer position + inner size), matching what is stored and
+// restored. No toLogical() conversion — physical keeps multi-monitor / mixed-DPI coordinates exact.
 async function readCurrentGeometry(): Promise<WindowGeometry> {
   const appWindow = getCurrentWindow();
-  const scaleFactor = await appWindow.scaleFactor();
-  const size = (await appWindow.innerSize()).toLogical(scaleFactor);
-  const position = (await appWindow.outerPosition()).toLogical(scaleFactor);
+  const size = await appWindow.innerSize();
+  const position = await appWindow.outerPosition();
   return {
     width: Math.round(size.width),
     height: Math.round(size.height),
@@ -795,9 +923,14 @@ function WidgetApp() {
   const [mode, setMode] = useState<AppMode>(loadMode);
   const [compactMenuOpen, setCompactMenuOpen] = useState(false);
   const [compactTimerSet, setCompactTimerSet] = useState<Set<Provider>>(new Set());
-  const [compactHovered, setCompactHovered] = useState<Provider | null>(null);
   const [settings, setSettings] = useState(loadSettings);
   const settingsRef = useRef(settings);
+  const modeRef = useRef(mode);
+  const skipInitialModeResizeRef = useRef(true);
+  // Guard against persisting the initial default position: the window is created visible at its
+  // tauri.conf.json corner and auto-fit fires resize events before recoverVisibleWindow has applied the
+  // saved position. Don't save geometry until the restore has run, or we'd overwrite it with the default.
+  const hasRestoredGeometryRef = useRef(false);
   const [snapshots, setSnapshots] = useState<Record<Provider, UsageSnapshot>>({
     claude: loadSnapshot("claude"),
     codex: loadSnapshot("codex"),
@@ -896,6 +1029,11 @@ function WidgetApp() {
   }, [settings]);
 
   useEffect(() => {
+    modeRef.current = mode;
+    void invoke("set_widget_mode", { mode }).catch(() => undefined);
+  }, [mode]);
+
+  useEffect(() => {
     void getCurrentWindow().setAlwaysOnTop(settings.alwaysOnTop);
   }, [settings.alwaysOnTop]);
 
@@ -903,11 +1041,19 @@ function WidgetApp() {
     const appWindow = getCurrentWindow();
     void appWindow.clearEffects().catch(() => undefined);
     // Reopen in the last-used mode + its saved geometry (mode here is the value restored by loadMode).
-    void recoverVisibleWindow(mode, settings.corner);
+    // Only allow geometry to be persisted once the restore has actually applied, so early auto-fit
+    // resize events can't save the initial default position over the saved one.
+    void recoverVisibleWindow(mode, settings.corner).finally(() => {
+      hasRestoredGeometryRef.current = true;
+    });
   }, []);
 
   useEffect(() => {
     saveMode(mode);
+    if (skipInitialModeResizeRef.current) {
+      skipInitialModeResizeRef.current = false;
+      return;
+    }
     void resizeWindowForMode(mode);
   }, [mode]);
 
@@ -1002,6 +1148,17 @@ function WidgetApp() {
     };
   }, [mode, settings.theme, snapshots.claude, snapshots.codex, snapshots["codex-1"], settings.showClaude, settings.showCodex, settings.showCodex1]);
 
+  async function saveCurrentGeometryNow(targetMode = modeRef.current) {
+    // Never persist before the saved geometry has been restored, or a startup resize event would
+    // overwrite the remembered position with the initial default one.
+    if (!hasRestoredGeometryRef.current) return;
+    try {
+      saveWindowGeometry(targetMode, await readCurrentGeometry());
+    } catch {
+      // Best-effort persistence; close/hide should never fail because geometry couldn't be read.
+    }
+  }
+
   useEffect(() => {
     const appWindow = getCurrentWindow();
     let saveTimer: number | undefined;
@@ -1009,11 +1166,20 @@ function WidgetApp() {
     let unlistenMove: (() => void) | undefined;
     let disposed = false;
 
+    function flushSave() {
+      window.clearTimeout(saveTimer);
+      if (!disposed) void saveCurrentGeometryNow(modeRef.current);
+    }
+
     function scheduleSave() {
       window.clearTimeout(saveTimer);
       saveTimer = window.setTimeout(async () => {
-        if (!disposed) saveWindowGeometry(mode, await readCurrentGeometry());
+        if (!disposed) await saveCurrentGeometryNow(modeRef.current);
       }, 250);
+    }
+
+    function saveWhenHidden() {
+      if (document.visibilityState === "hidden") flushSave();
     }
 
     void Promise.all([
@@ -1024,13 +1190,21 @@ function WidgetApp() {
       unlistenMove = moveUnlisten;
     });
 
+    document.addEventListener("visibilitychange", saveWhenHidden);
+    window.addEventListener("pagehide", flushSave);
+    window.addEventListener("beforeunload", flushSave);
+
     return () => {
+      flushSave();
       disposed = true;
       window.clearTimeout(saveTimer);
+      document.removeEventListener("visibilitychange", saveWhenHidden);
+      window.removeEventListener("pagehide", flushSave);
+      window.removeEventListener("beforeunload", flushSave);
       unlistenResize?.();
       unlistenMove?.();
     };
-  }, [mode]);
+  }, []);
 
   useEffect(() => {
     snapshotsRef.current = snapshots;
@@ -1284,6 +1458,7 @@ function WidgetApp() {
   }
 
   async function closeWindow() {
+    await saveCurrentGeometryNow();
     await getCurrentWindow().close();
   }
 
@@ -1321,25 +1496,19 @@ function WidgetApp() {
   const agoFor = (p: Provider) => formatAgo(lastFreshAtRef.current[p]);
 
   if (mode === "compact") {
-    // While a usage effect is running, freeze hover so a stray cursor move across a tile edge
-    // doesn't swap UsageBlock<->CompactUsageBlock — that remount restarts the CSS animation and
-    // replays the effect. Check any provider: hovering B while A animates would collapse A too.
-    const effectRunning = (["claude", "codex", "codex-1"] as Provider[]).some((p) => activeEffects[p] !== undefined);
+    // Hover no longer swaps to the full UsageBlock (that resized the tile / grew the widget). Instead the
+    // compact tile stays put and its .compact-meta[data-tip] tooltip fades up in place on hover.
     return (
       <main className={`compact-widget ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={prepareCompactDrag} onMouseMove={maybeStartCompactDrag} onContextMenu={openCompactMenu} onClick={() => { if (compactMenuOpen) setCompactMenuOpen(false); }}>
         <div ref={compactProvidersRef} className="compact-providers">
           {shown.length > 0 ? shown.map((provider) => (
             <div
               key={provider}
-              onMouseEnter={() => { if (effectRunning) return; setCompactHovered(provider); }}
-              onMouseLeave={() => { if (effectRunning) return; setCompactHovered(null); }}
               onClick={() => { if (compactMenuOpen) { setCompactMenuOpen(false); return; } if (!compactTimerSet.has(provider)) toggleCompactTimer(provider); }}
               style={{ cursor: compactTimerSet.has(provider) ? "default" : "pointer" }}
             >
               {compactTimerSet.has(provider)
                 ? <CompactTimerView snapshot={snapshots[provider]} onBack={() => toggleCompactTimer(provider)} paused={isPaused(provider)} />
-              : compactHovered === provider
-                ? <UsageBlock snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} />
                 : <CompactUsageBlock snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} />
               }
             </div>
@@ -1648,7 +1817,24 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
         <span className="save-state">{savedAt ? `Saved ${savedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Auto-save on"}</span>
       </div>
       <div className="settings-row">
-        <label>Theme<select value={settings.theme} onChange={(event) => patch({ theme: event.target.value as Settings["theme"] })}><option value="terminal">Dark</option><option value="light">Light</option></select></label>
+        <div className="seg-field">
+          <span className="seg-label">Style</span>
+          <div className="seg" role="group" aria-label="Theme style">
+            <button type="button" className={`seg-btn${themeStyle(settings.theme) === "pixel" ? " active" : ""}`} onClick={() => patch({ theme: composeTheme("pixel", themeMode(settings.theme)) })}>Pixel</button>
+            <button type="button" className={`seg-btn${themeStyle(settings.theme) === "glass" ? " active" : ""}`} onClick={() => patch({ theme: composeTheme("glass", themeMode(settings.theme)) })}>Glass</button>
+          </div>
+        </div>
+      </div>
+      <div className="settings-row">
+        <div className="seg-field">
+          <span className="seg-label">Mode</span>
+          <div className="seg" role="group" aria-label="Theme mode">
+            <button type="button" className={`seg-btn${themeMode(settings.theme) === "light" ? " active" : ""}`} onClick={() => patch({ theme: composeTheme(themeStyle(settings.theme), "light") })}>Light</button>
+            <button type="button" className={`seg-btn${themeMode(settings.theme) === "dark" ? " active" : ""}`} onClick={() => patch({ theme: composeTheme(themeStyle(settings.theme), "dark") })}>Dark</button>
+          </div>
+        </div>
+      </div>
+      <div className="settings-row">
         <label>Opacity<input type="range" min="0.45" max="1" step="0.01" value={settings.opacity} onChange={(event) => patch({ opacity: Number(event.target.value) })} /></label>
       </div>
       <div className="settings-row">
@@ -1822,13 +2008,70 @@ function effectStyle(effect: UsageEffect | undefined, fallbackPercent: number | 
   const width = Math.abs(to - from);
   const dropMinWidth = compact ? 6 : 8;
   const dropWidth = width > 0 ? `max(${dropMinWidth}px, ${width}%)` : `${dropMinWidth}px`;
+
+  // Glass liquid variables — mirror the prototype's barShell() math (redesign/interactive-prototype).
+  // These drive glass-effect.css; the Pixel effect ignores them. `--gl-drop-left/-width` are kept
+  // separate from the Pixel `--drop-left/-width` above so glass never shifts the Pixel drop-cell.
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+  const target = Math.max(from, to);
+  const glDropLeft = from <= 0 ? target / 2 : from / 2;
+  const flowWidth = Math.max(0, target - glDropLeft);
+  const leftWave = Math.max(0, glDropLeft);
+  const rightWave = Math.max(0, target - glDropLeft);
+  const pocketMin = compact ? 3 : 4;
+  const pocketWidth = width > 0 || flowWidth > 0
+    ? Math.min(target, Math.max(pocketMin, Math.min(18, width + 2), flowWidth * 0.28))
+    : 0;
+  const pocketStart = pocketWidth > 0
+    ? Math.max(0, Math.min(Math.max(0, target - pocketWidth), glDropLeft - pocketWidth / 2))
+    : 0;
+  const pocketOrigin = pocketWidth > 0 ? clamp(((glDropLeft - pocketStart) / pocketWidth) * 100, 0, 100) : 50;
+  const dropScale = clamp(0.72 + Math.sqrt(Math.max(0, width)) * 0.16, 0.72, 1.65);
+  const impactStrength = clamp(0.72 + Math.sqrt(Math.max(0, width)) * 0.14, 0.72, 1.55);
+  const rippleScale = clamp(1.55 + flowWidth / 8, 1.8, 6.8);
+  const glDropMinWidth = compact ? 5 : 8;
+  const glDropWidth = `max(${glDropMinWidth}px, ${flowWidth || 2}%)`;
+
   return {
     "--delta-start": `${start}%`,
     "--delta-width": `${width}%`,
     "--delta-edge": `${to}%`,
     "--drop-left": `${start + width / 2}%`,
     "--drop-width": dropWidth,
+    // Glass fill + liquid drivers (real prototype variable names).
+    "--bar-fill": `${to}%`,
+    "--gl-drop-left": `${glDropLeft}%`,
+    "--gl-drop-width": glDropWidth,
+    "--drop-scale": dropScale,
+    "--impact-strength": impactStrength,
+    "--flow-width": `${flowWidth}%`,
+    "--left-wave-width": `${leftWave}%`,
+    "--right-wave-width": `${rightWave}%`,
+    "--pocket-start": `${pocketStart}%`,
+    "--pocket-width": `${pocketWidth}%`,
+    "--pocket-origin": `${pocketOrigin}%`,
+    "--ripple-scale": rippleScale,
   } as React.CSSProperties;
+}
+
+// The 11 glass liquid layers (order matches the prototype markup). Hidden by default; shown/animated
+// only under .theme-glass. Rendered always so the glass fill (--bar-fill) shows even when idle.
+function LiquidLayers() {
+  return (
+    <>
+      <span className="liquid-refraction" aria-hidden="true" />
+      <span className="liquid-impact-pocket" aria-hidden="true" />
+      <span className="liquid-dimple" aria-hidden="true" />
+      <span className="liquid-neck-left" aria-hidden="true" />
+      <span className="liquid-neck" aria-hidden="true" />
+      <span className="liquid-fill-mask" aria-hidden="true" />
+      <span className="liquid-flow" aria-hidden="true" />
+      <span className="liquid-wave-left" aria-hidden="true" />
+      <span className="liquid-wave-right" aria-hidden="true" />
+      <span className="liquid-ripple" aria-hidden="true" />
+      <span className="liquid-drop" aria-hidden="true" />
+    </>
+  );
 }
 
 function EffectOverlays({ effect, dropCell }: { effect?: UsageEffect; dropCell: boolean }) {
@@ -1906,8 +2149,9 @@ function CompactUsageBlock({ snapshot, flash = false, paused = false, updatedAgo
       <div className={`compact-bar${effect ? " usage-effect-bar" : ""}${effect && dropCell ? " drop-impact" : ""}`} style={effectStyle(effect, percent, true)} aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
         {buildUsageCells(percent, 12, !!effect)}
         <EffectOverlays effect={effect} dropCell={dropCell} />
+        <LiquidLayers />
       </div>
-      <div className="compact-meta">
+      <div className="compact-meta" data-tip={`${metaLeft}\n${metaRight}`}>
         <span>{metaLeft}</span>
         <span>{metaRight}</span>
       </div>
@@ -1936,6 +2180,7 @@ function UsageBlock({ snapshot, compact = false, flash = false, paused = false, 
       <div className={`bar${effect ? " usage-effect-bar" : ""}${effect && dropCell ? " drop-impact" : ""}`} style={effectStyle(effect, percent)} aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
         {buildUsageCells(percent, 20, !!effect)}
         <EffectOverlays effect={effect} dropCell={dropCell} />
+        <LiquidLayers />
       </div>
       <div className="usage-meta" data-tip={`${metaLeft}\n${metaRight}`}>
         <span>{metaLeft}</span>

@@ -1,0 +1,635 @@
+/* ===================================================================
+   Glass theme skin (ported from redesign/interactive-prototype, concept-liquid).
+   Scoped entirely under .theme-glass. Additive: does NOT touch Pixel themes.
+   Selector mapping applied during port:
+     .concept-liquid                -> .theme-glass
+     .concept-liquid.theme-terminal -> .theme-glass.theme-glass-dark
+     .prototype-frame / .drop-cell-on wrappers removed
+     .prototype-panel               -> .control-shell
+     .bar.delta                     -> .bar.usage-effect-bar
+     root panels (.widget/.compact-widget/.control-shell) use compound
+       (.theme-glass sits on the SAME element as the panel root in the app)
+   =================================================================== */
+
+.theme-glass {
+  --paper-bg: #efe3c6;
+  --paper-panel: #f7edda;
+  --paper-panel-2: #e7d7b8;
+  --paper-ink: #30291f;
+  --paper-soft: #665842;
+  --paper-faint: #8b8273;
+  --paper-line: #cec4b2;
+  --paper-glass-bg: color-mix(in srgb, var(--paper-panel) 30%, transparent);
+  --paper-glass-line: color-mix(in srgb, var(--paper-line) 62%, transparent);
+  --paper-glass-edge: color-mix(in srgb, #fff 78%, transparent);
+  --paper-shadow: 0 20px 64px rgba(40, 28, 14, 0.16);
+  --glass-reflex-dark: 1;
+  --glass-reflex-light: 1;
+}
+
+.theme-glass.theme-glass-dark {
+  --paper-bg: #191a1a;
+  --paper-panel: #232424;
+  --paper-panel-2: #2d2e2e;
+  --paper-ink: #ecebe8;
+  --paper-soft: #b9b6af;
+  --paper-faint: #87837a;
+  --paper-line: #42403b;
+  --paper-glass-bg: color-mix(in srgb, #bbbbbc 11%, transparent);
+  --paper-glass-line: color-mix(in srgb, #fff 12%, transparent);
+  --paper-glass-edge: color-mix(in srgb, #fff 11%, transparent);
+  --paper-shadow: 0 24px 74px rgba(0, 0, 0, 0.52);
+  --glass-reflex-dark: 2;
+  --glass-reflex-light: .3;
+}
+
+.theme-glass.widget,
+.theme-glass.compact-widget,
+.theme-glass.control-shell,
+.theme-glass.control-shell {
+        --bg: var(--paper-bg);
+        --surface: var(--paper-panel);
+        --surface-2: var(--paper-panel-2);
+        --fg: var(--paper-ink);
+        --muted: var(--paper-soft);
+        --border: var(--paper-glass-line);
+        --shadow: color-mix(in srgb, #000 22%, transparent);
+        --accent: var(--paper-ink);
+        --claude: var(--paper-ink);
+        --codex: var(--paper-ink);
+        color: var(--paper-ink);
+        border: 1px solid var(--paper-glass-line);
+        border-radius: 18px;
+        /* Fade with the Opacity slider like Pixel (styles.css .widget). Default 0.96 -> gần đục (đọc rõ),
+           kéo thấp -> trong suốt thấy desktop. */
+        background:
+          radial-gradient(circle at 18% 0%, color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 22%), transparent), transparent 38%),
+          linear-gradient(145deg,
+            color-mix(in srgb, color-mix(in srgb, var(--paper-panel) 60%, var(--paper-bg)) var(--panel-opacity-pct), transparent),
+            color-mix(in srgb, var(--paper-bg) var(--panel-opacity-pct), transparent) 58%,
+            color-mix(in srgb, color-mix(in srgb, var(--paper-panel-2) 34%, var(--paper-bg)) var(--panel-opacity-pct), transparent));
+        box-shadow:
+          var(--paper-shadow),
+          inset 0 0 0 1px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 14%), transparent),
+          inset 2px 2px 0 -1px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 70%), transparent),
+          inset -3px -5px 12px -10px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 38%), transparent);
+        image-rendering: auto;
+      }
+
+.theme-glass.widget::before,
+.theme-glass.compact-widget::before,
+.theme-glass.control-shell::before,
+.theme-glass.control-shell::before {
+        content: none;
+      }
+
+.theme-glass .scale-shell,
+.theme-glass.control-shell > * {
+        position: relative;
+        z-index: 1;
+      }
+
+.theme-glass.control-shell {
+        border-radius: 18px;
+      }
+
+/* Chỉ card THỰC là card frosted. advanced-tools/effect-settings/effect-tester giữ nguyên bản chất
+   "dải phân cách" như Pixel (border-top, không viền bo) → content nằm trong padding card cha,
+   không tràn viền. Đây là gốc rễ của lỗi cắt/lồi bên phải tái diễn. */
+.theme-glass .provider-tile,
+.theme-glass .mini-card,
+.theme-glass .settings-card {
+        border: 1px solid var(--paper-glass-line);
+        border-radius: 14px;
+        color: var(--paper-ink);
+        background-color: color-mix(in srgb, var(--paper-panel) 18%, transparent);
+        backdrop-filter: blur(6px) saturate(150%);
+        -webkit-backdrop-filter: blur(6px) saturate(150%);
+        box-shadow:
+          inset 0 0 0 1px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 12%), transparent),
+          inset 1.8px 3px 0 -2px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 90%), transparent),
+          inset -2px -2px 0 -2px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 80%), transparent),
+          inset -3px -8px 1px -6px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 60%), transparent),
+          inset -.3px -1px 4px 0 color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 12%), transparent),
+          inset -1.5px 2.5px 0 -2px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 20%), transparent),
+          inset 0 3px 4px -2px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 20%), transparent),
+          0 12px 30px -18px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 36%), transparent);
+      }
+
+.theme-glass .provider-tile {
+        --tone: var(--provider-color, var(--paper-ink));
+        --provider-color: var(--paper-ink);
+      }
+
+/* Dimensions must match Pixel so switching theme only changes skin, not layout size
+   (tránh compact "dài hơn" và auto-fit nhảy khi bật/tắt Glass). */
+.theme-glass .usage.provider-tile { padding: 12px; gap: 8px; }
+.theme-glass .compact-usage.provider-tile { padding: 9px; gap: 7px; }
+
+.theme-glass .provider-tile.claude,
+.theme-glass .mini-card:has(.provider-tile.claude) {
+        --provider-color: #c46f42;
+      }
+
+.theme-glass .provider-tile.codex,
+.theme-glass .provider-tile.codex-1,
+.theme-glass .mini-card:has(.provider-tile.codex),
+.theme-glass .mini-card:has(.provider-tile.codex-1) {
+        --provider-color: #4f78b8;
+      }
+
+.theme-glass.theme-glass-dark .provider-tile.codex,
+.theme-glass.theme-glass-dark .provider-tile.codex-1,
+.theme-glass.theme-glass-dark .mini-card:has(.provider-tile.codex),
+.theme-glass.theme-glass-dark .mini-card:has(.provider-tile.codex-1) {
+        --provider-color: #76a7e8;
+      }
+
+.theme-glass .provider-tile.mark-paused,
+.theme-glass .provider-tile:has(.source-pill.stale),
+.theme-glass .provider-tile:has(.source-pill.paused),
+.theme-glass .provider-tile:has(.source-pill.warn) {
+        --provider-color: color-mix(in srgb, var(--paper-ink) 58%, var(--paper-bg));
+      }
+
+.theme-glass.theme-glass-dark .provider-tile.mark-paused,
+.theme-glass.theme-glass-dark .provider-tile:has(.source-pill.stale),
+.theme-glass.theme-glass-dark .provider-tile:has(.source-pill.paused),
+.theme-glass.theme-glass-dark .provider-tile:has(.source-pill.warn) {
+        --provider-color: color-mix(in srgb, var(--paper-ink) 62%, var(--paper-bg));
+      }
+
+.theme-glass .provider-tile:has(.source-pill.stale),
+.theme-glass .provider-tile:has(.source-pill.paused),
+.theme-glass .provider-tile:has(.source-pill.warn) {
+        opacity: .9;
+      }
+
+.theme-glass .usage.compact {
+        min-height: 0;
+      }
+
+.theme-glass .mark,
+.theme-glass .window-control,
+.theme-glass .source-pill,
+.theme-glass .pill,
+.theme-glass button,
+.theme-glass select,
+.theme-glass input:not([type="range"]),
+.theme-glass textarea {
+        position: relative;
+        isolation: isolate;
+        overflow: hidden;
+        border: 1px solid var(--paper-glass-line);
+        border-radius: 999px;
+        color: var(--paper-ink);
+        /* No per-element backdrop-filter here: this rule hits dozens of buttons/inputs/pills in Settings
+           and each backdrop re-sample per scroll frame was the main lag. A more opaque bg keeps the glass
+           feel without the cost. */
+        background-color: color-mix(in srgb, var(--paper-panel) 26%, transparent);
+        box-shadow:
+          inset 0 0 0 1px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 12%), transparent),
+          inset 1.8px 3px 0 -2px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 90%), transparent),
+          inset -2px -2px 0 -2px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 80%), transparent),
+          inset -.3px -1px 4px 0 color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 12%), transparent),
+          0 6px 16px 0 color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 8%), transparent);
+      }
+
+.theme-glass button:hover,
+.theme-glass .window-control:hover,
+.theme-glass .source-pill:hover,
+.theme-glass .mark:hover {
+        transform: translateY(-1px) scale(1.02);
+        box-shadow:
+          inset 0 0 0 1px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 16%), transparent),
+          inset 2px 3px 0 -2px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 96%), transparent),
+          inset -2px -2px 0 -2px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 86%), transparent),
+          0 10px 24px 0 color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 12%), transparent);
+      }
+
+.theme-glass .mark::before,
+.theme-glass .window-control::before,
+.theme-glass .source-pill::before,
+.theme-glass button::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        z-index: 3;
+        border-radius: inherit;
+        pointer-events: none;
+        background: radial-gradient(circle at var(--x,50%) var(--y,50%), rgba(255,255,255,.42), rgba(255,255,255,.08) 24%, transparent 48%);
+        opacity: 0;
+        transition: opacity .26s ease;
+      }
+
+.theme-glass.theme-glass-dark .mark::before,
+.theme-glass.theme-glass-dark .window-control::before,
+.theme-glass.theme-glass-dark .source-pill::before,
+.theme-glass.theme-glass-dark button::before {
+        background: radial-gradient(circle at var(--x,50%) var(--y,50%), rgba(255,255,255,.18), rgba(255,255,255,.055) 26%, transparent 50%);
+      }
+
+.theme-glass .mark:hover::before,
+.theme-glass .window-control:hover::before,
+.theme-glass .source-pill:hover::before,
+.theme-glass button:hover::before {
+        opacity: 1;
+      }
+
+.theme-glass .mark svg,
+.theme-glass .window-control svg,
+.theme-glass button > *,
+.theme-glass .source-pill {
+        position: relative;
+        z-index: 4;
+      }
+
+.theme-glass .source-pill,
+.theme-glass .pill {
+        border-radius: 999px;
+        background-color: color-mix(in srgb, var(--paper-panel) 4%, transparent) !important;
+        text-shadow: none;
+        text-transform: uppercase;
+      }
+
+.theme-glass .source-pill.ok,
+.theme-glass .source-pill.stale,
+.theme-glass .source-pill.paused,
+.theme-glass .pill.ok,
+.theme-glass .pill.not_open,
+.theme-glass .pill.not_logged_in,
+.theme-glass .pill.not_found,
+.theme-glass .pill.parser_failed,
+.theme-glass .pill.page_unavailable {
+        border-color: var(--paper-glass-line) !important;
+        background-color: color-mix(in srgb, var(--paper-panel) 4%, transparent) !important;
+      }
+
+.theme-glass .provider-tile .source-pill,
+.theme-glass .provider-tile .updated-ago,
+.theme-glass .provider-tile .mark,
+.theme-glass .provider-tile .mark svg,
+.theme-glass .provider-tile .pixel-claude-fill,
+.theme-glass .provider-tile .codex-knot {
+        color: var(--provider-color) !important;
+        fill: var(--provider-color) !important;
+        stroke: var(--provider-color) !important;
+      }
+
+.theme-glass .mini-card:has(.provider-tile) > .mini-head .pill,
+.theme-glass .mini-card:has(.provider-tile) .save-state {
+        color: var(--provider-color) !important;
+      }
+
+.theme-glass .provider-tile .pixel-claude-eye {
+        fill: color-mix(in srgb, var(--paper-bg) 92%, #000) !important;
+        stroke: none !important;
+      }
+
+.theme-glass .percent,
+.theme-glass .compact-percent {
+        color: var(--provider-color, var(--paper-ink));
+        letter-spacing: -0.03em;
+        text-shadow: 0 1px 0 color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 30%), transparent);
+      }
+
+.theme-glass .window-control.pin {
+        color: var(--paper-faint);
+      }
+
+.theme-glass .window-control.pin.active {
+        color: #111;
+      }
+
+.theme-glass.theme-glass-dark .window-control.pin.active {
+        color: #fff;
+      }
+
+.theme-glass .window-control.pin:not(.active) svg {
+        opacity: .56;
+      }
+
+.theme-glass .window-control.close {
+        color: #db4f43;
+        display: inline-grid;
+        place-items: center;
+        text-align: center;
+        font: 850 14px/1 var(--font-body);
+        padding: 0;
+      }
+
+.theme-glass .window-control.close::first-letter {
+        line-height: 1;
+      }
+
+.theme-glass input[type="checkbox"] {
+        appearance: none;
+        -webkit-appearance: none;
+        display: inline-grid;
+        place-items: center;
+        color: var(--paper-ink);
+        background: transparent !important;
+        box-shadow: none !important;
+      }
+
+.theme-glass input[type="checkbox"]:checked::after {
+        content: "✓";
+        font: 900 17px/1 var(--font-body);
+        color: #111;
+      }
+
+.theme-glass.theme-glass-dark input[type="checkbox"]:checked::after {
+        color: #fff;
+      }
+
+.theme-glass .message,
+.theme-glass .compact-message,
+.theme-glass .usage-meta,
+.theme-glass .compact-meta,
+.theme-glass .updated-ago,
+.theme-glass .window-title span,
+.theme-glass .mini-head p,
+.theme-glass label {
+        color: var(--paper-soft);
+      }
+
+.theme-glass .bar,
+.theme-glass .compact-bar {
+        position: relative;
+        display: block;
+        height: 18px;
+        padding: 0;
+        overflow: hidden;
+        border: 1px solid var(--paper-glass-line);
+        border-radius: 999px;
+        background-color: color-mix(in srgb, var(--paper-panel) 16%, transparent);
+        backdrop-filter: blur(6px) saturate(150%);
+        -webkit-backdrop-filter: blur(6px) saturate(150%);
+        box-shadow:
+          inset 0 0 0 1px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 12%), transparent),
+          inset 2px 2px 0 -2px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 82%), transparent),
+          inset 0 -10px 18px -18px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 50%), transparent),
+          inset 0 3px 6px -4px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 18%), transparent),
+          0 8px 22px -14px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 24%), transparent);
+      }
+
+.theme-glass .compact-bar {
+        height: 12px;
+      }
+
+.theme-glass .bar .cell,
+.theme-glass .compact-bar .cell,
+.theme-glass .subfill-mark,
+.theme-glass .delta-range,
+.theme-glass .spark-marker,
+.theme-glass .pixel-ripple,
+.theme-glass .drop-cell,
+.theme-glass .effect-delta-range,
+.theme-glass .effect-edge-glow,
+.theme-glass .effect-ripple,
+.theme-glass .effect-drop-cell,
+.theme-glass .effect-particle {
+        display: none !important;
+      }
+
+.theme-glass .bar::before,
+.theme-glass .compact-bar::before {
+        content: "";
+        position: absolute;
+        left: 3px;
+        top: 3px;
+        bottom: 3px;
+        width: max(0px, calc(var(--bar-fill, 0%) - 6px));
+        border-radius: inherit;
+        background:
+          linear-gradient(90deg, color-mix(in srgb, var(--provider-color, var(--paper-ink)) 42%, transparent), color-mix(in srgb, var(--provider-color, var(--paper-ink)) 74%, transparent)),
+          linear-gradient(180deg, rgba(255,255,255,.24), rgba(255,255,255,.05) 52%, rgba(0,0,0,.1));
+        box-shadow:
+          inset 0 1px 0 color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 58%), transparent),
+          inset 0 -1px 0 color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 16%), transparent),
+          0 0 14px color-mix(in srgb, var(--provider-color, var(--paper-ink)) 22%, transparent);
+      }
+
+.theme-glass .provider-tile.tile-ripple::after,
+.theme-glass .provider-tile.tile-ripple .pixel-particle {
+        display: none !important;
+        content: none !important;
+        animation: none !important;
+      }
+
+.theme-glass .bar::after,
+.theme-glass .compact-bar::after {
+        content: "";
+        position: absolute;
+        inset: 1px;
+        border-radius: inherit;
+        pointer-events: none;
+        background:
+          radial-gradient(circle at var(--x,34%) 32%, rgba(255,255,255,.42), transparent 30%),
+          linear-gradient(115deg, transparent 35%, rgba(255,255,255,.2) 46%, transparent 57%);
+        opacity: .46;
+      }
+
+.theme-glass input[type="range"] {
+        accent-color: var(--paper-ink);
+      }
+
+.theme-glass .status-line {
+        border-radius: 24px;
+        border-color: var(--paper-glass-line) !important;
+        color: var(--paper-ink) !important;
+        background: color-mix(in srgb, var(--paper-panel) 20%, transparent) !important;
+        backdrop-filter: blur(6px) saturate(150%);
+        -webkit-backdrop-filter: blur(6px) saturate(150%);
+        box-shadow:
+          inset 0 0 0 1px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 12%), transparent),
+          0 12px 32px -20px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 30%), transparent) !important;
+      }
+
+.theme-glass .status-line::before,
+.theme-glass .status-line::after {
+        display: none;
+      }
+
+.theme-glass .status-line span {
+        width: 14px;
+        height: 14px;
+        border: 0 !important;
+        border-radius: 4px;
+        background: #45825d;
+        box-shadow:
+          0 0 12px color-mix(in srgb, #45825d 72%, transparent),
+          0 0 24px color-mix(in srgb, #45825d 42%, transparent),
+          0 0 0 8px color-mix(in srgb, #45825d 12%, transparent);
+      }
+
+.theme-glass.theme-glass-dark .status-line span {
+        background: #7cc99b;
+        box-shadow:
+          0 0 12px color-mix(in srgb, #7cc99b 76%, transparent),
+          0 0 28px color-mix(in srgb, #7cc99b 46%, transparent),
+          0 0 0 8px color-mix(in srgb, #7cc99b 12%, transparent);
+      }
+
+.theme-glass select {
+        appearance: none;
+        -webkit-appearance: none;
+        padding-right: 32px;
+        background-image:
+          linear-gradient(45deg, transparent 50%, currentColor 50%),
+          linear-gradient(135deg, currentColor 50%, transparent 50%);
+        background-position:
+          calc(100% - 17px) 50%,
+          calc(100% - 11px) 50%;
+        background-size: 6px 6px, 6px 6px;
+        background-repeat: no-repeat;
+      }
+
+.theme-glass select option {
+        color: var(--paper-ink);
+        background: var(--paper-panel);
+      }
+
+.theme-glass.theme-glass-dark select option {
+        color: var(--paper-ink);
+        background: #232424;
+      }
+
+.theme-glass .effect-settings,
+.theme-glass .effect-tester {
+        box-sizing: border-box;
+        min-width: 0;
+        width: 100%;
+        max-width: 100%;
+        overflow: hidden;
+      }
+
+.theme-glass .effect-settings {
+        width: 100%;
+        margin-left: 0;
+        margin-right: 0;
+      }
+
+.theme-glass .settings-section,
+.theme-glass .settings-row,
+.theme-glass .effect-tester-row {
+        min-width: 0;
+        max-width: 100%;
+      }
+
+.theme-glass .effect-settings summary,
+.theme-glass .toggle-row,
+.theme-glass .effect-tester-head {
+        min-width: 0;
+        max-width: 100%;
+      }
+
+.theme-glass .effect-settings summary {
+        padding: 2px 2px 0;
+        margin-inline: 0;
+      }
+
+.theme-glass .effect-settings summary span,
+.theme-glass .effect-tester-head strong,
+.theme-glass .effect-tester-head em,
+.theme-glass label,
+.theme-glass .toggle-row span {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+
+.theme-glass .effect-tester-head {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 8px;
+        align-items: baseline;
+      }
+
+.theme-glass .effect-tester-head em {
+        justify-self: start;
+        max-width: 100%;
+        text-align: left;
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+
+.theme-glass .effect-tester-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 10px;
+        align-items: end;
+      }
+
+.theme-glass .effect-tester label,
+.theme-glass .effect-tester input,
+.theme-glass .effect-tester select,
+.theme-glass .effect-tester button {
+        max-width: 100%;
+      }
+
+.theme-glass .effect-tester-row input,
+.theme-glass .effect-tester-row select {
+        min-width: 0;
+        width: 100%;
+      }
+
+.theme-glass .effect-tester-actions,
+.theme-glass .effect-tester-presets {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+.theme-glass .effect-tester-actions button,
+.theme-glass .effect-tester-presets button {
+        min-width: 0;
+        width: 100%;
+      }
+
+.theme-glass .toggle-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 8px;
+      }
+
+.theme-glass .toggle-row input[type="checkbox"] {
+        width: 18px;
+        min-width: 18px;
+        height: 18px;
+        min-height: 18px;
+        padding: 0;
+        flex: 0 0 auto;
+      }
+
+/* Segmented Style/Mode control — glass active state (pill highlight). */
+.theme-glass .seg-btn.active {
+  color: var(--paper-ink);
+  border-color: var(--paper-glass-line);
+  background-color: color-mix(in srgb, var(--paper-panel) 34%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 20%), transparent),
+    inset 2px 3px 0 -2px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 96%), transparent),
+    inset -2px -2px 0 -2px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 86%), transparent),
+    0 8px 20px -14px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 22%), transparent);
+}
+.theme-glass .seg-btn.active:hover { transform: none; }
+
+/* Full bar height must match Pixel (22px) so full widget doesn't change size on theme switch.
+   (compact-bar already 12px = pixel). Placed last to win over the glass .bar,.compact-bar 18px rule. */
+.theme-glass .bar { height: 22px; }
+
+/* Hover tooltip (Weekly/Reset) restyled for the glass vibe: frosted, rounded, provider-tinted border. */
+.theme-glass .usage-meta[data-tip]::after,
+.theme-glass .compact-meta[data-tip]::after {
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--provider-color, var(--paper-ink)) 28%, var(--paper-glass-line));
+  background: color-mix(in srgb, var(--paper-panel) 80%, transparent);
+  backdrop-filter: blur(8px) saturate(150%);
+  -webkit-backdrop-filter: blur(8px) saturate(150%);
+  color: var(--paper-ink);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 16%), transparent),
+    inset 1.5px 2px 0 -2px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 80%), transparent),
+    0 14px 34px -16px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 44%), transparent);
+}

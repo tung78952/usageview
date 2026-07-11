@@ -56,17 +56,26 @@ button:disabled { cursor: wait; opacity: 0.62; transform: none; box-shadow: none
 button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 44%, transparent); background: color-mix(in oklch, var(--accent) 14%, transparent); }
 .danger { color: var(--danger); }
 
+.seg-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.seg-label { font: 750 10px/1 var(--font-body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.seg { display: flex; gap: 4px; }
+.seg-btn { flex: 1 1 0; min-width: 0; min-height: 30px; padding: 0 6px; font-size: 10px; letter-spacing: 0.03em; white-space: nowrap; }
+.seg-btn.active { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 44%, transparent); background: color-mix(in oklch, var(--accent) 16%, transparent); }
+.seg-btn.active:hover { transform: none; }
+
 .theme-light {
-  --bg: #f1ece3;
-  --surface: #faf6ef;
-  --surface-2: #ebe3d6;
-  --fg: #221e18;
-  --muted: #5b5346;
+  /* Paper background tones matched to Glass Light; text + provider colors kept deeper/more saturated
+     so they stay legible when the panel is faded via the Opacity slider over a dark desktop. */
+  --bg: #efe3c6;
+  --surface: #f7edda;
+  --surface-2: #e7d7b8;
+  --fg: #241d14;
+  --muted: #4c4231;
   --border: #cec4b2;
   --shadow: rgba(40, 28, 14, 0.18);
-  --claude: #bd6b40;
-  --codex: #5264c8;
-  --accent: #bd6b40;
+  --claude: #b85f2e;
+  --codex: #3f66ad;
+  --accent: #b85f2e;
 }
 
 
@@ -238,11 +247,39 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   background: color-mix(in srgb, var(--surface-2) 78%, transparent);
 }
 .compact-meta {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 6px;
   color: var(--muted);
   font: 500 10px/1.15 var(--font-mono);
+}
+/* Compact hover: same absolute-overlay tooltip as the full widget, so hovering fades the Weekly/Reset
+   detail up in place WITHOUT resizing the tile (no more swap-to-full that grew the compact widget). */
+.compact-meta[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 6;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in oklch, var(--tone, var(--accent)) 42%, var(--border));
+  background: color-mix(in srgb, var(--surface) 97%, transparent);
+  box-shadow: 0 10px 26px var(--shadow);
+  color: var(--fg);
+  font: 700 13px/1.4 var(--font-mono);
+  letter-spacing: 0.01em;
+  white-space: pre-line;
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+  transition: opacity 130ms ease, transform 130ms ease;
+}
+.compact-usage:hover .compact-meta[data-tip]::after {
+  opacity: 1;
+  transform: translateY(0);
 }
 .compact-meta span {
   min-width: 0;
@@ -984,6 +1021,7 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 }
 .settings-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .settings-row:has(> label:only-child) { grid-template-columns: 1fr; }
+.settings-row:has(> .seg-field:only-child) { grid-template-columns: 1fr; }
 .save-state {
   flex: 0 0 auto;
   padding: 4px 7px;

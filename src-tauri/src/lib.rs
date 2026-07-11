@@ -1,6 +1,10 @@
-use std::sync::mpsc;
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use std::sync::{mpsc, Mutex};
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use tauri::{
   menu::{Menu, MenuItem, PredefinedMenuItem},
   tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -12,6 +16,16 @@ const EXTRACT_EVENT: &str = "usageview-extract-result";
 const TRAY_SHOW_WIDGET: &str = "show_widget";
 const TRAY_HIDE_WIDGET: &str = "hide_widget";
 const TRAY_QUIT: &str = "quit";
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct WindowGeometry {
+  width: f64,
+  height: f64,
+  x: f64,
+  y: f64,
+}
+
+struct CurrentWidgetMode(Mutex<String>);
 
 #[tauri::command]
 fn open_provider_window(app: tauri::AppHandle, provider: String, url: String) -> Result<(), String> {
@@ -83,6 +97,75 @@ fn open_widget_window(app: tauri::AppHandle) -> Result<(), String> {
   show_widget_window(&app)
 }
 
+#[tauri::command]
+fn load_window_geometry(app: tauri::AppHandle) -> Result<HashMap<String, WindowGeometry>, String> {
+  read_window_geometry_store(&app)
+}
+
+#[tauri::command]
+fn save_window_geometry(app: tauri::AppHandle, mode: String, geometry: WindowGeometry) -> Result<(), String> {
+  let mut store = read_window_geometry_store(&app)?;
+  store.insert(mode, geometry);
+  write_window_geometry_store(&app, &store)
+}
+
+#[tauri::command]
+fn set_widget_mode(state: tauri::State<CurrentWidgetMode>, mode: String) -> Result<(), String> {
+  if mode == "widget" || mode == "compact" {
+    *state.0.lock().map_err(|error| error.to_string())? = mode;
+  }
+  Ok(())
+}
+
+fn geometry_store_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+  // v2: geometry is now stored in PHYSICAL px (was logical). New filename discards the old logical
+  // store so a machine with scaled monitors doesn't restore mismatched coordinates once.
+  Ok(app.path().app_data_dir().map_err(|error| error.to_string())?.join("window-geometry-v2.json"))
+}
+
+fn read_window_geometry_store(app: &tauri::AppHandle) -> Result<HashMap<String, WindowGeometry>, String> {
+  let path = geometry_store_path(app)?;
+  if !path.exists() {
+    return Ok(HashMap::new());
+  }
+  let text = fs::read_to_string(path).map_err(|error| error.to_string())?;
+  serde_json::from_str(&text).map_err(|error| error.to_string())
+}
+
+fn write_window_geometry_store(app: &tauri::AppHandle, store: &HashMap<String, WindowGeometry>) -> Result<(), String> {
+  let path = geometry_store_path(app)?;
+  if let Some(parent) = path.parent() {
+    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+  }
+  let text = serde_json::to_string_pretty(store).map_err(|error| error.to_string())?;
+  fs::write(path, text).map_err(|error| error.to_string())
+}
+
+fn save_widget_geometry(app: &tauri::AppHandle, mode: &str) {
+  let Some(window) = app.get_webview_window("widget") else { return; };
+  let Ok(position) = window.outer_position() else { return; };
+  let Ok(size) = window.inner_size() else { return; };
+  // Store PHYSICAL px directly (matches the JS side) — no dividing by scale. Physical is the only
+  // unambiguous coordinate space across monitors with different DPI.
+  let geometry = WindowGeometry {
+    width: size.width as f64,
+    height: size.height as f64,
+    x: position.x as f64,
+    y: position.y as f64,
+  };
+  let _ = save_window_geometry(app.clone(), mode.to_string(), geometry);
+}
+
+fn save_current_widget_geometry(app: &tauri::AppHandle) {
+  let mode = app
+    .state::<CurrentWidgetMode>()
+    .0
+    .lock()
+    .map(|mode| mode.clone())
+    .unwrap_or_else(|_| "widget".to_string());
+  save_widget_geometry(app, &mode);
+}
+
 fn show_widget_window(app: &tauri::AppHandle) -> Result<(), String> {
   if let Some(window) = app.get_webview_window("widget") {
     window.unminimize().map_err(|error| error.to_string())?;
@@ -107,6 +190,7 @@ fn show_widget_window(app: &tauri::AppHandle) -> Result<(), String> {
 
 fn hide_widget_window(app: &tauri::AppHandle) -> Result<(), String> {
   if let Some(window) = app.get_webview_window("widget") {
+    save_current_widget_geometry(app);
     window.hide().map_err(|error| error.to_string())?;
   }
   Ok(())
@@ -186,7 +270,10 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
       TRAY_HIDE_WIDGET => {
         let _ = hide_widget_window(app);
       }
-      TRAY_QUIT => app.exit(0),
+      TRAY_QUIT => {
+        save_current_widget_geometry(app);
+        app.exit(0);
+      }
       _ => {}
     })
     .on_tray_icon_event(|tray, event| {
@@ -419,6 +506,7 @@ pub fn run() {
       let _ = show_widget_window(app);
     }))
     .plugin(tauri_plugin_opener::init())
+    .manage(CurrentWidgetMode(Mutex::new("widget".to_string())))
     .setup(|app| {
       setup_tray(app.handle())?;
       Ok(())
@@ -429,6 +517,7 @@ pub fn run() {
         let label = window.label();
         if label == "widget" {
           api.prevent_close();
+          save_current_widget_geometry(&window.app_handle());
           let _ = window.hide();
         } else if label.starts_with("provider_") {
           api.prevent_close();
@@ -447,6 +536,9 @@ pub fn run() {
       refresh_provider_page,
       prepare_provider_refresh,
       open_widget_window,
+      load_window_geometry,
+      save_window_geometry,
+      set_widget_mode,
       open_settings_window,
       toggle_settings_window,
       update_tray_tooltip,

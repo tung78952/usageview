@@ -1,0 +1,537 @@
+/* ===================================================================
+   Glass liquid usage effect (ported from concept-liquid).
+   Liquid layers hidden by default; shown/animated only under .theme-glass.
+   Effect vars driven by effectStyle() in main.tsx (real prototype names +
+   glass-only --gl-drop-left/--gl-drop-width to avoid clobbering pixel).
+   =================================================================== */
+
+.liquid-refraction,
+.liquid-impact-pocket,
+.liquid-dimple,
+.liquid-neck-left,
+.liquid-neck,
+.liquid-fill-mask,
+.liquid-flow,
+.liquid-wave-left,
+.liquid-wave-right,
+.liquid-ripple,
+.liquid-drop { display: none; }
+
+.theme-glass .bar .liquid-refraction,
+.theme-glass .compact-bar .liquid-refraction {
+        display: block;
+        position: absolute;
+        pointer-events: none;
+      }
+
+.theme-glass .bar .liquid-refraction,
+.theme-glass .compact-bar .liquid-refraction {
+        left: 3px;
+        top: 3px;
+        bottom: 3px;
+        z-index: 2;
+        width: max(0px, calc(var(--bar-fill, 0%) - 6px));
+        overflow: hidden;
+        border-radius: inherit;
+        opacity: 0.54;
+        background:
+          linear-gradient(90deg, transparent 0 4%, color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 18%), transparent) 12%, transparent 24%, color-mix(in srgb, var(--provider-color, var(--tone)) 18%, transparent) 42%, transparent 64%),
+          repeating-linear-gradient(100deg, color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 10%), transparent) 0 1px, transparent 1px 9px),
+          radial-gradient(ellipse at 24% 45%, color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 22%), transparent), transparent 48%);
+        mix-blend-mode: screen;
+        transform-origin: 0% 50%;
+      }
+
+.theme-glass .compact-bar .liquid-refraction {
+        top: 2px;
+        bottom: 2px;
+        opacity: 0.46;
+      }
+
+.theme-glass .bar.drop-impact .liquid-impact-pocket,
+.theme-glass .compact-bar.drop-impact .liquid-impact-pocket {
+        display: block;
+        position: absolute;
+        left: var(--pocket-start, 0%);
+        top: 2px;
+        bottom: 2px;
+        z-index: 5;
+        width: max(8px, var(--pocket-width, 0%));
+        border-radius: 999px;
+        pointer-events: none;
+        opacity: 0;
+        background:
+          radial-gradient(ellipse at 50% 44%, color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 30%), transparent), transparent 34%),
+          radial-gradient(ellipse at 50% 58%, color-mix(in srgb, var(--provider-color, var(--tone)) 58%, transparent), transparent 66%);
+        box-shadow:
+          0 0 12px color-mix(in srgb, var(--provider-color, var(--tone)) 24%, transparent),
+          inset 0 1px 0 color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 42%), transparent),
+          inset 0 -1px 0 color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 12%), transparent);
+        transform: scaleX(0.22) scaleY(0.56);
+        transform-origin: var(--pocket-origin, 50%) 50%;
+        animation: liquid-impact-pocket var(--effect-duration, 5600ms) cubic-bezier(0.18, 0.86, 0.22, 1) both;
+      }
+
+.theme-glass .compact-bar.drop-impact .liquid-impact-pocket {
+        top: 1px;
+        bottom: 1px;
+        width: max(6px, var(--pocket-width, 0%));
+      }
+
+.theme-glass .bar.drop-impact .liquid-dimple,
+.theme-glass .compact-bar.drop-impact .liquid-dimple,
+.theme-glass .bar.drop-impact .liquid-neck-left,
+.theme-glass .compact-bar.drop-impact .liquid-neck-left,
+.theme-glass .bar.drop-impact .liquid-neck,
+.theme-glass .compact-bar.drop-impact .liquid-neck {
+        display: block;
+        position: absolute;
+        pointer-events: none;
+      }
+
+.theme-glass .bar.drop-impact .liquid-dimple,
+.theme-glass .compact-bar.drop-impact .liquid-dimple {
+        left: var(--gl-drop-left, 50%);
+        top: 50%;
+        z-index: 8;
+        width: calc(20px * var(--impact-strength, 1));
+        height: calc(100% - 2px);
+        border-radius: 999px;
+        opacity: 0;
+        background:
+          radial-gradient(ellipse at 50% 18%, color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 18%), transparent), transparent 52%),
+          radial-gradient(ellipse at 50% 78%, color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 24%), transparent), transparent 58%),
+          color-mix(in srgb, var(--provider-color, var(--tone)) 24%, transparent);
+        box-shadow:
+          inset 0 4px 6px -4px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 32%), transparent),
+          inset 0 -2px 4px -3px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 58%), transparent),
+          0 0 10px color-mix(in srgb, var(--provider-color, var(--tone)) 18%, transparent);
+        transform-origin: 50% 50%;
+        animation: liquid-dimple-cycle var(--effect-duration, 5600ms) cubic-bezier(0.2, 0.82, 0.22, 1) both;
+      }
+
+.theme-glass .bar.drop-impact .liquid-dimple::after,
+.theme-glass .compact-bar.drop-impact .liquid-dimple::after {
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 38%;
+        width: calc(4px * var(--impact-strength, 1));
+        height: calc(8px * var(--impact-strength, 1));
+        border-radius: 60% 60% 44% 44%;
+        opacity: 0;
+        background:
+          radial-gradient(circle at 38% 22%, rgba(255,255,255,.58), transparent 28%),
+          linear-gradient(180deg, color-mix(in srgb, var(--provider-color, var(--tone)) 42%, #fff), color-mix(in srgb, var(--provider-color, var(--tone)) 58%, transparent));
+        box-shadow: 0 0 7px color-mix(in srgb, var(--provider-color, var(--tone)) 24%, transparent);
+        transform-origin: 50% 100%;
+        animation: liquid-microjet var(--effect-duration, 5600ms) ease-out both;
+      }
+
+.theme-glass .bar.drop-impact .liquid-neck,
+.theme-glass .compact-bar.drop-impact .liquid-neck {
+        left: var(--gl-drop-left, 50%);
+        top: 2px;
+        bottom: 2px;
+        z-index: 6;
+        width: max(var(--right-wave-width, 0%), 8px);
+        border-radius: 999px;
+        opacity: 0;
+        background:
+          linear-gradient(90deg,
+            color-mix(in srgb, var(--provider-color, var(--tone)) 54%, transparent),
+            color-mix(in srgb, var(--provider-color, var(--tone)) 26%, transparent) 54%,
+            transparent);
+        box-shadow:
+          inset 0 1px 0 color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 34%), transparent),
+          inset 0 -1px 0 color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 10%), transparent);
+        transform-origin: 0% 50%;
+        animation: liquid-neck-open var(--effect-duration, 5600ms) cubic-bezier(0.16, 0.84, 0.2, 1) both;
+      }
+
+.theme-glass .bar.drop-impact .liquid-neck-left,
+.theme-glass .compact-bar.drop-impact .liquid-neck-left {
+        right: calc(100% - var(--gl-drop-left, 50%));
+        top: 2px;
+        bottom: 2px;
+        z-index: 6;
+        width: max(var(--left-wave-width, 0%), 8px);
+        border-radius: 999px;
+        opacity: 0;
+        background:
+          linear-gradient(270deg,
+            color-mix(in srgb, var(--provider-color, var(--tone)) 54%, transparent),
+            color-mix(in srgb, var(--provider-color, var(--tone)) 20%, transparent) 58%,
+            transparent);
+        box-shadow:
+          inset 0 1px 0 color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 28%), transparent),
+          inset 0 -1px 0 color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 9%), transparent);
+        transform-origin: 100% 50%;
+        animation: liquid-neck-open var(--effect-duration, 5600ms) cubic-bezier(0.16, 0.84, 0.2, 1) both;
+      }
+
+.theme-glass .compact-bar.drop-impact .liquid-dimple {
+        width: calc(14px * var(--impact-strength, 1));
+      }
+
+.theme-glass .compact-bar.drop-impact .liquid-dimple::after {
+        width: calc(3px * var(--impact-strength, 1));
+        height: calc(6px * var(--impact-strength, 1));
+      }
+
+.theme-glass .compact-bar.drop-impact .liquid-neck,
+.theme-glass .compact-bar.drop-impact .liquid-neck-left {
+        top: 1px;
+        bottom: 1px;
+      }
+
+.theme-glass .bar.usage-effect-bar.drop-impact,
+.theme-glass .compact-bar.usage-effect-bar.drop-impact {
+        overflow: visible;
+        animation: none;
+      }
+
+.theme-glass .bar.usage-effect-bar.drop-impact::before,
+.theme-glass .compact-bar.usage-effect-bar.drop-impact::before {
+        animation: liquid-fill-gel-settle var(--effect-duration, 5600ms) cubic-bezier(0.2, 0.86, 0.2, 1) both;
+      }
+
+.theme-glass .bar.usage-effect-bar.drop-impact::after,
+.theme-glass .compact-bar.usage-effect-bar.drop-impact::after {
+        animation: liquid-surface-settle var(--effect-duration, 5600ms) ease-out both;
+      }
+
+.theme-glass .bar.drop-wait,
+.theme-glass .compact-bar.drop-wait,
+.theme-glass .bar.drop-wait::before,
+.theme-glass .bar.drop-wait::after,
+.theme-glass .compact-bar.drop-wait::before,
+.theme-glass .compact-bar.drop-wait::after {
+        animation-delay: 0ms;
+      }
+
+.theme-glass.widget.theme-terminal .bar.bar-active,
+.theme-glass.widget.theme-light .bar.bar-active,
+.theme-glass.compact-widget.theme-terminal .compact-bar.bar-active,
+.theme-glass.compact-widget.theme-light .compact-bar.bar-active {
+        filter: saturate(1.08) brightness(0.98);
+        border-color: color-mix(in srgb, var(--provider-color, var(--tone)) 36%, var(--paper-glass-line));
+        box-shadow:
+          inset 0 0 0 1px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 10%), transparent),
+          inset 0 3px 7px -5px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 14%), transparent),
+          0 5px 16px -12px color-mix(in srgb, var(--provider-color, var(--tone)) 24%, transparent);
+      }
+
+@keyframes liquid-dimple-cycle {
+        0%, 21% { opacity: 0; transform: translate(-50%, -50%) scaleX(0.18) scaleY(0.26); filter: blur(0); }
+        27% { opacity: 0.68; transform: translate(-50%, -50%) scaleX(0.76) scaleY(0.48); filter: blur(0.05px); }
+        36% { opacity: 0.78; transform: translate(-50%, -50%) scaleX(1.26) scaleY(0.72); filter: blur(0.1px); }
+        47% { opacity: 0.52; transform: translate(-50%, -50%) scaleX(1.08) scaleY(1.18); filter: blur(0.16px); }
+        61% { opacity: 0.3; transform: translate(-50%, -50%) scaleX(0.92) scaleY(0.76); filter: blur(0.24px); }
+        76% { opacity: 0.14; transform: translate(-50%, -50%) scaleX(1.04) scaleY(1.08); filter: blur(0.34px); }
+        100% { opacity: 0; transform: translate(-50%, -50%) scaleX(1) scaleY(1); filter: blur(0.48px); }
+      }
+
+@keyframes liquid-microjet {
+        0%, 54% { opacity: 0; transform: translate(-50%, 30%) scaleY(0.12); }
+        64% { opacity: 0.58; transform: translate(-50%, -38%) scaleY(1.3); }
+        73% { opacity: 0.3; transform: translate(-50%, -18%) scaleY(0.82); }
+        84% { opacity: 0.12; transform: translate(-50%, -26%) scaleY(1.04); }
+        100% { opacity: 0; transform: translate(-50%, 0) scaleY(0.7); }
+      }
+
+@keyframes liquid-neck-open {
+        0%, 25% { opacity: 0; transform: scaleX(0.025) scaleY(0.5); }
+        32% { opacity: 0.7; transform: scaleX(0.12) scaleY(0.78); }
+        48% { opacity: 0.62; transform: scaleX(0.58) scaleY(1.12); }
+        64% { opacity: 0.44; transform: scaleX(1.03) scaleY(0.94); }
+        78% { opacity: 0.22; transform: scaleX(0.98) scaleY(1.04); }
+        100% { opacity: 0; transform: scaleX(1) scaleY(1); }
+      }
+
+@keyframes liquid-drop-fall {
+        0% { opacity: 0; transform: translate(-50%, -245%) scale(0.58, 0.82); }
+        16% { opacity: 0.94; transform: translate(-50%, -205%) scale(0.72, 1.14); }
+        38% { opacity: 1; transform: translate(-50%, -118%) scale(0.9, 1.08); }
+        52% { opacity: 1; transform: translate(-50%, -68%) scale(1, 1); }
+        58% { opacity: 0.96; transform: translate(-50%, -50%) scale(1.38, 0.54); }
+        68% { opacity: 0.7; transform: translate(-50%, -48%) scale(1.62, 0.34); }
+        82% { opacity: 0.28; transform: translate(-50%, -50%) scale(1.18, 0.58); }
+        100% { opacity: 0; transform: translate(-50%, -50%) scale(1.7, 0.16); }
+      }
+
+@keyframes liquid-impact-ripple {
+        0%, 18% { opacity: 0; transform: translate(-50%, -50%) scaleX(0.2) scaleY(0.44); filter: blur(0); }
+        30% { opacity: 0.72; transform: translate(-50%, -50%) scaleX(0.64) scaleY(0.72); filter: blur(0.12px); }
+        54% { opacity: 0.56; transform: translate(-50%, -50%) scaleX(1.35) scaleY(1.04); filter: blur(0.22px); }
+        74% { opacity: 0.28; transform: translate(-50%, -50%) scaleX(1.85) scaleY(0.86); filter: blur(0.38px); }
+        100% { opacity: 0; transform: translate(-50%, -50%) scaleX(2.15) scaleY(0.72); filter: blur(0.65px); }
+      }
+
+@keyframes liquid-impact-bulge {
+        0%, 25% { opacity: 0; transform: translate(-50%, -50%) scaleX(0.24) scaleY(0.42); }
+        36% { opacity: 0.46; transform: translate(-50%, -50%) scaleX(0.72) scaleY(0.66); }
+        50% { opacity: 0.42; transform: translate(-50%, -50%) scaleX(1) scaleY(1.32); }
+        66% { opacity: 0.24; transform: translate(-50%, -50%) scaleX(1.18) scaleY(0.82); }
+        84% { opacity: 0.12; transform: translate(-50%, -50%) scaleX(1.02) scaleY(1.04); }
+        100% { opacity: 0; transform: translate(-50%, -50%) scaleX(1.08) scaleY(0.94); }
+      }
+
+@keyframes liquid-wave-left {
+        0%, 22% { opacity: 0; transform: scaleX(0.04) scaleY(0.72); filter: blur(0); }
+        34% { opacity: 0.62; transform: scaleX(0.34) scaleY(1.22); filter: blur(0.1px); }
+        58% { opacity: 0.42; transform: scaleX(0.82) scaleY(0.9); filter: blur(0.22px); }
+        76% { opacity: 0.2; transform: scaleX(1.04) scaleY(1.08); filter: blur(0.32px); }
+        100% { opacity: 0; transform: scaleX(1.1) scaleY(1); filter: blur(0.5px); }
+      }
+
+@keyframes liquid-wave-right {
+        0%, 22% { opacity: 0; transform: scaleX(0.04) scaleY(0.72); filter: blur(0); }
+        34% { opacity: 0.62; transform: scaleX(0.34) scaleY(1.22); filter: blur(0.1px); }
+        58% { opacity: 0.42; transform: scaleX(0.82) scaleY(0.9); filter: blur(0.22px); }
+        76% { opacity: 0.2; transform: scaleX(1.04) scaleY(1.08); filter: blur(0.32px); }
+        100% { opacity: 0; transform: scaleX(1.1) scaleY(1); filter: blur(0.5px); }
+      }
+
+@keyframes liquid-impact-pocket {
+        0%, 23% { opacity: 0; transform: scaleX(0.18) scaleY(0.46); filter: blur(0); }
+        34% { opacity: 0.72; transform: scaleX(0.78) scaleY(0.72); filter: blur(0.04px); }
+        48% { opacity: 0.5; transform: scaleX(1.2) scaleY(1.28); filter: blur(0.12px); }
+        64% { opacity: 0.28; transform: scaleX(1.04) scaleY(0.88); filter: blur(0.22px); }
+        82% { opacity: 0.12; transform: scaleX(1.12) scaleY(1.04); filter: blur(0.32px); }
+        100% { opacity: 0; transform: scaleX(1) scaleY(1); filter: blur(0.5px); }
+      }
+
+@keyframes liquid-refraction-shiver {
+        0%, 24% { opacity: 0.54; transform: translateX(0) scaleY(1); background-position: 0 0, 0 0, 0 0; }
+        36% { opacity: 0.82; transform: translateX(1px) scaleY(0.9); background-position: 10px 0, 4px 0, 0 0; }
+        52% { opacity: 0.68; transform: translateX(-1px) scaleY(1.08); background-position: 18px 0, 9px 0, 0 0; }
+        74% { opacity: 0.58; transform: translateX(0.5px) scaleY(0.98); background-position: 26px 0, 14px 0, 0 0; }
+        100% { opacity: 0.54; transform: translateX(0) scaleY(1); background-position: 32px 0, 18px 0, 0 0; }
+      }
+
+@keyframes liquid-fill-gel-settle {
+        0%, 24% { transform: scaleY(1); filter: brightness(1); }
+        31% { transform: scaleY(0.9); filter: brightness(0.99); }
+        44% { transform: scaleY(1.08); filter: brightness(1.025); }
+        59% { transform: scaleY(0.96); filter: brightness(1.01); }
+        75% { transform: scaleY(1.035); filter: brightness(1.012); }
+        100% { transform: scaleY(1); filter: brightness(1); }
+      }
+
+@keyframes liquid-surface-settle {
+        0%, 24% { opacity: 0.36; transform: scaleY(1); background-position: 0 0, 0 0; }
+        38% { opacity: 0.56; transform: scaleY(0.9); background-position: 5px 0, 0 0; }
+        54% { opacity: 0.5; transform: scaleY(1.09); background-position: 12px 0, 0 0; }
+        78% { opacity: 0.42; transform: scaleY(0.98); background-position: 20px 0, 0 0; }
+        100% { opacity: 0.38; transform: scaleY(1); background-position: 24px 0, 0 0; }
+      }
+
+.theme-glass .bar.drop-impact .drop-cell,
+.theme-glass .compact-bar.drop-impact .drop-cell {
+        display: none !important;
+      }
+
+.theme-glass .bar.usage-effect-bar.drop-impact,
+.theme-glass .compact-bar.usage-effect-bar.drop-impact {
+        overflow: visible;
+        animation: none !important;
+      }
+
+.theme-glass .bar.bar-active,
+.theme-glass .compact-bar.bar-active {
+        filter: saturate(1.06) brightness(0.98) !important;
+        border-color: color-mix(in srgb, var(--provider-color, var(--tone)) 34%, var(--paper-glass-line)) !important;
+        box-shadow:
+          inset 0 0 0 1px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 9%), transparent),
+          inset 0 3px 7px -5px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 14%), transparent),
+          0 5px 14px -12px color-mix(in srgb, var(--provider-color, var(--tone)) 18%, transparent) !important;
+      }
+
+.theme-glass .bar.bar-active::before,
+.theme-glass .compact-bar.bar-active::before,
+.theme-glass .bar.bar-fading::before,
+.theme-glass .compact-bar.bar-fading::before {
+        content: "";
+        position: absolute;
+        left: 3px !important;
+        top: 3px !important;
+        bottom: 3px !important;
+        z-index: 1 !important;
+        width: max(0px, calc(var(--bar-fill, 0%) - 6px)) !important;
+        opacity: 1 !important;
+        border-radius: inherit;
+        pointer-events: none;
+        background:
+          linear-gradient(90deg, color-mix(in srgb, var(--provider-color, var(--paper-ink)) 42%, transparent), color-mix(in srgb, var(--provider-color, var(--paper-ink)) 74%, transparent)),
+          linear-gradient(180deg, rgba(255,255,255,.24), rgba(255,255,255,.05) 52%, rgba(0,0,0,.1)) !important;
+        box-shadow:
+          inset 0 1px 0 color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 44%), transparent),
+          inset 0 -1px 0 color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 14%), transparent),
+          0 0 13px color-mix(in srgb, var(--provider-color, var(--paper-ink)) 20%, transparent) !important;
+      }
+
+.theme-glass .bar.usage-effect-bar.drop-impact::before,
+.theme-glass .compact-bar.usage-effect-bar.drop-impact::before {
+        animation: liquid-fill-gel-settle var(--effect-duration, 5600ms) cubic-bezier(0.2, 0.82, 0.24, 1) both !important;
+      }
+
+.theme-glass .bar.usage-effect-bar.drop-impact::after,
+.theme-glass .compact-bar.usage-effect-bar.drop-impact::after {
+        animation: liquid-surface-settle var(--effect-duration, 5600ms) ease-out both !important;
+      }
+
+.theme-glass .bar.usage-effect-bar.drop-impact .liquid-refraction,
+.theme-glass .compact-bar.usage-effect-bar.drop-impact .liquid-refraction {
+        animation: liquid-refraction-shiver var(--effect-duration, 5600ms) ease-out both;
+      }
+
+.theme-glass .bar.drop-impact .liquid-drop,
+.theme-glass .compact-bar.drop-impact .liquid-drop,
+.theme-glass .bar.drop-impact .liquid-ripple,
+.theme-glass .compact-bar.drop-impact .liquid-ripple,
+.theme-glass .bar.drop-impact .liquid-flow,
+.theme-glass .compact-bar.drop-impact .liquid-flow,
+.theme-glass .bar.drop-impact .liquid-wave-left,
+.theme-glass .compact-bar.drop-impact .liquid-wave-left,
+.theme-glass .bar.drop-impact .liquid-wave-right,
+.theme-glass .compact-bar.drop-impact .liquid-wave-right {
+        display: block;
+        position: absolute;
+        pointer-events: none;
+      }
+
+.theme-glass .bar.drop-impact .liquid-drop,
+.theme-glass .compact-bar.drop-impact .liquid-drop {
+        left: var(--gl-drop-left, 50%);
+        top: 50%;
+        z-index: 9;
+        width: calc(12px * var(--drop-scale, 1));
+        height: calc(15px * var(--drop-scale, 1));
+        border-radius: 64% 64% 70% 70% / 78% 78% 52% 52%;
+        background:
+          radial-gradient(circle at 34% 24%, rgba(255, 255, 255, 0.74), transparent 22%),
+          radial-gradient(circle at 62% 70%, color-mix(in srgb, var(--provider-color, var(--tone)) 56%, #fff), transparent 46%),
+          linear-gradient(180deg, color-mix(in srgb, var(--provider-color, var(--tone)) 36%, #fff), color-mix(in srgb, var(--provider-color, var(--tone)) 72%, transparent));
+        box-shadow:
+          0 0 12px color-mix(in srgb, var(--provider-color, var(--tone)) 48%, transparent),
+          0 6px 18px color-mix(in srgb, var(--provider-color, var(--tone)) 18%, transparent),
+          inset 1px 1px 0 rgba(255, 255, 255, 0.34),
+          inset -2px -3px 6px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 14%), transparent);
+        transform-origin: 50% 100%;
+        animation: liquid-drop-fall calc(var(--effect-duration, 5600ms) * 0.48) cubic-bezier(0.18, 0.86, 0.24, 1) both;
+      }
+
+.theme-glass .compact-bar.drop-impact .liquid-drop {
+        width: calc(9px * var(--drop-scale, 1));
+        height: calc(11px * var(--drop-scale, 1));
+      }
+
+.theme-glass .bar.drop-impact .liquid-ripple,
+.theme-glass .compact-bar.drop-impact .liquid-ripple {
+        left: var(--gl-drop-left, 50%);
+        top: 50%;
+        z-index: 8;
+        width: max(14px, calc(var(--gl-drop-width, 10%) * 0.46));
+        height: calc(100% - 2px);
+        border: 1px solid color-mix(in srgb, var(--provider-color, var(--tone)) 62%, #fff);
+        border-radius: 999px;
+        background: radial-gradient(ellipse at 50% 50%, color-mix(in srgb, var(--provider-color, var(--tone)) 44%, transparent), transparent 62%);
+        box-shadow:
+          0 0 9px color-mix(in srgb, var(--provider-color, var(--tone)) 22%, transparent),
+          inset 0 0 7px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 14%), transparent);
+        transform-origin: 50% 50%;
+        animation: liquid-impact-ripple var(--effect-duration, 5600ms) cubic-bezier(0.18, 0.82, 0.22, 1) both;
+      }
+
+.theme-glass .bar.drop-impact .liquid-flow,
+.theme-glass .compact-bar.drop-impact .liquid-flow {
+        left: var(--gl-drop-left, 50%);
+        top: 50%;
+        z-index: 7;
+        width: max(12px, calc(var(--gl-drop-width, 10%) * 0.28));
+        height: calc(100% - 4px);
+        border-radius: 999px;
+        background:
+          radial-gradient(ellipse at 50% 32%, color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 28%), transparent), transparent 30%),
+          radial-gradient(ellipse at 50% 62%, color-mix(in srgb, var(--provider-color, var(--tone)) 52%, transparent), transparent 70%);
+        box-shadow:
+          0 0 8px color-mix(in srgb, var(--provider-color, var(--tone)) 18%, transparent),
+          0 0 16px color-mix(in srgb, var(--provider-color, var(--tone)) 9%, transparent),
+          inset 0 1px 0 color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 38%), transparent),
+          inset 0 -1px 0 color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 14%), transparent);
+        transform-origin: 50% 50%;
+        animation: liquid-impact-bulge var(--effect-duration, 5600ms) cubic-bezier(0.18, 0.82, 0.22, 1) both;
+      }
+
+.theme-glass .compact-bar.drop-impact .liquid-flow {
+        width: max(10px, calc(var(--gl-drop-width, 10%) * 0.24));
+        height: calc(100% - 4px);
+      }
+
+.theme-glass .bar.drop-impact .liquid-wave-left,
+.theme-glass .compact-bar.drop-impact .liquid-wave-left,
+.theme-glass .bar.drop-impact .liquid-wave-right,
+.theme-glass .compact-bar.drop-impact .liquid-wave-right {
+        top: 2px;
+        bottom: 2px;
+        z-index: 6;
+        border-radius: 999px;
+        opacity: 0;
+        background:
+          radial-gradient(ellipse at var(--wave-origin, 100%) 50%, color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 22%), transparent), transparent 28%),
+          linear-gradient(90deg, color-mix(in srgb, var(--provider-color, var(--tone)) 0%, transparent), color-mix(in srgb, var(--provider-color, var(--tone)) 58%, transparent), color-mix(in srgb, var(--provider-color, var(--tone)) 0%, transparent));
+        box-shadow:
+          0 0 14px color-mix(in srgb, var(--provider-color, var(--tone)) 30%, transparent),
+          inset 0 1px 0 color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 34%), transparent),
+          inset 0 -1px 0 color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 12%), transparent);
+      }
+
+.theme-glass .bar.drop-impact .liquid-wave-left,
+.theme-glass .compact-bar.drop-impact .liquid-wave-left {
+        right: calc(100% - var(--gl-drop-left, 50%));
+        width: max(var(--left-wave-width, 0%), 10px);
+        --wave-origin: 100%;
+        transform-origin: 100% 50%;
+        animation: liquid-wave-left var(--effect-duration, 5600ms) cubic-bezier(0.16, 0.86, 0.2, 1) both;
+      }
+
+.theme-glass .bar.drop-impact .liquid-wave-right,
+.theme-glass .compact-bar.drop-impact .liquid-wave-right {
+        left: var(--gl-drop-left, 50%);
+        width: max(var(--right-wave-width, 0%), 10px);
+        --wave-origin: 0%;
+        transform-origin: 0% 50%;
+        animation: liquid-wave-right var(--effect-duration, 5600ms) cubic-bezier(0.16, 0.86, 0.2, 1) both;
+      }
+
+@keyframes liquid-fill-mask-reveal {
+        0%, 27% { opacity: 1; transform: scaleX(1); }
+        38% { opacity: 0.88; transform: scaleX(0.82); }
+        56% { opacity: 0.48; transform: scaleX(0.46); }
+        76% { opacity: 0.12; transform: scaleX(0.12); }
+        100% { opacity: 0; transform: scaleX(0); }
+      }
+
+.theme-glass .bar.drop-impact .liquid-fill-mask,
+.theme-glass .compact-bar.drop-impact .liquid-fill-mask {
+        display: block;
+        position: absolute;
+        left: var(--delta-start, 0%);
+        top: 3px;
+        bottom: 3px;
+        z-index: 8;
+        width: max(var(--delta-width, 0%), 0px);
+        border-radius: 999px;
+        pointer-events: none;
+        background:
+          linear-gradient(180deg, color-mix(in srgb, var(--paper-panel) 82%, transparent), color-mix(in srgb, var(--paper-bg) 78%, transparent));
+        box-shadow: none;
+        transform-origin: 100% 50%;
+        animation: liquid-fill-mask-reveal var(--effect-duration, 5600ms) ease-out both;
+      }
+
+.theme-glass .compact-bar.drop-impact .liquid-fill-mask {
+        top: 2px;
+        bottom: 2px;
+      }
