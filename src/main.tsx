@@ -2211,7 +2211,7 @@ function MiniUsageRow({ snapshot, paused = false, updatedAgo, flash = false }: {
       <span className={`mini-status ${state}`} aria-label={state} />
       <span className="mini-provider"><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</span>
       <strong className="mini-percent">{percent !== undefined ? `${Math.round(percent)}%` : "--"}</strong>
-      <span className="mini-bar" aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
+      <span className="mini-bar" style={{ "--bar-fill": `${percent ?? 0}%` } as React.CSSProperties} aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
         {buildUsageCells(percent, 8, false)}
       </span>
     </article>

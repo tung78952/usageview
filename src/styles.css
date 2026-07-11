@@ -1230,12 +1230,14 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   width: max(1px, calc(100% * var(--partial-ratio, 0)));
   background: var(--tone);
 }
+/* Grows UPWARD (bottom-anchored) like the full/compact tooltips: the old `top` anchor let the last row's
+   absolute overlay overflow below .mini-providers, inflating scrollHeight → dead space at the window bottom. */
 .mini-usage[data-tip]::after {
   content: attr(data-tip);
   position: absolute;
   left: 4px;
   right: 4px;
-  top: 4px;
+  bottom: 4px;
   z-index: 8;
   padding: 5px 7px;
   border: 1px solid color-mix(in oklch, var(--tone) 40%, var(--border));
