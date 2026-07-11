@@ -2241,7 +2241,7 @@ function UsageBlock({ snapshot, compact = false, flash = false, paused = false, 
         <span className="message">{providerMessage(snapshot)}</span>
       </div>
       <div className={`bar${effect ? " usage-effect-bar" : ""}${effect && dropCell ? " drop-impact" : ""}`} style={effectStyle(effect, percent)} aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
-        {buildUsageCells(percent, 20, !!effect)}
+        {buildUsageCells(percent, 10, !!effect)}
         <EffectOverlays effect={effect} dropCell={dropCell} />
         <LiquidLayers />
       </div>
