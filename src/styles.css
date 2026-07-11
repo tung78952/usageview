@@ -11,6 +11,7 @@
   --claude: #c46f42;
   --codex: #7b8cff;
   --accent: #c46f42;
+  --ok: #62c67a;
   --warn: #d7b76a;
   --danger: #db6b58;
   --panel-opacity: 0.96;
@@ -76,6 +77,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   --claude: #b85f2e;
   --codex: #3f66ad;
   --accent: #b85f2e;
+  --ok: #3f9d5a;
 }
 
 
@@ -288,25 +290,6 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   white-space: nowrap;
 }
 .compact-meta span:last-child { text-align: right; }
-
-.compact-menu {
-  position: absolute;
-  right: 9px;
-  top: 9px;
-  z-index: 10;
-  display: grid;
-  gap: 6px;
-  width: 138px;
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: color-mix(in srgb, var(--surface) 98%, transparent);
-  box-shadow: 8px 8px 0 var(--shadow);
-}
-.compact-menu button {
-  width: 100%;
-  justify-content: center;
-}
 
 .widget-header {
   position: relative;
@@ -1177,9 +1160,9 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   position: relative;
   z-index: 1;
   min-width: 0;
-  height: 32px;
+  height: 34px;
   display: grid;
-  grid-template-columns: 6px minmax(72px, 1fr) 34px 72px;
+  grid-template-columns: 8px minmax(64px, 1fr) 42px 72px;
   align-items: center;
   gap: 6px;
   padding: 5px 7px;
@@ -1193,11 +1176,11 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 .mini-usage.codex,
 .mini-usage.codex-1 { --tone: var(--codex); }
 .mini-status {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
   background: var(--muted);
-  box-shadow: 0 0 6px currentColor;
+  box-shadow: 0 0 8px currentColor, 0 0 2px currentColor;
 }
 .mini-status.ok { color: var(--ok); background: var(--ok); }
 .mini-status.stale,
@@ -1220,12 +1203,12 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 .mini-percent {
   color: var(--tone);
   text-align: right;
-  font: 800 12px/1 var(--font-mono);
+  font: 800 15px/1 var(--font-mono);
   letter-spacing: -.04em;
 }
 .mini-bar {
   width: 72px;
-  height: 9px;
+  height: 11px;
   display: grid;
   grid-template-columns: repeat(8, 1fr);
   gap: 1px;
@@ -1235,10 +1218,11 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   border-radius: 2px;
   background: color-mix(in srgb, var(--surface-2) 78%, transparent);
 }
-.mini-bar .cell { min-width: 0; background: color-mix(in oklch, var(--muted) 24%, transparent); }
-.mini-bar .cell.filled,
-.mini-bar .cell.partial { position: relative; background: var(--tone); }
-.mini-bar .cell.partial { background: color-mix(in oklch, var(--muted) 24%, transparent); }
+/* buildUsageCells() emits `.cell.active` for filled cells (not `.cell.filled`). Empty cells kept dim for
+   contrast against the provider-toned filled cells. */
+.mini-bar .cell { min-width: 0; background: color-mix(in oklch, var(--muted) 16%, transparent); }
+.mini-bar .cell.active { position: relative; background: var(--tone); box-shadow: 0 0 6px color-mix(in oklch, var(--tone) 34%, transparent); }
+.mini-bar .cell.partial { position: relative; background: color-mix(in oklch, var(--muted) 16%, transparent); }
 .mini-bar .cell.partial::after {
   content: "";
   position: absolute;
@@ -1267,8 +1251,3 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   transition: opacity 120ms ease, transform 120ms ease;
 }
 .mini-usage:hover::after { opacity: 1; transform: translateY(0); }
-.compact-menu .mode-current {
-  color: var(--accent);
-  border-color: color-mix(in oklch, var(--accent) 52%, var(--border));
-  opacity: .82;
-}

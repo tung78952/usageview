@@ -1,6 +1,7 @@
 import React, { Component, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { availableMonitors, getCurrentWindow, LogicalSize, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "./styles.css";
@@ -87,7 +88,7 @@ const COMPACT_MAX_WIDTH = 640;
 const COMPACT_LOCK_WIDTH = 260;
 const COMPACT_MIN_HEIGHT_FALLBACK = 130;
 const MINI_LOCK_WIDTH = 240;
-const MINI_MIN_HEIGHT_FALLBACK = 54;
+const MINI_MIN_HEIGHT_FALLBACK = 48;
 const MODE_KEY = "usageview.mode";
 let windowGeometryCache: Partial<Record<AppMode, WindowGeometry>> | undefined;
 
@@ -923,8 +924,8 @@ function WidgetApp() {
   const providersRef = useRef<HTMLDivElement | null>(null);
   const compactProvidersRef = useRef<HTMLDivElement | null>(null);
   const compactPointerRef = useRef<{ x: number; y: number; dragged: boolean } | null>(null);
+  const contextActionHandlerRef = useRef<(action: string) => void>(() => undefined);
   const [mode, setMode] = useState<AppMode>(loadMode);
-  const [compactMenuOpen, setCompactMenuOpen] = useState(false);
   const [compactTimerSet, setCompactTimerSet] = useState<Set<Provider>>(new Set());
   const [settings, setSettings] = useState(loadSettings);
   const settingsRef = useRef(settings);
@@ -1032,6 +1033,13 @@ function WidgetApp() {
   }, [settings]);
 
   useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<string>("usageview-context-action", ({ payload }) => contextActionHandlerRef.current(payload))
+      .then((dispose) => { unlisten = dispose; });
+    return () => unlisten?.();
+  }, []);
+
+  useEffect(() => {
     modeRef.current = mode;
     void invoke("set_widget_mode", { mode }).catch(() => undefined);
   }, [mode]);
@@ -1070,29 +1078,48 @@ function WidgetApp() {
     if (mode === "compact" || mode === "mini") {
       const appWindow = getCurrentWindow();
       let animationFrame = 0;
-      let lastCompactHeight = -1;
-      // Compact is not resizable at all — no resize handles, can't be dragged bigger.
+      let desiredSize: { width: number; height: number } | undefined;
+      let applyingSize = false;
+      let disposed = false;
       void appWindow.setResizable(false).catch(() => undefined);
 
-      // Compact is locked at a fixed compact size: width is constant and min==max on BOTH axes, so the
-      // window can't be resized at all. Height still auto-fits content (grows/shrinks when providers are
-      // shown/hidden). Width is a constant (not read from innerSize) so there is no physical/logical unit
-      // pitfall and no runaway.
+      // Min/max constraints from the previous mode can reject a smaller target. Clear them first, resize,
+      // then lock the exact content size. The small queue collapses ResizeObserver bursts to the latest size.
+      function applyLockedSize(width: number, height: number) {
+        desiredSize = { width, height };
+        if (applyingSize) return;
+        applyingSize = true;
+        void (async () => {
+          while (desiredSize && !disposed) {
+            const target = desiredSize;
+            desiredSize = undefined;
+            await appWindow.setMinSize(null).catch(() => undefined);
+            await appWindow.setMaxSize(null).catch(() => undefined);
+            if (disposed) break;
+            await appWindow.setSize(new LogicalSize(target.width, target.height)).catch(() => undefined);
+            await appWindow.setMinSize(new LogicalSize(target.width, target.height)).catch(() => undefined);
+            await appWindow.setMaxSize(new LogicalSize(target.width, target.height)).catch(() => undefined);
+          }
+          applyingSize = false;
+        })();
+      }
+
       function updateCompactLayout() {
         window.cancelAnimationFrame(animationFrame);
         animationFrame = window.requestAnimationFrame(() => {
           const providers = compactProvidersRef.current;
-          if (!providers) return;
+          const panel = providers?.closest<HTMLElement>(".compact-widget");
+          if (!providers || !panel) return;
           const lockWidth = mode === "mini" ? MINI_LOCK_WIDTH : COMPACT_LOCK_WIDTH;
           const minHeight = mode === "mini" ? MINI_MIN_HEIGHT_FALLBACK : COMPACT_MIN_HEIGHT_FALLBACK;
-          const menuHeight = compactMenuOpen ? Math.ceil((document.querySelector<HTMLElement>(".compact-menu")?.scrollHeight ?? 0) + 18) : 0;
-          const height = Math.max(minHeight, Math.ceil(providers.scrollHeight + 14), menuHeight);
-          void appWindow.setMinSize(new LogicalSize(lockWidth, height)).catch(() => undefined);
-          void appWindow.setMaxSize(new LogicalSize(lockWidth, height)).catch(() => undefined);
-          if (height !== lastCompactHeight) {
-            lastCompactHeight = height;
-            void appWindow.setSize(new LogicalSize(lockWidth, height)).catch(() => undefined);
-          }
+          const style = window.getComputedStyle(panel);
+          const chromeHeight =
+            (Number.parseFloat(style.paddingTop) || 0) +
+            (Number.parseFloat(style.paddingBottom) || 0) +
+            (Number.parseFloat(style.borderTopWidth) || 0) +
+            (Number.parseFloat(style.borderBottomWidth) || 0);
+          const height = Math.max(minHeight, Math.ceil(providers.scrollHeight + chromeHeight));
+          applyLockedSize(lockWidth, height);
         });
       }
 
@@ -1102,6 +1129,7 @@ function WidgetApp() {
       compactProvidersRef.current?.querySelectorAll(".provider-tile, .empty-state").forEach((element) => observer.observe(element));
 
       return () => {
+        disposed = true;
         window.cancelAnimationFrame(animationFrame);
         observer.disconnect();
       };
@@ -1152,7 +1180,7 @@ function WidgetApp() {
       window.cancelAnimationFrame(animationFrame);
       observer.disconnect();
     };
-  }, [mode, settings.theme, snapshots.claude, snapshots.codex, snapshots["codex-1"], settings.showClaude, settings.showCodex, settings.showCodex1, compactMenuOpen]);
+  }, [mode, settings.theme, snapshots.claude, snapshots.codex, snapshots["codex-1"], settings.showClaude, settings.showCodex, settings.showCodex1]);
 
   async function saveCurrentGeometryNow(targetMode = modeRef.current) {
     // Never persist before the saved geometry has been restored, or a startup resize event would
@@ -1243,20 +1271,6 @@ function WidgetApp() {
     activateUsageEffects(effectPayloads);
   }, []);
 
-  // Close the compact context menu whenever the window loses focus. This also covers
-  // hiding via the tray "Hide" item (which bypasses React), so the menu never lingers
-  // and reappears when the widget is shown again.
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    void getCurrentWindow()
-      .onFocusChanged(({ payload: focused }) => {
-        if (!focused) setCompactMenuOpen(false);
-      })
-      .then((fn) => {
-        unlisten = fn;
-      });
-    return () => unlisten?.();
-  }, []);
 
   // Record the timestamp of the last GENUINE valid read per provider (a non-empty flashToken).
   // Retained Claude snapshots bump updatedAt but have an empty flashToken, so this stays put and
@@ -1470,12 +1484,16 @@ function WidgetApp() {
 
   function openCompactMenu(event: React.MouseEvent<HTMLElement>) {
     event.preventDefault();
-    if ((event.target as HTMLElement).closest("button")) return;
     if (compactPointerRef.current?.dragged) {
       compactPointerRef.current = null;
       return;
     }
-    setCompactMenuOpen((open) => !open);
+    void invoke("show_widget_context_menu", {
+      mode,
+      pinned: settings.alwaysOnTop,
+      x: event.clientX,
+      y: event.clientY,
+    }).catch(() => undefined);
   }
 
   function prepareCompactDrag(event: React.MouseEvent<HTMLElement>) {
@@ -1488,13 +1506,26 @@ function WidgetApp() {
     if (!pointer || pointer.dragged || (event.buttons & 1) !== 1) return;
     if (Math.abs(event.clientX - pointer.x) < 5 && Math.abs(event.clientY - pointer.y) < 5) return;
     pointer.dragged = true;
-    setCompactMenuOpen(false);
     void getCurrentWindow().startDragging().catch(() => undefined);
   }
 
   function togglePinned() {
     updateSettings({ ...settings, alwaysOnTop: !settings.alwaysOnTop });
   }
+
+  contextActionHandlerRef.current = (action) => {
+    if (action === "mini" || action === "compact" || action === "widget") {
+      setMode(action);
+    } else if (action === "pin") {
+      togglePinned();
+    } else if (action === "refresh") {
+      void refreshAll();
+    } else if (action === "settings") {
+      void invoke("toggle_settings_window");
+    } else if (action === "close") {
+      void closeWindow();
+    }
+  };
 
   const now = Date.now();
   const isPaused = (p: Provider) =>
@@ -1503,23 +1534,12 @@ function WidgetApp() {
 
   if (mode === "mini") {
     return (
-      <main className={`compact-widget mini-widget ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={prepareCompactDrag} onMouseMove={maybeStartCompactDrag} onContextMenu={openCompactMenu} onClick={() => { if (compactMenuOpen) setCompactMenuOpen(false); }}>
+      <main className={`compact-widget mini-widget ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={prepareCompactDrag} onMouseMove={maybeStartCompactDrag} onContextMenu={openCompactMenu}>
         <div ref={compactProvidersRef} className="mini-providers">
           {shown.length > 0 ? shown.map((provider) => (
             <MiniUsageRow key={provider} snapshot={snapshots[provider]} paused={isPaused(provider)} updatedAgo={agoFor(provider)} flash={flashSet.has(provider)} />
           )) : <EmptyProviderState />}
         </div>
-        {compactMenuOpen && (
-          <div className="compact-menu" role="menu" onClick={(event) => event.stopPropagation()}>
-            <button className="mode-current" disabled>Mini view</button>
-            <button onClick={() => { setCompactMenuOpen(false); setMode("compact"); }}>Compact view</button>
-            <button onClick={() => { setCompactMenuOpen(false); setMode("widget"); }}>Full view</button>
-            <button onClick={() => { togglePinned(); setCompactMenuOpen(false); }}>{settings.alwaysOnTop ? "Unpin" : "Pin"}</button>
-            <button onClick={() => { setCompactMenuOpen(false); void refreshAll(); }}>Refresh</button>
-            <button onClick={() => { setCompactMenuOpen(false); void invoke("toggle_settings_window"); }}>Settings</button>
-            <button className="danger" onClick={() => { setCompactMenuOpen(false); void closeWindow(); }}>Close</button>
-          </div>
-        )}
       </main>
     );
   }
@@ -1528,12 +1548,12 @@ function WidgetApp() {
     // Hover no longer swaps to the full UsageBlock (that resized the tile / grew the widget). Instead the
     // compact tile stays put and its .compact-meta[data-tip] tooltip fades up in place on hover.
     return (
-      <main className={`compact-widget ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={prepareCompactDrag} onMouseMove={maybeStartCompactDrag} onContextMenu={openCompactMenu} onClick={() => { if (compactMenuOpen) setCompactMenuOpen(false); }}>
+      <main className={`compact-widget ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={prepareCompactDrag} onMouseMove={maybeStartCompactDrag} onContextMenu={openCompactMenu}>
         <div ref={compactProvidersRef} className="compact-providers">
           {shown.length > 0 ? shown.map((provider) => (
             <div
               key={provider}
-              onClick={() => { if (compactMenuOpen) { setCompactMenuOpen(false); return; } if (!compactTimerSet.has(provider)) toggleCompactTimer(provider); }}
+              onClick={() => { if (!compactTimerSet.has(provider)) toggleCompactTimer(provider); }}
               style={{ cursor: compactTimerSet.has(provider) ? "default" : "pointer" }}
             >
               {compactTimerSet.has(provider)
@@ -1543,17 +1563,6 @@ function WidgetApp() {
             </div>
           )) : <EmptyProviderState />}
         </div>
-        {compactMenuOpen && (
-          <div className="compact-menu" role="menu" onClick={(event) => event.stopPropagation()}>
-            <button onClick={() => { setCompactMenuOpen(false); setMode("mini"); }}>Mini view</button>
-            <button className="mode-current" disabled>Compact view</button>
-            <button onClick={() => { setCompactMenuOpen(false); setMode("widget"); }}>Full view</button>
-            <button onClick={() => { togglePinned(); setCompactMenuOpen(false); }}>{settings.alwaysOnTop ? "Unpin" : "Pin"}</button>
-            <button onClick={() => { setCompactMenuOpen(false); void refreshAll(); }}>Refresh</button>
-            <button onClick={() => { setCompactMenuOpen(false); void invoke("toggle_settings_window"); }}>Settings</button>
-            <button className="danger" onClick={() => { setCompactMenuOpen(false); void closeWindow(); }}>Close</button>
-          </div>
-        )}
       </main>
     );
   }

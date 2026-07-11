@@ -633,3 +633,9 @@
     inset 1.5px 2px 0 -2px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 80%), transparent),
     0 14px 34px -16px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 44%), transparent);
 }
+
+/* Mini view under glass: define the live-status green (base --ok is undefined) and make the mini bar/percent
+   use the provider color (glass sets --provider-color, not --tone). */
+.theme-glass { --ok: #3f9d5a; }
+.theme-glass.theme-glass-dark { --ok: #62c67a; }
+.theme-glass .mini-usage { --tone: var(--provider-color, var(--paper-ink)); }

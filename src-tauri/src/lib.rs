@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{
   menu::{Menu, MenuItem, PredefinedMenuItem},
   tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-  Listener, Manager, WebviewUrl, WebviewWindowBuilder,
+  Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 
 const PAYLOAD_PREFIX: &str = "__USAGEVIEW__";
@@ -16,6 +16,14 @@ const EXTRACT_EVENT: &str = "usageview-extract-result";
 const TRAY_SHOW_WIDGET: &str = "show_widget";
 const TRAY_HIDE_WIDGET: &str = "hide_widget";
 const TRAY_QUIT: &str = "quit";
+const CONTEXT_MINI: &str = "widget_context_mini";
+const CONTEXT_COMPACT: &str = "widget_context_compact";
+const CONTEXT_FULL: &str = "widget_context_full";
+const CONTEXT_PIN: &str = "widget_context_pin";
+const CONTEXT_REFRESH: &str = "widget_context_refresh";
+const CONTEXT_SETTINGS: &str = "widget_context_settings";
+const CONTEXT_CLOSE: &str = "widget_context_close";
+const CONTEXT_ACTION_EVENT: &str = "usageview-context-action";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct WindowGeometry {
@@ -111,10 +119,42 @@ fn save_window_geometry(app: tauri::AppHandle, mode: String, geometry: WindowGeo
 
 #[tauri::command]
 fn set_widget_mode(state: tauri::State<CurrentWidgetMode>, mode: String) -> Result<(), String> {
-  if mode == "widget" || mode == "compact" {
+  if mode == "widget" || mode == "compact" || mode == "mini" {
     *state.0.lock().map_err(|error| error.to_string())? = mode;
   }
   Ok(())
+}
+
+#[tauri::command]
+fn show_widget_context_menu(
+  app: tauri::AppHandle,
+  window: tauri::WebviewWindow,
+  mode: String,
+  pinned: bool,
+  x: f64,
+  y: f64,
+) -> Result<(), String> {
+  if mode != "widget" && mode != "compact" && mode != "mini" {
+    return Err(format!("Unknown widget mode: {}", mode));
+  }
+
+  let mini = MenuItem::with_id(&app, CONTEXT_MINI, "Mini view", mode != "mini", None::<&str>).map_err(|error| error.to_string())?;
+  let compact = MenuItem::with_id(&app, CONTEXT_COMPACT, "Compact view", mode != "compact", None::<&str>).map_err(|error| error.to_string())?;
+  let full = MenuItem::with_id(&app, CONTEXT_FULL, "Full view", mode != "widget", None::<&str>).map_err(|error| error.to_string())?;
+  let view_separator = PredefinedMenuItem::separator(&app).map_err(|error| error.to_string())?;
+  let pin = MenuItem::with_id(&app, CONTEXT_PIN, if pinned { "Unpin" } else { "Pin" }, true, None::<&str>).map_err(|error| error.to_string())?;
+  let refresh = MenuItem::with_id(&app, CONTEXT_REFRESH, "Refresh", true, None::<&str>).map_err(|error| error.to_string())?;
+  let settings = MenuItem::with_id(&app, CONTEXT_SETTINGS, "Settings", true, None::<&str>).map_err(|error| error.to_string())?;
+  let close_separator = PredefinedMenuItem::separator(&app).map_err(|error| error.to_string())?;
+  let close = MenuItem::with_id(&app, CONTEXT_CLOSE, "Close", true, None::<&str>).map_err(|error| error.to_string())?;
+  let menu = Menu::with_items(
+    &app,
+    &[&mini, &compact, &full, &view_separator, &pin, &refresh, &settings, &close_separator, &close],
+  ).map_err(|error| error.to_string())?;
+
+  window
+    .popup_menu_at(&menu, tauri::LogicalPosition::new(x, y))
+    .map_err(|error| error.to_string())
 }
 
 fn geometry_store_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -511,6 +551,21 @@ pub fn run() {
       setup_tray(app.handle())?;
       Ok(())
     })
+    .on_menu_event(|app, event| {
+      let action = match event.id().as_ref() {
+        CONTEXT_MINI => Some("mini"),
+        CONTEXT_COMPACT => Some("compact"),
+        CONTEXT_FULL => Some("widget"),
+        CONTEXT_PIN => Some("pin"),
+        CONTEXT_REFRESH => Some("refresh"),
+        CONTEXT_SETTINGS => Some("settings"),
+        CONTEXT_CLOSE => Some("close"),
+        _ => None,
+      };
+      if let Some(action) = action {
+        let _ = app.emit_to("widget", CONTEXT_ACTION_EVENT, action);
+      }
+    })
     .on_window_event(|window, event| {
       // Close hides app windows so UsageView can keep running from the tray.
       if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -539,6 +594,7 @@ pub fn run() {
       load_window_geometry,
       save_window_geometry,
       set_widget_mode,
+      show_widget_context_menu,
       open_settings_window,
       toggle_settings_window,
       update_tray_tooltip,
