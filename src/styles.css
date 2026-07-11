@@ -1172,6 +1172,14 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   box-shadow: 0 0 0 1px color-mix(in oklch, var(--shadow) 34%, transparent) inset;
 }
 .mini-usage:hover { z-index: 4; }
+.mini-usage > .mini-status,
+.mini-usage > .mini-provider,
+.mini-usage > .mini-percent,
+.mini-usage > .mini-bar { transition: opacity 100ms ease; }
+.mini-usage:hover > .mini-status,
+.mini-usage:hover > .mini-provider,
+.mini-usage:hover > .mini-percent,
+.mini-usage:hover > .mini-bar { opacity: 0; }
 .mini-usage.claude { --tone: var(--claude); }
 .mini-usage.codex,
 .mini-usage.codex-1 { --tone: var(--codex); }
@@ -1230,26 +1238,28 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   width: max(1px, calc(100% * var(--partial-ratio, 0)));
   background: var(--tone);
 }
-/* Grows UPWARD (bottom-anchored) like the full/compact tooltips: the old `top` anchor let the last row's
-   absolute overlay overflow below .mini-providers, inflating scrollHeight → dead space at the window bottom. */
-.mini-usage[data-tip]::after {
-  content: attr(data-tip);
+.mini-details {
   position: absolute;
-  left: 4px;
-  right: 4px;
-  bottom: 4px;
+  inset: 2px 7px;
   z-index: 8;
-  padding: 5px 7px;
-  border: 1px solid color-mix(in oklch, var(--tone) 40%, var(--border));
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--surface) 97%, transparent);
-  box-shadow: 4px 4px 0 var(--shadow);
+  min-width: 0;
+  display: grid;
+  place-content: center;
+  gap: 2px;
   color: var(--fg);
-  font: 650 9px/1.25 var(--font-mono);
-  white-space: pre-line;
+  font: 700 8px/1 var(--font-mono);
+  letter-spacing: .02em;
+  text-align: center;
+  text-transform: uppercase;
+  white-space: nowrap;
   opacity: 0;
-  transform: translateY(2px);
   pointer-events: none;
-  transition: opacity 120ms ease, transform 120ms ease;
+  transition: opacity 100ms ease;
 }
-.mini-usage:hover::after { opacity: 1; transform: translateY(0); }
+.mini-detail-meta { display: flex; align-items: center; justify-content: center; gap: 4px; }
+.mini-detail-meta i { color: var(--muted); font-style: normal; }
+.mini-detail-meta .ok { color: var(--ok); }
+.mini-detail-meta .stale,
+.mini-detail-meta .paused { color: var(--warn); }
+.mini-detail-meta .warn { color: var(--danger); }
+.mini-usage:hover > .mini-details { opacity: 1; }

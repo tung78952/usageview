@@ -2203,16 +2203,20 @@ function MiniUsageRow({ snapshot, paused = false, updatedAgo, flash = false }: {
   const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
   const stale = isStale(snapshot);
   const state = stale ? "stale" : snapshot.status !== "ok" ? "warn" : paused ? "paused" : "ok";
-  const metaLeft = usageMetaLeft(snapshot, percent);
-  const metaRight = usageMetaRight(snapshot);
-  const tooltip = `${providerLabel(snapshot.provider)} · ${readableStatus(snapshot.status)}${updatedAgo ? ` · updated ${updatedAgo}` : ""}\n${metaLeft} · ${metaRight}`;
+  const statusLabel = stale ? "stale" : snapshot.status !== "ok" ? readableStatus(snapshot.status) : paused ? "paused" : "ok";
+  const resetLabel = resetCountdownLabel(snapshot)?.replace(/^resets\b/i, "reset") ?? (snapshot.resetLabel ? "resetting soon" : "reset --");
+  const freshnessLabel = updatedAgo ?? formatAgo(snapshot.updatedAt) ?? "--";
   return (
-    <article className={`mini-usage provider-tile ${snapshot.provider}${flash ? " mark-flash" : ""}`} data-tip={tooltip}>
+    <article className={`mini-usage provider-tile ${snapshot.provider}${flash ? " mark-flash" : ""}`}>
       <span className={`mini-status ${state}`} aria-label={state} />
       <span className="mini-provider"><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</span>
       <strong className="mini-percent">{percent !== undefined ? `${Math.round(percent)}%` : "--"}</strong>
       <span className="mini-bar" style={{ "--bar-fill": `${percent ?? 0}%` } as React.CSSProperties} aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
         {buildUsageCells(percent, 8, false)}
+      </span>
+      <span className="mini-details" aria-hidden="true">
+        <span className="mini-reset">{resetLabel}</span>
+        <span className="mini-detail-meta"><strong className={state}>{statusLabel}</strong><i>·</i><span>{freshnessLabel}</span></span>
       </span>
     </article>
   );
