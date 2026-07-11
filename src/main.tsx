@@ -2204,8 +2204,9 @@ function MiniUsageRow({ snapshot, paused = false, updatedAgo, flash = false }: {
   const stale = isStale(snapshot);
   const state = stale ? "stale" : snapshot.status !== "ok" ? "warn" : paused ? "paused" : "ok";
   const statusLabel = stale ? "stale" : snapshot.status !== "ok" ? readableStatus(snapshot.status) : paused ? "paused" : "ok";
-  const resetLabel = resetCountdownLabel(snapshot)?.replace(/^resets\b/i, "reset") ?? (snapshot.resetLabel ? "resetting soon" : "reset --");
-  const freshnessLabel = updatedAgo ?? formatAgo(snapshot.updatedAt) ?? "--";
+  const resetCountdown = resetCountdownLabel(snapshot);
+  const resetLabel = resetCountdown === "resetting soon" ? "soon" : resetCountdown?.replace(/^resets?\s+in\s+/i, "") ?? "--";
+  const freshnessLabel = (updatedAgo ?? formatAgo(snapshot.updatedAt) ?? "--").replace(/^just now$/i, "now");
   return (
     <article className={`mini-usage provider-tile ${snapshot.provider}${flash ? " mark-flash" : ""}`}>
       <span className={`mini-status ${state}`} aria-label={state} />

@@ -1240,23 +1240,24 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 }
 .mini-details {
   position: absolute;
-  inset: 2px 7px;
+  inset: 2px 8px;
   z-index: 8;
   min-width: 0;
-  display: grid;
-  place-content: center;
-  gap: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   color: var(--fg);
-  font: 700 8px/1 var(--font-mono);
+  font: 750 10px/1 var(--font-mono);
   letter-spacing: .02em;
-  text-align: center;
   text-transform: uppercase;
   white-space: nowrap;
   opacity: 0;
   pointer-events: none;
   transition: opacity 100ms ease;
 }
-.mini-detail-meta { display: flex; align-items: center; justify-content: center; gap: 4px; }
+.mini-reset { flex: 0 0 auto; color: var(--fg); }
+.mini-detail-meta { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
 .mini-detail-meta i { color: var(--muted); font-style: normal; }
 .mini-detail-meta .ok { color: var(--ok); }
 .mini-detail-meta .stale,
