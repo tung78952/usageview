@@ -2030,13 +2030,13 @@ function makeUsageEffect(from: number, to: number): UsageEffect {
 
 function makeEffectParticles(from: number, to: number): EffectParticle[] {
   const delta = Math.abs(to - from);
-  const count = Math.max(10, Math.min(30, 10 + Math.ceil(delta * 0.65)));
+  const count = 10 + Math.ceil(delta * 0.65);
   return Array.from({ length: count }, (_, index) => {
-    const angle = (Math.PI * 2 * index) / count + (Math.random() - 0.5) * 1.1;
-    const distance = 20 + Math.random() * 44;
+    const angle = index * 2.39996 + (Math.random() - 0.5) * 0.45;
+    const distance = 26 + Math.random() * 46;
     return {
-      x: Math.round(Math.cos(angle) * distance + (Math.random() - 0.5) * 12),
-      y: Math.round(Math.sin(angle) * distance * 0.8 + (Math.random() - 0.5) * 14),
+      x: Math.round(Math.cos(angle) * distance * 0.65 + (Math.random() - 0.5) * 8),
+      y: Math.round(Math.sin(angle) * distance * 1.15 + (Math.random() - 0.5) * 10),
       size: Math.random() > 0.72 ? 5 : Math.random() > 0.35 ? 4 : 3,
       delay: Math.round(Math.random() * 150),
       position: delta <= 1 ? 1 : Math.max(0, Math.min(1, (index + Math.random()) / count)),
@@ -2081,6 +2081,7 @@ function effectStyle(effect: UsageEffect | undefined, fallbackPercent: number | 
     "--delta-edge": `${to}%`,
     "--drop-left": `${start + width / 2}%`,
     "--drop-width": dropWidth,
+    "--pixel-impact-strength": compact ? impactStrength * 0.72 : impactStrength,
     // Glass fill + liquid drivers (real prototype variable names).
     "--bar-fill": `${to}%`,
     "--gl-drop-left": `${glDropLeft}%`,

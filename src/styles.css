@@ -557,7 +557,8 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 
 .usage-effect-bar {
   overflow: visible;
-  clip-path: inset(-42px -3px -3px -3px);
+  clip-path: inset(-90px -48px -48px -48px);
+  will-change: filter, transform;
   filter: brightness(var(--effect-bar-brightness, 1));
   border-color: color-mix(in srgb, var(--tone) 62%, var(--border));
   box-shadow:
@@ -568,9 +569,11 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 .usage-effect-bar .cell.active {
   animation: usage-cell-glow var(--effect-duration, 4000ms) cubic-bezier(.16, 1, .3, 1) both;
 }
-.bar.drop-impact,
-.compact-bar.drop-impact {
-  animation: impact-shake 260ms steps(2, end) calc(var(--effect-duration, 4000ms) * 0.27);
+.bar.usage-effect-bar.drop-impact,
+.compact-bar.usage-effect-bar.drop-impact {
+  animation:
+    usage-bar-glow var(--effect-duration, 4000ms) cubic-bezier(.16, 1, .3, 1) both,
+    impact-shake 360ms steps(2, end) calc(var(--effect-duration, 4000ms) * 0.27) both;
 }
 .effect-delta-range,
 .effect-edge-glow,
@@ -636,8 +639,8 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 .effect-ripple {
   left: var(--delta-edge);
   top: 50%;
-  width: 12px;
-  height: 12px;
+  width: calc(12px * var(--impact-strength, 1));
+  height: calc(12px * var(--impact-strength, 1));
   transform: translate(-50%, -50%);
   border: 1px solid color-mix(in srgb, var(--tone) 70%, white 30%);
   box-shadow:
@@ -659,6 +662,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
     inset -1px -1px 0 color-mix(in srgb, #000 18%, transparent);
   opacity: 0;
   image-rendering: pixelated;
+  will-change: transform, opacity;
   animation: usage-drop-cell calc(var(--effect-duration, 4000ms) * 0.46) cubic-bezier(0.22, 0.9, 0.22, 1) forwards;
 }
 .effect-particle {
@@ -669,6 +673,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   background: color-mix(in srgb, var(--tone) 78%, white 22%);
   box-shadow: 0 0 8px color-mix(in srgb, var(--tone) 58%, transparent);
   opacity: 0;
+  will-change: transform, opacity;
   animation: usage-particle-burst var(--effect-duration, 4000ms) ease-out both;
   animation-delay: var(--particle-delay);
 }
@@ -730,11 +735,12 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   100% { opacity: 0; transform: translate(-50%, 0) scale(1); }
 }
 @keyframes impact-shake {
-  0%, 100% { transform: translateX(0); }
-  20% { transform: translateX(-1px); }
-  40% { transform: translateX(1px); }
-  60% { transform: translateX(-1px); }
-  80% { transform: translateX(1px); }
+  0%, 100% { transform: translate(0, 0) scaleY(1); }
+  16% { transform: translate(calc(var(--pixel-impact-strength, 1) * -1.7px), calc(var(--pixel-impact-strength, 1) * .7px)) scaleY(.96); }
+  34% { transform: translate(calc(var(--pixel-impact-strength, 1) * 1.5px), calc(var(--pixel-impact-strength, 1) * -.55px)) scaleY(1.025); }
+  52% { transform: translate(calc(var(--pixel-impact-strength, 1) * -1.1px), calc(var(--pixel-impact-strength, 1) * .4px)) scaleY(.98); }
+  70% { transform: translate(calc(var(--pixel-impact-strength, 1) * .75px), calc(var(--pixel-impact-strength, 1) * -.25px)) scaleY(1.012); }
+  86% { transform: translate(calc(var(--pixel-impact-strength, 1) * -.35px), 0) scaleY(.994); }
 }
 @keyframes usage-particle-burst {
   0%, 34% { opacity: 0; transform: translate(-50%, -50%) scale(.4); }
