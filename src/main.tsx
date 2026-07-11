@@ -471,7 +471,7 @@ function readableStatus(status: UsageStatus) {
 function providerLabel(provider: Provider) {
   if (provider === "claude") return "Claude";
   if (provider === "codex-1") return "Codex 2";
-  return "Codex";
+  return "Codex 1";
 }
 
 function providerUrl(provider: Provider, settings: Settings): string {
