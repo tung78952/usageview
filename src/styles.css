@@ -637,17 +637,23 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   animation: usage-edge-glow var(--effect-duration, 4000ms) ease-out both;
 }
 .effect-ripple {
-  left: var(--delta-edge);
-  top: 50%;
-  width: calc(12px * var(--impact-strength, 1));
-  height: calc(12px * var(--impact-strength, 1));
-  transform: translate(-50%, -50%);
+  left: var(--delta-start);
+  top: 2px;
+  bottom: 2px;
+  width: max(var(--delta-width), 3px);
+  transform-origin: center;
   border: 1px solid color-mix(in srgb, var(--tone) 70%, white 30%);
+  border-radius: 2px;
   box-shadow:
     0 0 0 0 color-mix(in srgb, var(--tone) 70%, transparent),
     0 0 0 0 color-mix(in srgb, var(--tone) 34%, transparent);
   opacity: 0;
   animation: usage-pixel-ripple var(--effect-duration, 4000ms) cubic-bezier(.16, 1, .3, 1) both;
+}
+.compact-bar .effect-ripple {
+  top: 1px;
+  bottom: 1px;
+  width: max(var(--delta-width), 2px);
 }
 .effect-drop-cell {
   left: var(--drop-left);
@@ -705,24 +711,24 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 }
 @keyframes usage-edge-glow {
   0%, 30% { opacity: 0; transform: translateX(-50%) scaleX(.6); }
-  42%, 68% { opacity: .9; transform: translateX(-50%) scaleX(1); }
+  42%, 68% { opacity: .62; transform: translateX(-50%) scaleX(.82); }
   100% { opacity: 0; transform: translateX(-50%) scaleX(1.3); }
 }
 @keyframes usage-pixel-ripple {
-  0%, 30% { opacity: 0; transform: translate(-50%, -50%) scale(.3); }
+  0%, 30% { opacity: 0; transform: scaleY(.3); }
   40% {
     opacity: .76;
-    transform: translate(-50%, -50%) scale(1.1);
+    transform: scaleY(1.12);
     box-shadow:
-      0 0 0 6px color-mix(in srgb, var(--tone) 42%, transparent),
-      0 0 0 14px color-mix(in srgb, var(--tone) 18%, transparent);
+      0 0 0 calc(6px * var(--impact-strength, 1)) color-mix(in srgb, var(--tone) 42%, transparent),
+      0 0 0 calc(14px * var(--impact-strength, 1)) color-mix(in srgb, var(--tone) 18%, transparent);
   }
   72%, 100% {
     opacity: 0;
-    transform: translate(-50%, -50%) scale(2.3);
+    transform: scaleY(2.6);
     box-shadow:
-      0 0 0 18px transparent,
-      0 0 0 36px transparent;
+      0 0 0 calc(18px * var(--impact-strength, 1)) transparent,
+      0 0 0 calc(36px * var(--impact-strength, 1)) transparent;
   }
 }
 @keyframes usage-drop-cell {
