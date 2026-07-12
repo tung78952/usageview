@@ -261,6 +261,16 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 .overlay-scrollbar-thumb:hover,
 .overlay-scrollbar-thumb.is-dragging { width: 9px; background: color-mix(in srgb, var(--muted) 78%, transparent); }
 
+/* These three app surfaces are draggable shells, so text selection is always accidental and can
+   begin before Tauri takes over a window drag (especially Mini's 5px drag threshold). Keep the
+   provider login shell out of scope so the official provider pages retain their native behavior. */
+.widget,
+.compact-widget,
+.control-shell {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 
 .widget {
   position: relative;
