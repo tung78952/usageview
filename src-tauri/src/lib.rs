@@ -17,7 +17,6 @@ const TRAY_SHOW_WIDGET: &str = "show_widget";
 const TRAY_HIDE_WIDGET: &str = "hide_widget";
 const TRAY_QUIT: &str = "quit";
 const CONTEXT_MINI: &str = "widget_context_mini";
-const CONTEXT_COMPACT: &str = "widget_context_compact";
 const CONTEXT_FULL: &str = "widget_context_full";
 const CONTEXT_PIN: &str = "widget_context_pin";
 const CONTEXT_REFRESH: &str = "widget_context_refresh";
@@ -119,7 +118,7 @@ fn save_window_geometry(app: tauri::AppHandle, mode: String, geometry: WindowGeo
 
 #[tauri::command]
 fn set_widget_mode(state: tauri::State<CurrentWidgetMode>, mode: String) -> Result<(), String> {
-  if mode == "widget" || mode == "compact" || mode == "mini" {
+  if mode == "widget" || mode == "mini" {
     *state.0.lock().map_err(|error| error.to_string())? = mode;
   }
   Ok(())
@@ -134,12 +133,11 @@ fn show_widget_context_menu(
   x: f64,
   y: f64,
 ) -> Result<(), String> {
-  if mode != "widget" && mode != "compact" && mode != "mini" {
+  if mode != "widget" && mode != "mini" {
     return Err(format!("Unknown widget mode: {}", mode));
   }
 
   let mini = MenuItem::with_id(&app, CONTEXT_MINI, "Mini view", mode != "mini", None::<&str>).map_err(|error| error.to_string())?;
-  let compact = MenuItem::with_id(&app, CONTEXT_COMPACT, "Compact view", mode != "compact", None::<&str>).map_err(|error| error.to_string())?;
   let full = MenuItem::with_id(&app, CONTEXT_FULL, "Full view", mode != "widget", None::<&str>).map_err(|error| error.to_string())?;
   let view_separator = PredefinedMenuItem::separator(&app).map_err(|error| error.to_string())?;
   let pin = MenuItem::with_id(&app, CONTEXT_PIN, if pinned { "Unpin" } else { "Pin" }, true, None::<&str>).map_err(|error| error.to_string())?;
@@ -149,7 +147,7 @@ fn show_widget_context_menu(
   let close = MenuItem::with_id(&app, CONTEXT_CLOSE, "Close", true, None::<&str>).map_err(|error| error.to_string())?;
   let menu = Menu::with_items(
     &app,
-    &[&mini, &compact, &full, &view_separator, &pin, &refresh, &settings, &close_separator, &close],
+    &[&mini, &full, &view_separator, &pin, &refresh, &settings, &close_separator, &close],
   ).map_err(|error| error.to_string())?;
 
   window
@@ -554,7 +552,6 @@ pub fn run() {
     .on_menu_event(|app, event| {
       let action = match event.id().as_ref() {
         CONTEXT_MINI => Some("mini"),
-        CONTEXT_COMPACT => Some("compact"),
         CONTEXT_FULL => Some("widget"),
         CONTEXT_PIN => Some("pin"),
         CONTEXT_REFRESH => Some("refresh"),

@@ -44,7 +44,7 @@ type Settings = {
   showCodex1: boolean;
 };
 
-type AppMode = "widget" | "settings" | "compact" | "mini";
+type AppMode = "widget" | "settings" | "mini";
 
 type WindowGeometry = {
   width: number;
@@ -83,10 +83,6 @@ const GEOMETRY_KEY = "usageview.windowGeometry.v7";
 const WIDGET_MIN_WIDTH = 320;
 const WIDGET_MAX_WIDTH = 900;
 const WIDGET_MIN_HEIGHT_FALLBACK = 260;
-const COMPACT_MIN_WIDTH = 260;
-const COMPACT_MAX_WIDTH = 640;
-const COMPACT_LOCK_WIDTH = 260;
-const COMPACT_MIN_HEIGHT_FALLBACK = 130;
 const MINI_LOCK_WIDTH = 240;
 const MINI_MIN_HEIGHT_FALLBACK = 48;
 const MODE_KEY = "usageview.mode";
@@ -95,7 +91,9 @@ let windowGeometryCache: Partial<Record<AppMode, WindowGeometry>> | undefined;
 function loadMode(): AppMode {
   try {
     const saved = localStorage.getItem(MODE_KEY);
-    if (saved === "mini" || saved === "compact" || saved === "widget") return saved;
+    if (saved === "mini" || saved === "widget") return saved;
+    // Compact mode was removed — any user saved in it opens in the full widget.
+    if (saved === "compact") return "widget";
   } catch {
     // ignore
   }
@@ -103,7 +101,7 @@ function loadMode(): AppMode {
 }
 
 function saveMode(mode: AppMode) {
-  if (mode === "widget" || mode === "compact" || mode === "mini") localStorage.setItem(MODE_KEY, mode);
+  if (mode === "widget" || mode === "mini") localStorage.setItem(MODE_KEY, mode);
 }
 
 type EffectParticle = {
@@ -243,7 +241,6 @@ function saveWindowGeometry(mode: AppMode, geometry: WindowGeometry) {
 function defaultWindowSize(mode: AppMode) {
   if (mode === "settings") return { width: 460, height: 760 };
   if (mode === "mini") return { width: MINI_LOCK_WIDTH, height: 124 };
-  if (mode === "compact") return { width: 320, height: 238 };
   return { width: 392, height: 500 };
 }
 
@@ -341,9 +338,9 @@ function normalizeWindowGeometry(mode: AppMode, geometry: Partial<WindowGeometry
   const targetRect = nearestScreenRect(positionProbe, fallbackPosition, screenRects);
   const scale = targetRect?.scale ?? (window.devicePixelRatio || 1);
   const fallbackSize = defaultWindowSize(mode);
-  const minWidthL = mode === "settings" ? 430 : mode === "mini" ? MINI_LOCK_WIDTH : mode === "compact" ? COMPACT_MIN_WIDTH : WIDGET_MIN_WIDTH;
-  const minHeightL = mode === "settings" ? 620 : mode === "mini" ? MINI_MIN_HEIGHT_FALLBACK : mode === "compact" ? COMPACT_MIN_HEIGHT_FALLBACK : WIDGET_MIN_HEIGHT_FALLBACK;
-  const maxWidthL = mode === "mini" ? MINI_LOCK_WIDTH : mode === "compact" ? COMPACT_MAX_WIDTH : mode === "widget" ? WIDGET_MAX_WIDTH : Math.max(minWidthL, fallbackSize.width);
+  const minWidthL = mode === "settings" ? 430 : mode === "mini" ? MINI_LOCK_WIDTH : WIDGET_MIN_WIDTH;
+  const minHeightL = mode === "settings" ? 620 : mode === "mini" ? MINI_MIN_HEIGHT_FALLBACK : WIDGET_MIN_HEIGHT_FALLBACK;
+  const maxWidthL = mode === "mini" ? MINI_LOCK_WIDTH : mode === "widget" ? WIDGET_MAX_WIDTH : Math.max(minWidthL, fallbackSize.width);
   const minWidth = Math.round(minWidthL * scale);
   const minHeight = Math.round(minHeightL * scale);
   const maxWindowWidth = mode === "settings"
@@ -425,7 +422,7 @@ async function readCurrentGeometry(): Promise<WindowGeometry> {
 function shouldStartWindowDrag(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
   return !target.closest(
-    "button, input, select, textarea, a, label, summary, details, [role='button'], .window-controls, .advanced-tools, .debug-text",
+    "button, input, select, textarea, a, label, summary, details, [role='button'], .window-controls, .advanced-tools, .debug-text, .provider-tile",
   );
 }
 
@@ -927,7 +924,7 @@ function WidgetApp() {
   const compactPointerRef = useRef<{ x: number; y: number; dragged: boolean } | null>(null);
   const contextActionHandlerRef = useRef<(action: string) => void>(() => undefined);
   const [mode, setMode] = useState<AppMode>(loadMode);
-  const [compactTimerSet, setCompactTimerSet] = useState<Set<Provider>>(new Set());
+  const [timerSet, setTimerSet] = useState<Set<Provider>>(new Set());
   const [settings, setSettings] = useState(loadSettings);
   const settingsRef = useRef(settings);
   const modeRef = useRef(mode);
@@ -1071,12 +1068,12 @@ function WidgetApp() {
 
 
   useEffect(() => {
-    if (mode !== "widget" && mode !== "compact" && mode !== "mini") {
+    if (mode !== "widget" && mode !== "mini") {
       void getCurrentWindow().setMinSize(new LogicalSize(430, 620)).catch(() => undefined);
       return;
     }
 
-    if (mode === "compact" || mode === "mini") {
+    if (mode === "mini") {
       const appWindow = getCurrentWindow();
       let animationFrame = 0;
       let desiredSize: { width: number; height: number } | undefined;
@@ -1111,8 +1108,8 @@ function WidgetApp() {
           const providers = compactProvidersRef.current;
           const panel = providers?.closest<HTMLElement>(".compact-widget");
           if (!providers || !panel) return;
-          const lockWidth = mode === "mini" ? MINI_LOCK_WIDTH : COMPACT_LOCK_WIDTH;
-          const minHeight = mode === "mini" ? MINI_MIN_HEIGHT_FALLBACK : COMPACT_MIN_HEIGHT_FALLBACK;
+          const lockWidth = MINI_LOCK_WIDTH;
+          const minHeight = MINI_MIN_HEIGHT_FALLBACK;
           const style = window.getComputedStyle(panel);
           const chromeHeight =
             (Number.parseFloat(style.paddingTop) || 0) +
@@ -1367,7 +1364,7 @@ function WidgetApp() {
   }
 
   useEffect(() => {
-    setCompactTimerSet((prev) => {
+    setTimerSet((prev) => {
       const next = new Set(prev);
       let changed = false;
       for (const p of ["claude", "codex", "codex-1"] as Provider[]) {
@@ -1430,8 +1427,8 @@ function WidgetApp() {
     }
   }, [snapshots]);
 
-  function toggleCompactTimer(provider: Provider) {
-    setCompactTimerSet((prev) => {
+  function toggleTimer(provider: Provider) {
+    setTimerSet((prev) => {
       const next = new Set(prev);
       next.has(provider) ? next.delete(provider) : next.add(provider);
       return next;
@@ -1515,7 +1512,7 @@ function WidgetApp() {
   }
 
   contextActionHandlerRef.current = (action) => {
-    if (action === "mini" || action === "compact" || action === "widget") {
+    if (action === "mini" || action === "widget") {
       setMode(action);
     } else if (action === "pin") {
       togglePinned();
@@ -1545,29 +1542,6 @@ function WidgetApp() {
     );
   }
 
-  if (mode === "compact") {
-    // Hover no longer swaps to the full UsageBlock (that resized the tile / grew the widget). Instead the
-    // compact tile stays put and its .compact-meta[data-tip] tooltip fades up in place on hover.
-    return (
-      <main className={`compact-widget ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={prepareCompactDrag} onMouseMove={maybeStartCompactDrag} onContextMenu={openCompactMenu}>
-        <div ref={compactProvidersRef} className="compact-providers">
-          {shown.length > 0 ? shown.map((provider) => (
-            <div
-              key={provider}
-              onClick={() => { if (!compactTimerSet.has(provider)) toggleCompactTimer(provider); }}
-              style={{ cursor: compactTimerSet.has(provider) ? "default" : "pointer" }}
-            >
-              {compactTimerSet.has(provider)
-                ? <CompactTimerView snapshot={snapshots[provider]} onBack={() => toggleCompactTimer(provider)} paused={isPaused(provider)} />
-                : <CompactUsageBlock snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} />
-              }
-            </div>
-          )) : <EmptyProviderState />}
-        </div>
-      </main>
-    );
-  }
-
   return (
     <main ref={widgetRef} className={`widget ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag}>
       <div className="scale-shell">
@@ -1578,12 +1552,16 @@ function WidgetApp() {
         <div className="header-actions">
           <button className={`window-control refresh${busy !== null ? " spinning" : ""}`} type="button" title="Refresh now" aria-label="Refresh now" onClick={() => void refreshAll()} disabled={busy !== null}><RefreshIcon /></button>
           <button className="window-control gear" type="button" title="Settings" aria-label="Settings" onClick={() => void invoke("toggle_settings_window")}><GearIcon /></button>
-          <button className="window-control compact" type="button" title="Compact mode" aria-label="Compact mode" onClick={() => setMode("compact")}><CompactIcon /></button>
+          <button className="window-control mini" type="button" title="Mini mode" aria-label="Mini mode" onClick={() => setMode("mini")}><MiniIcon /></button>
           <WindowControls pinned={settings.alwaysOnTop} onTogglePin={togglePinned} onMinimize={() => void minimizeWindow()} onMaximize={() => void toggleMaximizeWindow()} onClose={() => void closeWindow()} showMinimize={false} showMaximize={false} />
         </div>
       </div>
       <div ref={providersRef} className="providers">
-        {shown.length > 0 ? shown.map((provider) => <UsageBlock key={provider} snapshot={snapshots[provider]} compact flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} />) : <EmptyProviderState />}
+        {shown.length > 0 ? shown.map((provider) => (
+          timerSet.has(provider)
+            ? <TimerView key={provider} snapshot={snapshots[provider]} onBack={() => toggleTimer(provider)} paused={isPaused(provider)} />
+            : <UsageBlock key={provider} snapshot={snapshots[provider]} compact flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} onFlip={() => toggleTimer(provider)} />
+        )) : <EmptyProviderState />}
       </div>
       </div>
     </main>
@@ -1644,11 +1622,11 @@ function GearIcon() {
   );
 }
 
-function CompactIcon() {
+function MiniIcon() {
   return (
     <svg className="action-icon" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M7 8l5 5 5-5" />
-      <path d="M7 16l5-5 5 5" />
+      <rect x="5" y="8" width="14" height="3" rx="1.2" />
+      <rect x="5" y="13" width="14" height="3" rx="1.2" />
     </svg>
   );
 }
@@ -1997,7 +1975,7 @@ function formatCountdown(resetMs: number): string {
   return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
-function CompactTimerView({ snapshot, onBack, paused = false }: { snapshot: UsageSnapshot; onBack: () => void; paused?: boolean }) {
+function TimerView({ snapshot, onBack, paused = false }: { snapshot: UsageSnapshot; onBack: () => void; paused?: boolean }) {
   const [, setTick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 1000);
@@ -2006,15 +1984,15 @@ function CompactTimerView({ snapshot, onBack, paused = false }: { snapshot: Usag
   const resetMs = parseResetMs(snapshot.resetLabel);
   const countdown = resetMs !== null ? formatCountdown(resetMs) : null;
   return (
-    <article className={`compact-usage provider-tile ${snapshot.provider} timer-view${paused ? " mark-paused" : ""}`} onClick={onBack}>
-      <div className="compact-usage-head">
+    <article className={`usage compact provider-tile ${snapshot.provider} timer-view flippable${paused ? " mark-paused" : ""}`} onClick={onBack} title="Tap to dismiss">
+      <div className="usage-top">
         <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
-        <span className="timer-label">reset at</span>
+        <span className="timer-label">reset in</span>
       </div>
-      <div className="compact-timer-clock">{countdown ?? (snapshot.resetLabel ? "Resetting soon" : "—")}</div>
-      <div className="compact-timer-sub">
+      <div className="timer-clock">{countdown ?? (snapshot.resetLabel ? "Resetting soon" : "—")}</div>
+      <div className="timer-sub">
         {snapshot.resetLabel && <span>{snapshot.resetLabel}</span>}
-        <span className="compact-timer-hint">tap to dismiss</span>
+        <span className="timer-hint">tap to dismiss</span>
       </div>
     </article>
   );
@@ -2181,37 +2159,6 @@ function buildUsageCells(percent: number | undefined, cellCount: number, effect?
 }
 
 
-function CompactUsageBlock({ snapshot, flash = false, paused = false, updatedAgo, effect, dropCell = false }: { snapshot: UsageSnapshot; flash?: boolean; paused?: boolean; updatedAgo?: string; effect?: UsageEffect; dropCell?: boolean }) {
-  const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
-  const stale = isStale(snapshot);
-  const metaLeft = usageMetaLeft(snapshot, percent);
-  const metaRight = usageMetaRight(snapshot);
-  return (
-    <article className={`compact-usage provider-tile ${snapshot.provider}${flash ? " mark-flash" : ""}${paused ? " mark-paused" : ""}`}>
-      <div className="compact-usage-head">
-        <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
-        <span className="tile-status">
-          {updatedAgo && <span className="updated-ago">{updatedAgo}</span>}
-          <span className={`source-pill ${stale ? "stale" : snapshot.status !== "ok" ? "warn" : paused ? "paused" : "ok"}`}>{stale ? "cached" : snapshot.status !== "ok" ? readableStatus(snapshot.status) : paused ? "paused" : "live"}</span>
-        </span>
-      </div>
-      <div className="compact-usage-main">
-        <span className="compact-percent">{percent !== undefined ? `${Math.round(percent)}%` : "--"}</span>
-        <span className="compact-message">{providerMessage(snapshot)}</span>
-      </div>
-      <div className={`compact-bar${effect ? " usage-effect-bar" : ""}${effect && dropCell ? " drop-impact" : ""}`} style={effectStyle(effect, percent, true)} aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
-        {buildUsageCells(percent, 10, effect)}
-        <EffectOverlays effect={effect} dropCell={dropCell} />
-        <LiquidLayers />
-      </div>
-      <div className="compact-meta" data-tip={`${metaLeft}\n${metaRight}`}>
-        <span>{metaLeft}</span>
-        <span>{metaRight}</span>
-      </div>
-    </article>
-  );
-}
-
 function MiniUsageRow({ snapshot, paused = false, updatedAgo, flash = false }: { snapshot: UsageSnapshot; paused?: boolean; updatedAgo?: string; flash?: boolean }) {
   const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
   const stale = isStale(snapshot);
@@ -2235,13 +2182,13 @@ function MiniUsageRow({ snapshot, paused = false, updatedAgo, flash = false }: {
     </article>
   );
 }
-function UsageBlock({ snapshot, compact = false, flash = false, paused = false, updatedAgo, effect, dropCell = false }: { snapshot: UsageSnapshot; compact?: boolean; flash?: boolean; paused?: boolean; updatedAgo?: string; effect?: UsageEffect; dropCell?: boolean }) {
+function UsageBlock({ snapshot, compact = false, flash = false, paused = false, updatedAgo, effect, dropCell = false, onFlip }: { snapshot: UsageSnapshot; compact?: boolean; flash?: boolean; paused?: boolean; updatedAgo?: string; effect?: UsageEffect; dropCell?: boolean; onFlip?: () => void }) {
   const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
   const stale = isStale(snapshot);
   const metaLeft = usageMetaLeft(snapshot, percent);
   const metaRight = usageMetaRight(snapshot);
   return (
-    <article className={`${compact ? "usage compact" : "usage"} provider-tile ${snapshot.provider}${flash ? " mark-flash" : ""}${paused ? " mark-paused" : ""}`}>
+    <article className={`${compact ? "usage compact" : "usage"} provider-tile ${snapshot.provider}${flash ? " mark-flash" : ""}${paused ? " mark-paused" : ""}${onFlip ? " flippable" : ""}`} onClick={onFlip} title={onFlip ? "Tap for reset countdown" : undefined}>
       <div className="usage-top">
         <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
         <span className="tile-status">
