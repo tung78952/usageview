@@ -131,7 +131,7 @@ function loadSettings(): Settings {
     const loaded = saved ? { ...defaultSettings, ...JSON.parse(saved) } : defaultSettings;
     return {
       ...loaded,
-      uiScale: clampNumber(loaded.uiScale, 1, 2, 1),
+      uiScale: clampNumber(loaded.uiScale, 0.25, 2, 1),
       theme: normalizeTheme(loaded.theme),
       effectsEnabled: loaded.effectsEnabled ?? true,
       effectDurationMs: clampNumber(loaded.effectDurationMs, 800, 8000, 4000),
@@ -928,7 +928,7 @@ function WidgetApp() {
   const [settings, setSettings] = useState(loadSettings);
   const settingsRef = useRef(settings);
   const modeRef = useRef(mode);
-  const prevUiScaleRef = useRef(settings.uiScale);
+  const zoomAppliedRef = useRef(settings.uiScale);
   const skipInitialModeResizeRef = useRef(true);
   // Guard against persisting the initial default position: the window is created visible at its
   // tauri.conf.json corner and auto-fit fires resize events before recoverVisibleWindow has applied the
@@ -1139,6 +1139,15 @@ function WidgetApp() {
     // Full view is width-resizable again (compact turned this off).
     void appWindow.setResizable(true).catch(() => undefined);
 
+    // Zoom: when the user picks a new Full-view scale, grow/shrink the WHOLE window by the same factor.
+    // Height is handled by the auto-fit below (content zoom enlarges scrollHeight); width is multiplied by
+    // the scale ratio here — set together in one setSize so it never races the height lock. Applied once.
+    let widthScaleRatio = 1;
+    if (zoomAppliedRef.current !== settings.uiScale) {
+      widthScaleRatio = settings.uiScale / zoomAppliedRef.current;
+      zoomAppliedRef.current = settings.uiScale;
+    }
+
     // Auto-fit: window height always equals content height (grow AND shrink) so there is never dead
     // space at the bottom, and it adapts when providers are added/removed. Height is locked (min==max)
     // so the window can't be dragged vertically into empty space; width stays freely resizable.
@@ -1160,10 +1169,17 @@ function WidgetApp() {
         const innerWidth = Math.round(rect.width);
         const innerHeight = Math.round(rect.height);
 
-        void appWindow.setMinSize(new LogicalSize(WIDGET_MIN_WIDTH, contentH)).catch(() => undefined);
+        // Let the window get narrower than the base minimum when zoomed below 100% so the whole widget
+        // can actually shrink; never wider than the (raised) max.
+        const effMinW = Math.round(WIDGET_MIN_WIDTH * Math.min(1, settings.uiScale));
+        let targetW = widthScaleRatio !== 1 ? Math.round(innerWidth * widthScaleRatio) : innerWidth;
+        widthScaleRatio = 1; // apply the zoom ratio exactly once
+        targetW = Math.min(WIDGET_MAX_WIDTH, Math.max(effMinW, targetW));
+
+        void appWindow.setMinSize(new LogicalSize(effMinW, contentH)).catch(() => undefined);
         void appWindow.setMaxSize(new LogicalSize(WIDGET_MAX_WIDTH, contentH)).catch(() => undefined);
-        if (Math.abs(innerHeight - contentH) > 1) {
-          void appWindow.setSize(new LogicalSize(Math.max(WIDGET_MIN_WIDTH, innerWidth), contentH)).catch(() => undefined);
+        if (Math.abs(innerHeight - contentH) > 1 || Math.abs(innerWidth - targetW) > 1) {
+          void appWindow.setSize(new LogicalSize(targetW, contentH)).catch(() => undefined);
         }
       });
     }
@@ -1179,30 +1195,7 @@ function WidgetApp() {
       window.cancelAnimationFrame(animationFrame);
       observer.disconnect();
     };
-  }, [mode, settings.theme, snapshots.claude, snapshots.codex, snapshots["codex-1"], settings.showClaude, settings.showCodex, settings.showCodex1]);
-
-  // Full-view zoom: scale the whole window by the same factor as the content, so the entire widget grows
-  // (not just the content inside a fixed frame). Width is multiplied by the scale ratio; height is left to
-  // the auto-fit effect above, which re-locks it to the (now-zoomed) content height.
-  useEffect(() => {
-    const prev = prevUiScaleRef.current;
-    prevUiScaleRef.current = settings.uiScale;
-    if (mode !== "widget" || prev === settings.uiScale) return;
-    const ratio = settings.uiScale / prev;
-    const appWindow = getCurrentWindow();
-    void (async () => {
-      try {
-        const inner = await appWindow.innerSize();
-        const factor = await appWindow.scaleFactor();
-        const logicalW = inner.width / factor;
-        const logicalH = inner.height / factor;
-        const targetW = Math.min(WIDGET_MAX_WIDTH, Math.max(WIDGET_MIN_WIDTH, Math.round(logicalW * ratio)));
-        await appWindow.setSize(new LogicalSize(targetW, Math.round(logicalH)));
-      } catch {
-        // ignore; the auto-fit effect still applies the content zoom
-      }
-    })();
-  }, [settings.uiScale, mode]);
+  }, [mode, settings.theme, snapshots.claude, snapshots.codex, snapshots["codex-1"], settings.showClaude, settings.showCodex, settings.showCodex1, settings.uiScale]);
 
   async function saveCurrentGeometryNow(targetMode = modeRef.current) {
     // Never persist before the saved geometry has been restored, or a startup resize event would
@@ -1882,12 +1875,14 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
       <div className="settings-row">
         <label>Opacity<input type="range" min="0.45" max="1" step="0.01" value={settings.opacity} onChange={(event) => patch({ opacity: Number(event.target.value) })} /></label>
       </div>
-      <div className="seg-field">
-        <span className="seg-label">Zoom (Full view)</span>
-        <div className="seg" role="group" aria-label="Full view zoom">
-          {([["100%", 1], ["125%", 1.25], ["150%", 1.5], ["200%", 2]] as const).map(([label, value]) => (
-            <button key={label} type="button" className={`seg-btn${Math.abs(settings.uiScale - value) < 0.001 ? " active" : ""}`} onClick={() => patch({ uiScale: value })}>{label}</button>
-          ))}
+      <div className="settings-row">
+        <div className="seg-field">
+          <span className="seg-label">Zoom (Full view)</span>
+          <div className="seg" role="group" aria-label="Full view zoom">
+            {([["25%", 0.25], ["50%", 0.5], ["75%", 0.75], ["100%", 1], ["125%", 1.25], ["150%", 1.5], ["200%", 2]] as const).map(([label, value]) => (
+              <button key={label} type="button" className={`seg-btn${Math.abs(settings.uiScale - value) < 0.001 ? " active" : ""}`} onClick={() => patch({ uiScale: value })}>{label}</button>
+            ))}
+          </div>
         </div>
       </div>
       <div className="settings-row">
