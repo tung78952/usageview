@@ -286,6 +286,11 @@ fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
 
   window.unminimize().map_err(|error| error.to_string())?;
   window.show().map_err(|error| error.to_string())?;
+  // Re-assert topmost every time the window is shown. A hidden→shown topmost window can lose its
+  // z-position on Windows, and another app grabbing the foreground can bury it; toggling the flag
+  // forces a HWND_TOPMOST reposition so Settings reliably rises above the widget and other windows.
+  let _ = window.set_always_on_top(false);
+  let _ = window.set_always_on_top(true);
   window.set_focus().map_err(|error| error.to_string())?;
   Ok(())
 }
