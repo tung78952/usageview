@@ -206,6 +206,7 @@ fn save_current_widget_geometry(app: &tauri::AppHandle) {
 
 fn show_widget_window(app: &tauri::AppHandle) -> Result<(), String> {
   if let Some(window) = app.get_webview_window("widget") {
+    window.set_resizable(false).map_err(|error| error.to_string())?;
     window.unminimize().map_err(|error| error.to_string())?;
     window.show().map_err(|error| error.to_string())?;
     window.set_focus().map_err(|error| error.to_string())?;
@@ -214,12 +215,13 @@ fn show_widget_window(app: &tauri::AppHandle) -> Result<(), String> {
 
   WebviewWindowBuilder::new(app, "widget", WebviewUrl::App("index.html".into()))
     .title("UsageView Widget")
-    .inner_size(350.0, 230.0)
+    .inner_size(392.0, 500.0)
     .decorations(false)
     .transparent(true)
     .always_on_top(true)
     .skip_taskbar(true)
     .resizable(false)
+    .zoom_hotkeys_enabled(false)
     .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows")
     .build()
     .map_err(|error| error.to_string())?;
@@ -260,7 +262,8 @@ fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
       .title("UsageView - Settings")
       .inner_size(460.0, 780.0)
       .min_inner_size(430.0, 560.0)
-      .resizable(true)
+      .resizable(false)
+      .zoom_hotkeys_enabled(false)
       .decorations(false)
       .transparent(true)
       .shadow(false)
@@ -657,6 +660,8 @@ fn get_or_create_provider_window(app: &tauri::AppHandle, label: &str) -> Result<
     .title(format!("{} \u{2014} UsageView", title))
     .inner_size(980.0, 760.0)
     .min_inner_size(720.0, 520.0)
+    .resizable(false)
+    .zoom_hotkeys_enabled(false)
     .center()
     .visible(false)
     .data_directory(data_dir)

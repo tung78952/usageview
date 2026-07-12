@@ -2,6 +2,7 @@ import React, { Component, ReactNode, useEffect, useMemo, useRef, useState } fro
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { availableMonitors, getCurrentWindow, LogicalSize, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import "./styles.css";
@@ -80,9 +81,7 @@ const defaultSettings: Settings = {
 };
 
 const GEOMETRY_KEY = "usageview.windowGeometry.v7";
-const WIDGET_MIN_WIDTH = 320;
-const WIDGET_MAX_WIDTH = 1400;
-const WIDGET_MIN_HEIGHT_FALLBACK = 260;
+const WIDGET_BASE_WIDTH = 392;
 const MINI_LOCK_WIDTH = 240;
 const MINI_MIN_HEIGHT_FALLBACK = 48;
 const MODE_KEY = "usageview.mode";
@@ -201,7 +200,6 @@ function composeTheme(style: ThemeStyle, mode: ThemeMode): Settings["theme"] {
 
 function panelStyle(settings: Settings): React.CSSProperties {
   return {
-    "--ui-scale": 1,
     "--panel-opacity": settings.opacity,
     "--panel-opacity-pct": `${Math.round(settings.opacity * 100)}%`,
     "--effect-duration": `${settings.effectDurationMs}ms`,
@@ -241,7 +239,7 @@ function saveWindowGeometry(mode: AppMode, geometry: WindowGeometry) {
 function defaultWindowSize(mode: AppMode) {
   if (mode === "settings") return { width: 460, height: 760 };
   if (mode === "mini") return { width: MINI_LOCK_WIDTH, height: 124 };
-  return { width: 392, height: 500 };
+  return { width: WIDGET_BASE_WIDTH, height: 500 };
 }
 
 // Fallback corner position in PHYSICAL px on the primary monitor. window.screen.* is CSS/logical px, so
@@ -326,7 +324,7 @@ function clampPositionToScreen(geometry: WindowGeometry, fallbackPosition: { x: 
   };
 }
 
-function normalizeWindowGeometry(mode: AppMode, geometry: Partial<WindowGeometry> | undefined, fallbackPosition: { x: number; y: number }, screenRects = browserScreenRects()): WindowGeometry {
+function normalizeWindowGeometry(mode: AppMode, geometry: Partial<WindowGeometry> | undefined, fallbackPosition: { x: number; y: number }, screenRects = browserScreenRects(), widgetScale = 1): WindowGeometry {
   // Pick the monitor the window will sit on (by position) so we can convert the logical-px size bounds
   // below into this monitor's physical px. Position drives the choice; size fed as 0 to avoid NaN.
   const positionProbe: WindowGeometry = {
@@ -338,17 +336,24 @@ function normalizeWindowGeometry(mode: AppMode, geometry: Partial<WindowGeometry
   const targetRect = nearestScreenRect(positionProbe, fallbackPosition, screenRects);
   const scale = targetRect?.scale ?? (window.devicePixelRatio || 1);
   const fallbackSize = defaultWindowSize(mode);
-  const minWidthL = mode === "settings" ? 430 : mode === "mini" ? MINI_LOCK_WIDTH : WIDGET_MIN_WIDTH;
-  const minHeightL = mode === "settings" ? 620 : mode === "mini" ? MINI_MIN_HEIGHT_FALLBACK : WIDGET_MIN_HEIGHT_FALLBACK;
-  const maxWidthL = mode === "mini" ? MINI_LOCK_WIDTH : mode === "widget" ? WIDGET_MAX_WIDTH : Math.max(minWidthL, fallbackSize.width);
+  const fixedModeScale = mode === "widget" ? widgetScale : 1;
+  const minWidthL = mode === "settings" ? 430 : fallbackSize.width * fixedModeScale;
+  const minHeightL = mode === "settings" ? 620 : fallbackSize.height * fixedModeScale;
+  const maxWidthL = mode === "settings" ? Math.max(minWidthL, fallbackSize.width) : minWidthL;
   const minWidth = Math.round(minWidthL * scale);
   const minHeight = Math.round(minHeightL * scale);
   const maxWindowWidth = mode === "settings"
     ? Math.max(minWidth, targetRect?.width ?? Math.round(maxWidthL * scale))
     : Math.round(maxWidthL * scale);
   const maxWindowHeight = Math.max(minHeight, targetRect?.height ?? Math.round(Math.max(minHeightL, fallbackSize.height) * scale));
-  const width = Number.isFinite(geometry?.width) ? Math.min(maxWindowWidth, Math.max(minWidth, Math.round(geometry!.width!))) : Math.round(fallbackSize.width * scale);
-  const height = Number.isFinite(geometry?.height) ? Math.min(maxWindowHeight, Math.max(minHeight, Math.round(geometry!.height!))) : Math.round(fallbackSize.height * scale);
+  // Widget and Mini dimensions are controlled by their layout engines. Persisted geometry contributes
+  // position only, so a stale manually-resized width can never become the next 100% zoom baseline.
+  const width = mode !== "settings"
+    ? minWidth
+    : Number.isFinite(geometry?.width) ? Math.min(maxWindowWidth, Math.max(minWidth, Math.round(geometry!.width!))) : Math.round(fallbackSize.width * scale);
+  const height = mode !== "settings"
+    ? minHeight
+    : Number.isFinite(geometry?.height) ? Math.min(maxWindowHeight, Math.max(minHeight, Math.round(geometry!.height!))) : Math.round(fallbackSize.height * scale);
   const rawX = Number.isFinite(geometry?.x) ? Math.round(geometry!.x!) : fallbackPosition.x;
   const rawY = Number.isFinite(geometry?.y) ? Math.round(geometry!.y!) : fallbackPosition.y;
 
@@ -359,16 +364,16 @@ function normalizeWindowGeometry(mode: AppMode, geometry: Partial<WindowGeometry
   return clampPositionToScreen({ width, height, x: fallbackPosition.x, y: fallbackPosition.y }, fallbackPosition, screenRects);
 }
 
-async function normalizeWindowGeometryForMonitors(mode: AppMode, geometry: Partial<WindowGeometry> | undefined, fallbackPosition: { x: number; y: number }) {
+async function normalizeWindowGeometryForMonitors(mode: AppMode, geometry: Partial<WindowGeometry> | undefined, fallbackPosition: { x: number; y: number }, widgetScale = 1) {
   const screenRects = await monitorScreenRects();
-  return normalizeWindowGeometry(mode, geometry, fallbackPosition, screenRects.length ? screenRects : browserScreenRects());
+  return normalizeWindowGeometry(mode, geometry, fallbackPosition, screenRects.length ? screenRects : browserScreenRects(), widgetScale);
 }
 
-async function recoverVisibleWindow(mode: AppMode, corner: Settings["corner"]) {
+async function recoverVisibleWindow(mode: AppMode, corner: Settings["corner"], widgetScale = 1) {
   const appWindow = getCurrentWindow();
   const fallbackPosition = defaultWindowPosition(corner);
   const saved = (await loadWindowGeometryAsync())[mode];
-  const geometry = await normalizeWindowGeometryForMonitors(mode, saved, fallbackPosition);
+  const geometry = await normalizeWindowGeometryForMonitors(mode, saved, fallbackPosition, widgetScale);
   try {
     if (await appWindow.isMaximized()) await appWindow.unmaximize();
   } catch {
@@ -384,7 +389,7 @@ async function recoverVisibleWindow(mode: AppMode, corner: Settings["corner"]) {
 // Switching modes (widget <-> settings <-> compact) should resize the window in place, not teleport
 // it to that mode's remembered corner. Keep the current top-left; only change the size (clamped so a
 // taller mode stays on-screen).
-async function resizeWindowForMode(mode: AppMode) {
+async function resizeWindowForMode(mode: AppMode, widgetScale = 1) {
   const appWindow = getCurrentWindow();
   // Keep the current top-left (physical px); only change size. Saved size is physical too.
   const position = await appWindow.outerPosition();
@@ -394,6 +399,7 @@ async function resizeWindowForMode(mode: AppMode) {
     mode,
     { width: saved?.width, height: saved?.height, x: here.x, y: here.y },
     here,
+    widgetScale,
   );
   try {
     if (await appWindow.isMaximized()) await appWindow.unmaximize();
@@ -928,8 +934,19 @@ function WidgetApp() {
   const [settings, setSettings] = useState(loadSettings);
   const settingsRef = useRef(settings);
   const modeRef = useRef(mode);
-  const zoomAppliedRef = useRef(settings.uiScale);
+  const webviewZoomRef = useRef<number | null>(null);
+  const webviewZoomQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const fullContentHeightRef = useRef(defaultWindowSize("widget").height);
   const skipInitialModeResizeRef = useRef(true);
+  function setWidgetWebviewZoom(target: number) {
+    const operation = webviewZoomQueueRef.current.catch(() => undefined).then(async () => {
+      if (webviewZoomRef.current === target) return;
+      await getCurrentWebview().setZoom(target);
+      webviewZoomRef.current = target;
+    });
+    webviewZoomQueueRef.current = operation.catch(() => undefined);
+    return operation;
+  }
   // Guard against persisting the initial default position: the window is created visible at its
   // tauri.conf.json corner and auto-fit fires resize events before recoverVisibleWindow has applied the
   // saved position. Don't save geometry until the restore has run, or we'd overwrite it with the default.
@@ -1053,7 +1070,7 @@ function WidgetApp() {
     // Reopen in the last-used mode + its saved geometry (mode here is the value restored by loadMode).
     // Only allow geometry to be persisted once the restore has actually applied, so early auto-fit
     // resize events can't save the initial default position over the saved one.
-    void recoverVisibleWindow(mode, settings.corner).finally(() => {
+    void recoverVisibleWindow(mode, settings.corner, settings.uiScale).finally(() => {
       hasRestoredGeometryRef.current = true;
     });
   }, []);
@@ -1064,7 +1081,7 @@ function WidgetApp() {
       skipInitialModeResizeRef.current = false;
       return;
     }
-    void resizeWindowForMode(mode);
+    void resizeWindowForMode(mode, settingsRef.current.uiScale);
   }, [mode]);
 
 
@@ -1074,58 +1091,73 @@ function WidgetApp() {
       return;
     }
 
+    const appWindow = getCurrentWindow();
+    let animationFrame = 0;
+    let desiredSize: { width: number; height: number } | undefined;
+    let applyingSize = false;
+    let disposed = false;
+    let layoutReady = false;
+    void appWindow.setResizable(false).catch(() => undefined);
+
+    // Every mode uses one serialized size writer. Clearing the previous exact constraints first lets
+    // 25% Full and 240px Mini shrink below the old static minimum without racing ResizeObserver bursts.
+    function applyLockedSize(width: number, height: number) {
+      desiredSize = { width: Math.max(1, Math.round(width)), height: Math.max(1, Math.round(height)) };
+      if (applyingSize) return;
+      applyingSize = true;
+      void (async () => {
+        while (desiredSize && !disposed) {
+          const target = desiredSize;
+          desiredSize = undefined;
+          await appWindow.setMinSize(null).catch(() => undefined);
+          await appWindow.setMaxSize(null).catch(() => undefined);
+          if (disposed) break;
+          await appWindow.setSize(new LogicalSize(target.width, target.height)).catch(() => undefined);
+          await appWindow.setMinSize(new LogicalSize(target.width, target.height)).catch(() => undefined);
+          await appWindow.setMaxSize(new LogicalSize(target.width, target.height)).catch(() => undefined);
+        }
+        applyingSize = false;
+      })();
+    }
+
+    function scheduleLayout(measure: () => void) {
+      window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(() => {
+        if (!layoutReady || disposed) return;
+        measure();
+      });
+    }
+
     if (mode === "mini") {
-      const appWindow = getCurrentWindow();
-      let animationFrame = 0;
-      let desiredSize: { width: number; height: number } | undefined;
-      let applyingSize = false;
-      let disposed = false;
-      void appWindow.setResizable(false).catch(() => undefined);
-
-      // Min/max constraints from the previous mode can reject a smaller target. Clear them first, resize,
-      // then lock the exact content size. The small queue collapses ResizeObserver bursts to the latest size.
-      function applyLockedSize(width: number, height: number) {
-        desiredSize = { width, height };
-        if (applyingSize) return;
-        applyingSize = true;
-        void (async () => {
-          while (desiredSize && !disposed) {
-            const target = desiredSize;
-            desiredSize = undefined;
-            await appWindow.setMinSize(null).catch(() => undefined);
-            await appWindow.setMaxSize(null).catch(() => undefined);
-            if (disposed) break;
-            await appWindow.setSize(new LogicalSize(target.width, target.height)).catch(() => undefined);
-            await appWindow.setMinSize(new LogicalSize(target.width, target.height)).catch(() => undefined);
-            await appWindow.setMaxSize(new LogicalSize(target.width, target.height)).catch(() => undefined);
-          }
-          applyingSize = false;
-        })();
-      }
-
       function updateCompactLayout() {
-        window.cancelAnimationFrame(animationFrame);
-        animationFrame = window.requestAnimationFrame(() => {
+        scheduleLayout(() => {
           const providers = compactProvidersRef.current;
           const panel = providers?.closest<HTMLElement>(".compact-widget");
           if (!providers || !panel) return;
-          const lockWidth = MINI_LOCK_WIDTH;
-          const minHeight = MINI_MIN_HEIGHT_FALLBACK;
           const style = window.getComputedStyle(panel);
           const chromeHeight =
             (Number.parseFloat(style.paddingTop) || 0) +
             (Number.parseFloat(style.paddingBottom) || 0) +
             (Number.parseFloat(style.borderTopWidth) || 0) +
             (Number.parseFloat(style.borderBottomWidth) || 0);
-          const height = Math.max(minHeight, Math.ceil(providers.scrollHeight + chromeHeight));
-          applyLockedSize(lockWidth, height);
+          const height = Math.max(MINI_MIN_HEIGHT_FALLBACK, Math.ceil(providers.scrollHeight + chromeHeight));
+          applyLockedSize(MINI_LOCK_WIDTH, height);
         });
       }
 
-      updateCompactLayout();
       const observer = new ResizeObserver(updateCompactLayout);
       if (compactProvidersRef.current) observer.observe(compactProvidersRef.current);
       compactProvidersRef.current?.querySelectorAll(".provider-tile, .empty-state").forEach((element) => observer.observe(element));
+      void (async () => {
+        await appWindow.setMinSize(null).catch(() => undefined);
+        await appWindow.setMaxSize(null).catch(() => undefined);
+        await setWidgetWebviewZoom(1).catch(() => undefined);
+        if (disposed) return;
+        await appWindow.setSize(new LogicalSize(MINI_LOCK_WIDTH, defaultWindowSize("mini").height)).catch(() => undefined);
+        if (disposed) return;
+        layoutReady = true;
+        updateCompactLayout();
+      })();
 
       return () => {
         disposed = true;
@@ -1134,26 +1166,9 @@ function WidgetApp() {
       };
     }
 
-    const appWindow = getCurrentWindow();
-    let animationFrame = 0;
-    // Full view is width-resizable again (compact turned this off).
-    void appWindow.setResizable(true).catch(() => undefined);
-
-    // Zoom: when the user picks a new Full-view scale, grow/shrink the WHOLE window by the same factor.
-    // Height is handled by the auto-fit below (content zoom enlarges scrollHeight); width is multiplied by
-    // the scale ratio here — set together in one setSize so it never races the height lock. Applied once.
-    let widthScaleRatio = 1;
-    if (zoomAppliedRef.current !== settings.uiScale) {
-      widthScaleRatio = settings.uiScale / zoomAppliedRef.current;
-      zoomAppliedRef.current = settings.uiScale;
-    }
-
-    // Auto-fit: window height always equals content height (grow AND shrink) so there is never dead
-    // space at the bottom, and it adapts when providers are added/removed. Height is locked (min==max)
-    // so the window can't be dragged vertically into empty space; width stays freely resizable.
-    function updateLayout() {
-      window.cancelAnimationFrame(animationFrame);
-      animationFrame = window.requestAnimationFrame(() => {
+    const fullScale = settings.uiScale;
+    function updateFullLayout() {
+      scheduleLayout(() => {
         const widget = widgetRef.current;
         const header = widgetHeaderRef.current;
         const providers = providersRef.current;
@@ -1162,36 +1177,33 @@ function WidgetApp() {
         const widgetStyle = window.getComputedStyle(widget);
         const borderHeight = (Number.parseFloat(widgetStyle.borderTopWidth) || 0) + (Number.parseFloat(widgetStyle.borderBottomWidth) || 0);
         const boxesMin = Math.ceil(header.getBoundingClientRect().height + providers.scrollHeight + borderHeight);
-        // Fit the actual content (down to a small safety floor) so hiding accounts leaves no dead space.
         const contentH = Math.max(96, boxesMin);
-
-        const rect = widget.getBoundingClientRect();
-        const innerWidth = Math.round(rect.width);
-        const innerHeight = Math.round(rect.height);
-
-        // Let the window get narrower than the base minimum when zoomed below 100% so the whole widget
-        // can actually shrink; never wider than the (raised) max.
-        const effMinW = Math.round(WIDGET_MIN_WIDTH * Math.min(1, settings.uiScale));
-        let targetW = widthScaleRatio !== 1 ? Math.round(innerWidth * widthScaleRatio) : innerWidth;
-        widthScaleRatio = 1; // apply the zoom ratio exactly once
-        targetW = Math.min(WIDGET_MAX_WIDTH, Math.max(effMinW, targetW));
-
-        void appWindow.setMinSize(new LogicalSize(effMinW, contentH)).catch(() => undefined);
-        void appWindow.setMaxSize(new LogicalSize(WIDGET_MAX_WIDTH, contentH)).catch(() => undefined);
-        if (Math.abs(innerHeight - contentH) > 1 || Math.abs(innerWidth - targetW) > 1) {
-          void appWindow.setSize(new LogicalSize(targetW, contentH)).catch(() => undefined);
-        }
+        fullContentHeightRef.current = contentH;
+        applyLockedSize(WIDGET_BASE_WIDTH * fullScale, contentH * fullScale);
       });
     }
 
-    updateLayout();
-    const observer = new ResizeObserver(updateLayout);
+    const observer = new ResizeObserver(updateFullLayout);
     if (widgetRef.current) observer.observe(widgetRef.current);
     if (widgetHeaderRef.current) observer.observe(widgetHeaderRef.current);
     if (providersRef.current) observer.observe(providersRef.current);
     providersRef.current?.querySelectorAll(".provider-tile").forEach((element) => observer.observe(element));
+    void (async () => {
+      await appWindow.setMinSize(null).catch(() => undefined);
+      await appWindow.setMaxSize(null).catch(() => undefined);
+      await setWidgetWebviewZoom(fullScale).catch(() => undefined);
+      if (disposed) return;
+      await appWindow.setSize(new LogicalSize(
+        Math.round(WIDGET_BASE_WIDTH * fullScale),
+        Math.max(96, Math.round(fullContentHeightRef.current * fullScale)),
+      )).catch(() => undefined);
+      if (disposed) return;
+      layoutReady = true;
+      updateFullLayout();
+    })();
 
     return () => {
+      disposed = true;
       window.cancelAnimationFrame(animationFrame);
       observer.disconnect();
     };
@@ -1562,7 +1574,7 @@ function WidgetApp() {
   }
 
   return (
-    <main ref={widgetRef} className={`widget ${themeClass(settings.theme)}`} style={{ ...panelStyle(settings), "--ui-scale": settings.uiScale } as React.CSSProperties} onMouseDown={startWindowDrag}>
+    <main ref={widgetRef} className={`widget ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag}>
       <div className="scale-shell">
       <div ref={widgetHeaderRef} className="widget-header">
         <div className="window-title">

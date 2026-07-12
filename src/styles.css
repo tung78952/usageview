@@ -82,19 +82,17 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 
 
 .scale-shell {
-  zoom: var(--ui-scale, 1);
-  transform-origin: top left;
-  width: calc(100% / var(--ui-scale, 1));
+  width: 100%;
   min-width: 0;
 }
 .widget .scale-shell {
-  height: calc(100vh / var(--ui-scale, 1));
-  min-height: calc(100vh / var(--ui-scale, 1));
+  height: 100vh;
+  min-height: 100vh;
   display: flex;
   flex-direction: column;
 }
 .control-shell .scale-shell {
-  height: calc(100vh / var(--ui-scale, 1));
+  height: 100vh;
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
