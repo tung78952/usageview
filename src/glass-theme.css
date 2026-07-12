@@ -276,6 +276,12 @@
         stroke: var(--provider-color) !important;
       }
 
+/* The Codex mark is a stroke-only outline (hexagon + interior knot lines).
+   Filling it solid paints over the interior detail, so keep it unfilled. */
+.theme-glass .provider-tile .codex-knot {
+        fill: none !important;
+      }
+
 .theme-glass .mini-card:has(.provider-tile) > .mini-head .pill,
 .theme-glass .mini-card:has(.provider-tile) .save-state {
         color: var(--provider-color) !important;
