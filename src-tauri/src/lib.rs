@@ -278,8 +278,19 @@ fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
     {
       let gap: i32 = 12;
       let left = wpos.x - ssize.width as i32 - gap;
-      let x = if left >= 0 { left } else { wpos.x + wsize.width as i32 + gap };
-      let y = wpos.y.max(0);
+      let mut x = if left >= 0 { left } else { wpos.x + wsize.width as i32 + gap };
+      let mut y = wpos.y;
+      // Clamp into the monitor work area (taskbar excluded) so the taller Settings window is never cut
+      // off at the bottom when the widget sits near the screen edge — it slides up to stay fully visible.
+      if let Ok(Some(monitor)) = widget.current_monitor() {
+        let wa = monitor.work_area();
+        let (wx, wy) = (wa.position.x, wa.position.y);
+        let (ww, wh) = (wa.size.width as i32, wa.size.height as i32);
+        let max_x = (wx + ww - ssize.width as i32).max(wx);
+        let max_y = (wy + wh - ssize.height as i32).max(wy);
+        x = x.clamp(wx, max_x);
+        y = y.clamp(wy, max_y);
+      }
       let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
     }
   }
