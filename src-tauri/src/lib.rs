@@ -56,16 +56,6 @@ fn close_provider_window(app: tauri::AppHandle, provider: String) -> Result<(), 
 }
 
 #[tauri::command]
-fn reload_provider_window(app: tauri::AppHandle, provider: String) -> Result<(), String> {
-  let label = provider_label(&provider)?;
-  let window = app.get_webview_window(&label).ok_or_else(|| format!("{} WebView is not open", provider))?;
-  window.eval("window.location.reload();").map_err(|error| error.to_string())?;
-  window.show().map_err(|error| error.to_string())?;
-  window.set_focus().map_err(|error| error.to_string())?;
-  Ok(())
-}
-
-#[tauri::command]
 fn refresh_provider_page(app: tauri::AppHandle, provider: String, url: String, background: bool) -> Result<(), String> {
   let label = provider_label(&provider)?;
   let window = app.get_webview_window(&label).ok_or_else(|| format!("{} WebView is not open", provider))?;
@@ -75,27 +65,6 @@ fn refresh_provider_page(app: tauri::AppHandle, provider: String, url: String, b
   }
   let target = tauri::Url::parse(&url).map_err(|error| error.to_string())?;
   window.navigate(target).map_err(|error| error.to_string())?;
-  Ok(())
-}
-
-#[tauri::command]
-fn prepare_provider_refresh(app: tauri::AppHandle, provider: String, url: String) -> Result<(), String> {
-  let label = provider_label(&provider)?;
-  let window = app.get_webview_window(&label).ok_or_else(|| format!("{} WebView is not open", provider))?;
-  if provider != "claude" {
-    return Ok(());
-  }
-
-  let visible = window.is_visible().unwrap_or(false);
-
-  // Auto-refresh Claude usage only when the window is hidden. When visible, leave the
-  // page alone so the user isn't interrupted and so we can scrape the already-loaded DOM
-  // without a reload race. Manual Reload/Refresh still uses refresh_provider_page and
-  // forces the configured usage URL.
-  if !visible {
-    let target = tauri::Url::parse(&url).map_err(|error| error.to_string())?;
-    window.navigate(target).map_err(|error| error.to_string())?;
-  }
   Ok(())
 }
 
@@ -234,11 +203,6 @@ fn hide_widget_window(app: &tauri::AppHandle) -> Result<(), String> {
     window.hide().map_err(|error| error.to_string())?;
   }
   Ok(())
-}
-
-#[tauri::command]
-fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
-  show_settings_window(&app)
 }
 
 // Gear button toggles: hide when already visible, otherwise show.
@@ -603,15 +567,12 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       open_provider_window,
       close_provider_window,
-      reload_provider_window,
       refresh_provider_page,
-      prepare_provider_refresh,
       open_widget_window,
       load_window_geometry,
       save_window_geometry,
       set_widget_mode,
       show_widget_context_menu,
-      open_settings_window,
       toggle_settings_window,
       update_tray_tooltip,
       open_in_chrome,
