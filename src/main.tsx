@@ -65,7 +65,7 @@ const defaultSettings: Settings = {
   codex1Url: "https://chatgpt.com/codex/cloud/settings/analytics#usage",
   theme: "terminal",
   opacity: 0.96,
-  uiScale: 0.9,
+  uiScale: 1,
   alwaysOnTop: true,
   refreshIntervalSec: 60,
   effectsEnabled: true,
@@ -81,7 +81,7 @@ const defaultSettings: Settings = {
 
 const GEOMETRY_KEY = "usageview.windowGeometry.v7";
 const WIDGET_MIN_WIDTH = 320;
-const WIDGET_MAX_WIDTH = 900;
+const WIDGET_MAX_WIDTH = 1400;
 const WIDGET_MIN_HEIGHT_FALLBACK = 260;
 const MINI_LOCK_WIDTH = 240;
 const MINI_MIN_HEIGHT_FALLBACK = 48;
@@ -131,7 +131,7 @@ function loadSettings(): Settings {
     const loaded = saved ? { ...defaultSettings, ...JSON.parse(saved) } : defaultSettings;
     return {
       ...loaded,
-      uiScale: 1,
+      uiScale: clampNumber(loaded.uiScale, 1, 2, 1),
       theme: normalizeTheme(loaded.theme),
       effectsEnabled: loaded.effectsEnabled ?? true,
       effectDurationMs: clampNumber(loaded.effectDurationMs, 800, 8000, 4000),
@@ -928,6 +928,7 @@ function WidgetApp() {
   const [settings, setSettings] = useState(loadSettings);
   const settingsRef = useRef(settings);
   const modeRef = useRef(mode);
+  const prevUiScaleRef = useRef(settings.uiScale);
   const skipInitialModeResizeRef = useRef(true);
   // Guard against persisting the initial default position: the window is created visible at its
   // tauri.conf.json corner and auto-fit fires resize events before recoverVisibleWindow has applied the
@@ -1179,6 +1180,29 @@ function WidgetApp() {
       observer.disconnect();
     };
   }, [mode, settings.theme, snapshots.claude, snapshots.codex, snapshots["codex-1"], settings.showClaude, settings.showCodex, settings.showCodex1]);
+
+  // Full-view zoom: scale the whole window by the same factor as the content, so the entire widget grows
+  // (not just the content inside a fixed frame). Width is multiplied by the scale ratio; height is left to
+  // the auto-fit effect above, which re-locks it to the (now-zoomed) content height.
+  useEffect(() => {
+    const prev = prevUiScaleRef.current;
+    prevUiScaleRef.current = settings.uiScale;
+    if (mode !== "widget" || prev === settings.uiScale) return;
+    const ratio = settings.uiScale / prev;
+    const appWindow = getCurrentWindow();
+    void (async () => {
+      try {
+        const inner = await appWindow.innerSize();
+        const factor = await appWindow.scaleFactor();
+        const logicalW = inner.width / factor;
+        const logicalH = inner.height / factor;
+        const targetW = Math.min(WIDGET_MAX_WIDTH, Math.max(WIDGET_MIN_WIDTH, Math.round(logicalW * ratio)));
+        await appWindow.setSize(new LogicalSize(targetW, Math.round(logicalH)));
+      } catch {
+        // ignore; the auto-fit effect still applies the content zoom
+      }
+    })();
+  }, [settings.uiScale, mode]);
 
   async function saveCurrentGeometryNow(targetMode = modeRef.current) {
     // Never persist before the saved geometry has been restored, or a startup resize event would
@@ -1545,7 +1569,7 @@ function WidgetApp() {
   }
 
   return (
-    <main ref={widgetRef} className={`widget ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag}>
+    <main ref={widgetRef} className={`widget ${themeClass(settings.theme)}`} style={{ ...panelStyle(settings), "--ui-scale": settings.uiScale } as React.CSSProperties} onMouseDown={startWindowDrag}>
       <div className="scale-shell">
       <div ref={widgetHeaderRef} className="widget-header">
         <div className="window-title">
@@ -1857,6 +1881,14 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
       </div>
       <div className="settings-row">
         <label>Opacity<input type="range" min="0.45" max="1" step="0.01" value={settings.opacity} onChange={(event) => patch({ opacity: Number(event.target.value) })} /></label>
+      </div>
+      <div className="seg-field">
+        <span className="seg-label">Zoom (Full view)</span>
+        <div className="seg" role="group" aria-label="Full view zoom">
+          {([["100%", 1], ["125%", 1.25], ["150%", 1.5], ["200%", 2]] as const).map(([label, value]) => (
+            <button key={label} type="button" className={`seg-btn${Math.abs(settings.uiScale - value) < 0.001 ? " active" : ""}`} onClick={() => patch({ uiScale: value })}>{label}</button>
+          ))}
+        </div>
       </div>
       <div className="settings-row">
         <label>Refresh seconds (all AIs)<input
