@@ -963,6 +963,14 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   filter: saturate(0);
   transition: opacity 0.4s, filter 0.4s;
 }
+/* When a provider is full (limited) the tile turns neutral gray — matching Glass mode.
+   The Pixel tiles derive every colored part (percent, bar cells, timer clock, border) from
+   --tone, so overriding it desaturates the whole tile at once. Glass has its own gray via
+   --provider-color, so this is scoped to the Pixel themes only. */
+.theme-terminal .provider-tile.mark-paused,
+.theme-light .provider-tile.mark-paused {
+  --tone: color-mix(in oklch, var(--muted) 82%, var(--fg));
+}
 
 
 @media (max-width: 385px) {

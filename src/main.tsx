@@ -2185,7 +2185,7 @@ function MiniUsageRow({ snapshot, paused = false, updatedAgo, flash = false, onF
   const resetLabel = resetCountdown === "resetting soon" ? "soon" : resetCountdown?.replace(/^resets?\s+in\s+/i, "") ?? "--";
   const freshnessLabel = (updatedAgo ?? formatAgo(snapshot.updatedAt) ?? "--").replace(/^just now$/i, "now");
   return (
-    <article className={`mini-usage provider-tile ${snapshot.provider}${flash ? " mark-flash" : ""}`}>
+    <article className={`mini-usage provider-tile ${snapshot.provider}${flash ? " mark-flash" : ""}${paused ? " mark-paused" : ""}`}>
       <span className={`mini-status ${state}`} aria-label={state} />
       <MiniMarkButton provider={snapshot.provider} onClick={onFlip} title="Tap for reset countdown" />
       <span className="mini-provider">{providerLabel(snapshot.provider)}</span>
