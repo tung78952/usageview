@@ -1066,7 +1066,7 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 /* On hover the status dot + label fade out, so slide the logo flush to the left edge
    (status col 8px + 6px gap = 14px) for a tidy hover state. */
 .mini-usage > .mini-mark-btn { transition: transform 120ms ease; }
-.mini-usage:hover > .mini-mark-btn { transform: translateX(-14px); }
+.mini-usage:not(.mini-timer):hover > .mini-mark-btn { transform: translateX(-14px); }
 .mini-usage.claude { --tone: var(--claude); }
 .mini-usage.codex,
 .mini-usage.codex-1 { --tone: var(--codex); }
