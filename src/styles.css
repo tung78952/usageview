@@ -1063,6 +1063,10 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 .mini-usage:hover > .mini-provider,
 .mini-usage:hover > .mini-percent,
 .mini-usage:hover > .mini-bar { opacity: 0; }
+/* On hover the status dot + label fade out, so slide the logo flush to the left edge
+   (status col 8px + 6px gap = 14px) for a tidy hover state. */
+.mini-usage > .mini-mark-btn { transition: transform 120ms ease; }
+.mini-usage:hover > .mini-mark-btn { transform: translateX(-14px); }
 .mini-usage.claude { --tone: var(--claude); }
 .mini-usage.codex,
 .mini-usage.codex-1 { --tone: var(--codex); }
@@ -1134,7 +1138,7 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 }
 .mini-details {
   position: absolute;
-  inset: 2px 8px 2px 40px; /* clear the always-visible logo button on the left */
+  inset: 2px 8px 2px 28px; /* clear the logo once it slides flush-left on hover */
   z-index: 8;
   min-width: 0;
   display: flex;
@@ -1159,13 +1163,19 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 .mini-detail-meta .warn { color: var(--danger); }
 .mini-usage:hover > .mini-details { opacity: 1; }
 
-/* ── Mini timer flip: logo on the left, big ticking H:MM:SS centered ── */
+/* ── Mini timer flip: logo pinned left, big ticking H:MM:SS centered ── */
 .mini-usage.mini-timer {
-  grid-template-columns: auto minmax(0, 1fr);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.mini-timer .mini-mark-btn {
+  position: absolute; /* out of flow so it never pushes the clock to a 2nd row */
+  left: 7px;
+  top: 50%;
+  transform: translateY(-50%);
 }
 .mini-timer-clock {
-  grid-column: 1 / -1;
-  grid-row: 1;
   text-align: center;
   color: var(--tone);
   font: 800 16px/1 var(--font-mono);
