@@ -260,8 +260,8 @@ fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
     Some(window) => window,
     None => WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
       .title("UsageView - Settings")
-      .inner_size(460.0, 780.0)
-      .min_inner_size(430.0, 560.0)
+      .inner_size(460.0, 720.0)
+      .min_inner_size(430.0, 520.0)
       .resizable(false)
       .zoom_hotkeys_enabled(false)
       .decorations(false)

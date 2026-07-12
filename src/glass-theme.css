@@ -688,3 +688,60 @@
   background: linear-gradient(180deg, rgba(255,255,255,.18), transparent 60%);
   opacity: .5;
 }
+
+/* ── Settings redesign controls under Glass ──────────────────────────────────
+   The generic `.theme-glass button` rule (frosted pill + ::before glow + hover scale) also lands on
+   .mode-switch, .themed-select-trigger and each .themed-select-option. These rules (loaded after
+   styles.css) restyle them cleanly. */
+
+/* Mode switch: frosted PILL track (Pixel base is square), kill the glow/hover-scale, solid knob that
+   inverts with the theme (dark-ink knob on light glass, light knob on dark glass) so it's always clear. */
+.theme-glass .mode-switch { border-radius: 999px; }
+/* CRITICAL: the generic `.theme-glass button > *` rule (position:relative) outranks the switch's own
+   absolute positioning, collapsing the knob + end icons into normal flow — that is the garbled Glass
+   switch. Re-assert absolute so the knob stacks on the track and slides. */
+.theme-glass .mode-switch-end,
+.theme-glass .mode-switch-knob { position: absolute; }
+.theme-glass .mode-switch::before { display: none; }
+.theme-glass .mode-switch:hover { transform: none; }
+.theme-glass .mode-switch-knob {
+  border-radius: 999px;
+  color: var(--paper-panel);
+  background: var(--paper-ink);
+  border: 1px solid color-mix(in srgb, var(--paper-ink) 30%, var(--paper-glass-line));
+  box-shadow: 0 2px 6px -2px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 40%), transparent);
+}
+
+/* Zoom dropdown: frosted field (rounded rect, not full pill) + clean menu/options. */
+.theme-glass .themed-select-trigger { border-radius: 12px; }
+.theme-glass .themed-select-trigger::before { display: none; }
+.theme-glass .themed-select-trigger:hover { transform: none; }
+.theme-glass .themed-select-menu {
+  border-radius: 14px;
+  border-color: var(--paper-glass-line);
+  background: color-mix(in srgb, var(--paper-panel) 82%, transparent);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+  box-shadow: 0 18px 40px -16px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 44%), transparent);
+}
+.theme-glass .themed-select-option {
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background-color: transparent;
+  box-shadow: none;
+  color: var(--paper-ink);
+}
+.theme-glass .themed-select-option::before { display: none; }
+.theme-glass .themed-select-option:hover {
+  transform: none;
+  box-shadow: none;
+  background-color: color-mix(in srgb, var(--paper-panel) 30%, transparent);
+}
+.theme-glass .themed-select-option.is-active {
+  color: var(--paper-ink);
+  border-color: var(--paper-glass-line);
+  background-color: color-mix(in srgb, var(--paper-panel) 44%, transparent);
+}
+
+/* Refresh field: rounded rect frosted input matching the dropdown. */
+.theme-glass .num-field input { border-radius: 12px; }

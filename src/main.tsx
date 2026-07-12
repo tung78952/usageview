@@ -237,7 +237,7 @@ function saveWindowGeometry(mode: AppMode, geometry: WindowGeometry) {
 }
 
 function defaultWindowSize(mode: AppMode) {
-  if (mode === "settings") return { width: 460, height: 760 };
+  if (mode === "settings") return { width: 460, height: 720 };
   if (mode === "mini") return { width: MINI_LOCK_WIDTH, height: 124 };
   return { width: WIDGET_BASE_WIDTH, height: 500 };
 }
@@ -338,7 +338,7 @@ function normalizeWindowGeometry(mode: AppMode, geometry: Partial<WindowGeometry
   const fallbackSize = defaultWindowSize(mode);
   const fixedModeScale = mode === "widget" ? widgetScale : 1;
   const minWidthL = mode === "settings" ? 430 : fallbackSize.width * fixedModeScale;
-  const minHeightL = mode === "settings" ? 620 : fallbackSize.height * fixedModeScale;
+  const minHeightL = mode === "settings" ? 520 : fallbackSize.height * fixedModeScale;
   const maxWidthL = mode === "settings" ? Math.max(minWidthL, fallbackSize.width) : minWidthL;
   const minWidth = Math.round(minWidthL * scale);
   const minHeight = Math.round(minHeightL * scale);
@@ -1782,6 +1782,115 @@ function ProviderPanel({
   );
 }
 
+function SunIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="4.1" />
+      <path d="M12 2.6v2.3M12 19.1v2.3M4.7 4.7l1.6 1.6M17.7 17.7l1.6 1.6M2.6 12h2.3M19.1 12h2.3M4.7 19.3l1.6-1.6M17.7 6.3l1.6-1.6" />
+    </svg>
+  );
+}
+
+function MoonIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true">
+      <path d="M20.2 14.7A8.2 8.2 0 0 1 9.3 3.8a.6.6 0 0 0-.82-.78A8.7 8.7 0 1 0 21 15.5a.6.6 0 0 0-.8-.8z" />
+    </svg>
+  );
+}
+
+// Light/Dark presented as a sliding switch (sun on the left, moon on the right). Pure presentation —
+// the click just flips the mode half of the composed theme; all wiring stays in patch().
+function ModeSwitch({ mode, onToggle }: { mode: ThemeMode; onToggle: () => void }) {
+  const dark = mode === "dark";
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={dark}
+      aria-label={`Theme mode: ${mode}`}
+      className={`mode-switch${dark ? " is-dark" : ""}`}
+      onClick={onToggle}
+    >
+      <span className="mode-switch-end sun" aria-hidden="true"><SunIcon /></span>
+      <span className="mode-switch-end moon" aria-hidden="true"><MoonIcon /></span>
+      <span className="mode-switch-knob" aria-hidden="true">{dark ? <MoonIcon /> : <SunIcon />}</span>
+    </button>
+  );
+}
+
+// Custom dropdown so the menu can be themed per style (Pixel = square/mono, Glass = frosted). Closes on
+// outside pointerdown + Escape. Generic over the option value so it can be reused beyond the zoom picker.
+function ThemedSelect<T extends string | number>({ value, options, onChange, ariaLabel }: {
+  value: T;
+  options: { label: string; value: T }[];
+  onChange: (value: T) => void;
+  ariaLabel?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const current = options.find((option) => option.value === value);
+
+  useEffect(() => {
+    if (!open) return;
+    function onPointerDown(event: PointerEvent) {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className={`themed-select${open ? " is-open" : ""}`}>
+      <button
+        type="button"
+        className="themed-select-trigger"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        onClick={() => setOpen((prev) => !prev)}
+      >
+        <span>{current?.label ?? String(value)}</span>
+        <svg className="themed-select-chevron" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+      </button>
+      {open && (
+        <ul className="themed-select-menu" role="listbox">
+          {options.map((option) => (
+            <li key={String(option.value)}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={option.value === value}
+                className={`themed-select-option${option.value === value ? " is-active" : ""}`}
+                onClick={() => { onChange(option.value); setOpen(false); }}
+              >
+                {option.label}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+const ZOOM_OPTIONS: { label: string; value: number }[] = [
+  { label: "25%", value: 0.25 },
+  { label: "50%", value: 0.5 },
+  { label: "75%", value: 0.75 },
+  { label: "100%", value: 1 },
+  { label: "125%", value: 1.25 },
+  { label: "150%", value: 1.5 },
+  { label: "200%", value: 2 },
+];
+
 function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRestore, providerPercents }: {
   settings: Settings;
   savedAt: Date | null;
@@ -1874,38 +1983,44 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
             <button type="button" className={`seg-btn${themeStyle(settings.theme) === "glass" ? " active" : ""}`} onClick={() => patch({ theme: composeTheme("glass", themeMode(settings.theme)) })}>Glass</button>
           </div>
         </div>
-      </div>
-      <div className="settings-row">
         <div className="seg-field">
           <span className="seg-label">Mode</span>
-          <div className="seg" role="group" aria-label="Theme mode">
-            <button type="button" className={`seg-btn${themeMode(settings.theme) === "light" ? " active" : ""}`} onClick={() => patch({ theme: composeTheme(themeStyle(settings.theme), "light") })}>Light</button>
-            <button type="button" className={`seg-btn${themeMode(settings.theme) === "dark" ? " active" : ""}`} onClick={() => patch({ theme: composeTheme(themeStyle(settings.theme), "dark") })}>Dark</button>
-          </div>
+          <ModeSwitch
+            mode={themeMode(settings.theme)}
+            onToggle={() => patch({ theme: composeTheme(themeStyle(settings.theme), themeMode(settings.theme) === "light" ? "dark" : "light") })}
+          />
         </div>
-      </div>
-      <div className="settings-row">
-        <label>Opacity<input type="range" min="0.45" max="1" step="0.01" value={settings.opacity} onChange={(event) => patch({ opacity: Number(event.target.value) })} /></label>
       </div>
       <div className="settings-row">
         <div className="seg-field">
           <span className="seg-label">Zoom (Full view)</span>
-          <div className="seg" role="group" aria-label="Full view zoom">
-            {([["25%", 0.25], ["50%", 0.5], ["75%", 0.75], ["100%", 1], ["125%", 1.25], ["150%", 1.5], ["200%", 2]] as const).map(([label, value]) => (
-              <button key={label} type="button" className={`seg-btn${Math.abs(settings.uiScale - value) < 0.001 ? " active" : ""}`} onClick={() => patch({ uiScale: value })}>{label}</button>
-            ))}
+          <ThemedSelect
+            ariaLabel="Full view zoom"
+            value={settings.uiScale}
+            options={ZOOM_OPTIONS}
+            onChange={(value) => patch({ uiScale: value })}
+          />
+        </div>
+        <div className="seg-field">
+          <span className="seg-label">Refresh (all AIs)</span>
+          <div className="num-field">
+            <input
+              type="number"
+              min="10"
+              value={secondsDraft}
+              onChange={(event) => setSecondsDraft(event.target.value)}
+              onBlur={commitSeconds}
+              onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commitSeconds(); } }}
+            />
+            <span className="num-unit">sec</span>
           </div>
         </div>
       </div>
       <div className="settings-row">
-        <label>Refresh seconds (all AIs)<input
-          type="number"
-          min="10"
-          value={secondsDraft}
-          onChange={(event) => setSecondsDraft(event.target.value)}
-          onBlur={commitSeconds}
-          onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commitSeconds(); } }}
-        /></label>
+        <div className="seg-field">
+          <span className="seg-label">Opacity <span className="seg-value">{Math.round(settings.opacity * 100)}%</span></span>
+          <input type="range" min="0.45" max="1" step="0.01" value={settings.opacity} onChange={(event) => patch({ opacity: Number(event.target.value) })} />
+        </div>
       </div>
       {pendingLow !== null && (
         <div className="settings-warn">
@@ -1917,7 +2032,13 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
         </div>
       )}
       <details className="effect-settings">
-        <summary><span>Usage effect</span><strong>{settings.effectsEnabled ? "on" : "off"}</strong></summary>
+        <summary>
+          <span className="summary-left">
+            <svg className="disclosure-chevron" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+            <span>Usage effect</span>
+          </span>
+          <strong>{settings.effectsEnabled ? "on" : "off"}</strong>
+        </summary>
         <label className="toggle-row">
           <span>Enable effect</span>
           <input type="checkbox" checked={settings.effectsEnabled} onChange={(event) => patch({ effectsEnabled: event.target.checked })} />

@@ -58,11 +58,140 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 .danger { color: var(--danger); }
 
 .seg-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.seg-label { font: 750 10px/1 var(--font-body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.seg-label { display: flex; align-items: baseline; gap: 6px; font: 750 10px/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.seg-value { margin-left: auto; color: var(--fg); }
 .seg { display: flex; gap: 4px; }
-.seg-btn { flex: 1 1 0; min-width: 0; min-height: 30px; padding: 0 6px; font-size: 10px; letter-spacing: 0.03em; white-space: nowrap; }
+.seg-btn { flex: 1 1 0; min-width: 0; min-height: var(--settings-control-h); padding: 0 6px; font-size: 10px; letter-spacing: 0.03em; white-space: nowrap; }
 .seg-btn.active { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 44%, transparent); background: color-mix(in oklch, var(--accent) 16%, transparent); }
 .seg-btn.active:hover { transform: none; }
+
+/* Shared height so Zoom dropdown, Refresh input and the Mode switch line up in the 2-col rows. */
+:root { --settings-control-h: 32px; }
+
+/* ── Light/Dark sliding switch ── */
+.mode-switch {
+  position: relative;
+  width: 60px;
+  height: var(--settings-control-h);
+  min-height: var(--settings-control-h);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-2);
+  cursor: pointer;
+  flex: 0 0 auto;
+  overflow: hidden;
+}
+.mode-switch:hover { transform: none; box-shadow: none; border-color: color-mix(in oklch, var(--accent) 40%, var(--border)); }
+.mode-switch-end {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  color: var(--muted);
+  opacity: 0.5;
+  pointer-events: none;
+}
+.mode-switch-end.sun { left: 8px; }
+.mode-switch-end.moon { right: 8px; }
+/* Hide the end icon the knob currently sits over so the two never visually overlap. */
+.mode-switch:not(.is-dark) .mode-switch-end.sun,
+.mode-switch.is-dark .mode-switch-end.moon { visibility: hidden; }
+.mode-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  /* Solid, self-inverting knob so it always contrasts the track in every theme. */
+  color: var(--bg);
+  background: var(--fg);
+  border: 1px solid color-mix(in oklch, var(--fg) 55%, var(--border));
+  box-shadow: 0 1px 3px color-mix(in srgb, #000 38%, transparent);
+  transition: transform 160ms ease;
+}
+.mode-switch.is-dark .mode-switch-knob { transform: translateX(28px); }
+
+/* ── Custom themed dropdown (Zoom picker) ── */
+.themed-select { position: relative; min-width: 0; }
+.themed-select-trigger {
+  width: 100%;
+  height: var(--settings-control-h);
+  min-height: var(--settings-control-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 10px;
+  font-size: 11px;
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface-2);
+  cursor: pointer;
+}
+.themed-select-trigger:hover { transform: none; box-shadow: none; border-color: color-mix(in oklch, var(--accent) 40%, var(--border)); }
+.themed-select-chevron { flex: 0 0 auto; color: var(--muted); transition: transform 140ms ease; }
+.themed-select.is-open .themed-select-chevron { transform: rotate(180deg); }
+.themed-select-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  box-shadow: 0 10px 24px var(--shadow);
+  max-height: 232px;
+  overflow: auto;
+}
+.themed-select-menu li { min-width: 0; }
+.themed-select-option {
+  width: 100%;
+  min-height: 27px;
+  text-align: left;
+  padding: 0 10px;
+  font-size: 11px;
+  color: var(--fg);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+}
+.themed-select-option:hover { transform: none; box-shadow: none; background: color-mix(in oklch, var(--accent) 14%, transparent); }
+.themed-select-option.is-active {
+  color: var(--accent);
+  border-color: color-mix(in oklch, var(--accent) 40%, transparent);
+  background: color-mix(in oklch, var(--accent) 16%, transparent);
+}
+
+/* ── Compact number field (Refresh seconds) ── */
+.num-field { display: flex; align-items: center; gap: 8px; }
+.num-field input {
+  width: 74px;
+  min-width: 0;
+  height: var(--settings-control-h);
+  min-height: var(--settings-control-h);
+  padding: 0 10px;
+  flex: 0 0 auto;
+  font-size: 11px;
+  text-align: left;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+.num-field input::-webkit-outer-spin-button,
+.num-field input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.num-unit { font: 750 10px/1 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 
 .theme-light {
   /* Paper background tones matched to Glass Light; text + provider colors kept deeper/more saturated
@@ -797,11 +926,17 @@ h2 {
   font: 750 11px/1 var(--font-mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  list-style: none;
 }
+.effect-settings summary::-webkit-details-marker { display: none; }
 .effect-settings summary strong {
   color: var(--accent);
   font: inherit;
 }
+/* Left group: disclosure caret + label, so users see it can expand. */
+.summary-left { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.disclosure-chevron { flex: 0 0 auto; color: var(--muted); transition: transform 160ms ease; }
+.effect-settings[open] .disclosure-chevron { transform: rotate(90deg); }
 .settings-card .toggle-row {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -850,6 +985,9 @@ h2 {
 }
 .effect-tester-row button {
   flex: 0 0 auto;
+  min-height: 28px;
+  padding: 0 9px;
+  font-size: 11px;
 }
 .effect-tester-actions,
 .effect-tester-presets {
@@ -857,10 +995,13 @@ h2 {
   flex-wrap: wrap;
   gap: 6px;
 }
+.effect-tester-actions button { min-height: 28px; padding: 0 12px; font-size: 11px; }
 .effect-tester-presets button {
-  flex: 1 1 auto;
-  min-width: 56px;
-  font-size: 12px;
+  flex: 0 1 auto;
+  min-width: 0;
+  min-height: 26px;
+  padding: 0 9px;
+  font-size: 11px;
 }
 input, select {
   width: 100%;
@@ -876,9 +1017,12 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 .settings-card {
   max-width: calc(100% - 36px);
 }
-.settings-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.settings-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: start; }
 .settings-row:has(> label:only-child) { grid-template-columns: 1fr; }
 .settings-row:has(> .seg-field:only-child) { grid-template-columns: 1fr; }
+/* Consistent vertical rhythm: tight inside a field (6px), looser between rows (13px) — the previous
+   0px between rows read as an uneven 6/0 cadence. */
+.settings-card .settings-row + .settings-row { margin-top: 13px; }
 .save-state {
   flex: 0 0 auto;
   padding: 4px 7px;
