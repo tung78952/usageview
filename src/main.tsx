@@ -1495,7 +1495,7 @@ function WidgetApp() {
   }
 
   function prepareCompactDrag(event: React.MouseEvent<HTMLElement>) {
-    if (event.button !== 0 || (event.target as HTMLElement).closest("button")) return;
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button, .mini-mark-btn")) return;
     compactPointerRef.current = { x: event.clientX, y: event.clientY, dragged: false };
   }
 
@@ -1535,7 +1535,9 @@ function WidgetApp() {
       <main className={`compact-widget mini-widget ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={prepareCompactDrag} onMouseMove={maybeStartCompactDrag} onContextMenu={openCompactMenu}>
         <div ref={compactProvidersRef} className="mini-providers">
           {shown.length > 0 ? shown.map((provider) => (
-            <MiniUsageRow key={provider} snapshot={snapshots[provider]} paused={isPaused(provider)} updatedAgo={agoFor(provider)} flash={flashSet.has(provider)} />
+            timerSet.has(provider)
+              ? <MiniTimerRow key={provider} snapshot={snapshots[provider]} onBack={() => toggleTimer(provider)} paused={isPaused(provider)} />
+              : <MiniUsageRow key={provider} snapshot={snapshots[provider]} paused={isPaused(provider)} updatedAgo={agoFor(provider)} flash={flashSet.has(provider)} onFlip={() => toggleTimer(provider)} />
           )) : <EmptyProviderState />}
         </div>
       </main>
@@ -2159,7 +2161,22 @@ function buildUsageCells(percent: number | undefined, cellCount: number, effect?
 }
 
 
-function MiniUsageRow({ snapshot, paused = false, updatedAgo, flash = false }: { snapshot: UsageSnapshot; paused?: boolean; updatedAgo?: string; flash?: boolean }) {
+function MiniMarkButton({ provider, onClick, title }: { provider: Provider; onClick?: () => void; title?: string }) {
+  return (
+    <span
+      className="mini-mark-btn"
+      role="button"
+      tabIndex={onClick ? 0 : undefined}
+      title={title}
+      onClick={onClick}
+      onKeyDown={onClick ? (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onClick(); } } : undefined}
+    >
+      <ProviderMark provider={provider} />
+    </span>
+  );
+}
+
+function MiniUsageRow({ snapshot, paused = false, updatedAgo, flash = false, onFlip }: { snapshot: UsageSnapshot; paused?: boolean; updatedAgo?: string; flash?: boolean; onFlip?: () => void }) {
   const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
   const stale = isStale(snapshot);
   const state = stale ? "stale" : snapshot.status !== "ok" ? "warn" : paused ? "paused" : "ok";
@@ -2170,7 +2187,8 @@ function MiniUsageRow({ snapshot, paused = false, updatedAgo, flash = false }: {
   return (
     <article className={`mini-usage provider-tile ${snapshot.provider}${flash ? " mark-flash" : ""}`}>
       <span className={`mini-status ${state}`} aria-label={state} />
-      <span className="mini-provider"><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</span>
+      <MiniMarkButton provider={snapshot.provider} onClick={onFlip} title="Tap for reset countdown" />
+      <span className="mini-provider">{providerLabel(snapshot.provider)}</span>
       <strong className="mini-percent">{percent !== undefined ? `${Math.round(percent)}%` : "--"}</strong>
       <span className="mini-bar" style={{ "--bar-fill": `${percent ?? 0}%` } as React.CSSProperties} aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
         {buildUsageCells(percent, 8)}
@@ -2179,6 +2197,22 @@ function MiniUsageRow({ snapshot, paused = false, updatedAgo, flash = false }: {
         <span className="mini-reset">{resetLabel}</span>
         <span className="mini-detail-meta"><strong className={state}>{statusLabel}</strong><i>·</i><span>{freshnessLabel}</span></span>
       </span>
+    </article>
+  );
+}
+
+function MiniTimerRow({ snapshot, onBack, paused = false }: { snapshot: UsageSnapshot; onBack: () => void; paused?: boolean }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const resetMs = parseResetMs(snapshot.resetLabel);
+  const countdown = resetMs !== null ? formatCountdown(resetMs) : null;
+  return (
+    <article className={`mini-usage mini-timer provider-tile ${snapshot.provider}${paused ? " mark-paused" : ""}`}>
+      <MiniMarkButton provider={snapshot.provider} onClick={onBack} title="Tap to dismiss" />
+      <strong className="mini-timer-clock">{countdown ?? (snapshot.resetLabel ? "soon" : "--")}</strong>
     </article>
   );
 }

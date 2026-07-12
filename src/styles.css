@@ -1045,7 +1045,7 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   min-width: 0;
   height: 34px;
   display: grid;
-  grid-template-columns: 8px minmax(64px, 1fr) 42px 72px;
+  grid-template-columns: 8px auto minmax(40px, 1fr) 42px 72px;
   align-items: center;
   gap: 6px;
   padding: 5px 7px;
@@ -1077,6 +1077,19 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 .mini-status.stale,
 .mini-status.paused { color: var(--warn); background: var(--warn); }
 .mini-status.warn { color: var(--danger); background: var(--danger); }
+.mini-mark-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  position: relative;
+  z-index: 9; /* stay above the hover .mini-details overlay so it is always clickable */
+}
+.mini-mark-btn .mark { width: 16px; height: 16px; flex: 0 0 16px; }
+.mini-mark-btn .mark svg { width: 11px; height: 11px; }
 .mini-provider {
   min-width: 0;
   display: flex;
@@ -1089,8 +1102,6 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   text-transform: uppercase;
   white-space: nowrap;
 }
-.mini-provider .mark { width: 16px; height: 16px; flex: 0 0 16px; }
-.mini-provider .mark svg { width: 11px; height: 11px; }
 .mini-percent {
   color: var(--tone);
   text-align: right;
@@ -1123,7 +1134,7 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 }
 .mini-details {
   position: absolute;
-  inset: 2px 8px;
+  inset: 2px 8px 2px 40px; /* clear the always-visible logo button on the left */
   z-index: 8;
   min-width: 0;
   display: flex;
@@ -1147,3 +1158,17 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 .mini-detail-meta .paused { color: var(--warn); }
 .mini-detail-meta .warn { color: var(--danger); }
 .mini-usage:hover > .mini-details { opacity: 1; }
+
+/* ── Mini timer flip: logo on the left, big ticking H:MM:SS centered ── */
+.mini-usage.mini-timer {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+.mini-timer-clock {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  text-align: center;
+  color: var(--tone);
+  font: 800 16px/1 var(--font-mono);
+  letter-spacing: -.02em;
+  pointer-events: none; /* clicks fall through to drag; only the logo flips back */
+}
