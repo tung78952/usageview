@@ -745,3 +745,11 @@
 
 /* Refresh field: rounded rect frosted input matching the dropdown. */
 .theme-glass .num-field input { border-radius: 12px; }
+
+/* Sticky titlebar under Glass: frosted backdrop so scrolled content doesn't bleed through. */
+.theme-glass .titlebar {
+  background: color-mix(in srgb, var(--paper-panel) 55%, transparent);
+  border-bottom-color: var(--paper-glass-line);
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+}

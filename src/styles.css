@@ -227,24 +227,39 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   overflow-y: auto;
   border-radius: 6px;
   clip-path: inset(0 round 6px);
-  scrollbar-color: color-mix(in srgb, var(--muted) 48%, transparent) transparent;
-  scrollbar-width: thin;
+  /* Native scrollbar hidden: content stays full-width/even and a custom overlay scrollbar
+     (OverlayScrollbar) draws on top only while scrolling/hovering. */
+  scrollbar-width: none;
 }
+.control-shell .scale-shell::-webkit-scrollbar { width: 0; height: 0; }
 
-.control-shell .scale-shell::-webkit-scrollbar { width: 10px; height: 10px; }
-.control-shell .scale-shell::-webkit-scrollbar-track { background: transparent; }
-.control-shell .scale-shell::-webkit-scrollbar-thumb {
-  min-height: 44px;
-  border: 3px solid transparent;
+/* Custom overlay scrollbar for the Settings window — sits over the content (no reserved space),
+   auto-hides when idle. Positioned inside .control-shell (relative, overflow hidden). */
+.overlay-scrollbar {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  bottom: 3px;
+  width: 10px;
+  z-index: 20;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 200ms ease;
+}
+.overlay-scrollbar.is-visible { opacity: 1; }
+.overlay-scrollbar-thumb {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
   border-radius: 999px;
-  background: color-mix(in srgb, var(--muted) 42%, transparent);
-  background-clip: content-box;
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+  pointer-events: auto;
+  cursor: pointer;
+  transition: width 120ms ease, background 120ms ease;
 }
-.control-shell .scale-shell::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--muted) 62%, transparent);
-  background-clip: content-box;
-}
-.control-shell .scale-shell::-webkit-scrollbar-corner { background: transparent; }
+.overlay-scrollbar-thumb:hover,
+.overlay-scrollbar-thumb.is-dragging { width: 9px; background: color-mix(in srgb, var(--muted) 78%, transparent); }
 
 
 .widget {
@@ -814,8 +829,9 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 }
 
 .titlebar {
-  position: relative;
-  z-index: 1;
+  position: sticky;
+  top: 0;
+  z-index: 6;
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -823,6 +839,11 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   padding: 14px 16px;
   border-bottom: 1px solid var(--border);
   user-select: none;
+  /* Opaque-ish backdrop so content scrolling underneath doesn't show through the pinned header.
+     Respects the Opacity slider like the rest of the panel. */
+  background: color-mix(in srgb, var(--surface) var(--panel-opacity-pct), transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 .title-row { display: flex; align-items: center; gap: 10px; }

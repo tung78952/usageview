@@ -1,4 +1,4 @@
-import React, { Component, ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import React, { Component, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -763,6 +763,102 @@ function newNonce() {
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+// Custom auto-hiding overlay scrollbar for the Settings window. Draws a thin thumb over the content
+// (no reserved gutter, so content stays centered), visible only while scrolling / hovering / dragging.
+function OverlayScrollbar({ targetRef }: { targetRef: React.RefObject<HTMLElement | null> }) {
+  const [thumb, setThumb] = useState({ top: 0, height: 0 });
+  const [overflowing, setOverflowing] = useState(false);
+  const [visible, setVisible] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const hideTimerRef = useRef(0);
+  const dragRef = useRef<{ startY: number; startScroll: number } | null>(null);
+
+  const recompute = useCallback(() => {
+    const el = targetRef.current;
+    if (!el) return;
+    const { clientHeight, scrollHeight, scrollTop } = el;
+    const over = scrollHeight > clientHeight + 1;
+    setOverflowing(over);
+    if (!over) return;
+    const height = Math.max(28, (clientHeight / scrollHeight) * clientHeight);
+    const maxTop = clientHeight - height;
+    const denom = scrollHeight - clientHeight;
+    const top = denom > 0 ? maxTop * (scrollTop / denom) : 0;
+    setThumb({ top, height });
+  }, [targetRef]);
+
+  const flash = useCallback(() => {
+    setVisible(true);
+    window.clearTimeout(hideTimerRef.current);
+    hideTimerRef.current = window.setTimeout(() => {
+      if (!dragRef.current) setVisible(false);
+    }, 900);
+  }, []);
+
+  useEffect(() => {
+    const el = targetRef.current;
+    if (!el) return;
+    recompute();
+    function onScroll() { recompute(); flash(); }
+    el.addEventListener("scroll", onScroll, { passive: true });
+    const observer = new ResizeObserver(() => recompute());
+    observer.observe(el);
+    Array.from(el.children).forEach((child) => observer.observe(child));
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      observer.disconnect();
+      window.clearTimeout(hideTimerRef.current);
+    };
+  }, [targetRef, recompute, flash]);
+
+  useEffect(() => {
+    if (!dragging) return;
+    function onMove(event: PointerEvent) {
+      const drag = dragRef.current;
+      const el = targetRef.current;
+      if (!drag || !el) return;
+      const { clientHeight, scrollHeight } = el;
+      const height = Math.max(28, (clientHeight / scrollHeight) * clientHeight);
+      const maxTop = clientHeight - height;
+      const ratio = maxTop > 0 ? (event.clientY - drag.startY) / maxTop : 0;
+      el.scrollTop = drag.startScroll + ratio * (scrollHeight - clientHeight);
+    }
+    function onUp() {
+      dragRef.current = null;
+      setDragging(false);
+      flash();
+    }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+  }, [dragging, targetRef, flash]);
+
+  if (!overflowing) return null;
+  return (
+    <div
+      className={`overlay-scrollbar${visible || dragging ? " is-visible" : ""}`}
+      onPointerEnter={() => setVisible(true)}
+      onPointerLeave={() => { if (!dragRef.current) flash(); }}
+    >
+      <div
+        className={`overlay-scrollbar-thumb${dragging ? " is-dragging" : ""}`}
+        style={{ transform: `translateY(${thumb.top}px)`, height: `${thumb.height}px` }}
+        onPointerDown={(event) => {
+          event.preventDefault();
+          const el = targetRef.current;
+          if (!el) return;
+          dragRef.current = { startY: event.clientY, startScroll: el.scrollTop };
+          setDragging(true);
+          setVisible(true);
+        }}
+      />
+    </div>
+  );
+}
+
 // Detached Settings window: same bundle, rendered when the window label is "settings". Hosts the full
 // settings screen (Status + Accounts + Widget config) reusing the same components. Settings persist to
 // localStorage (widget mirrors them via its "storage" listener). Snapshots shown here come from
@@ -779,6 +875,7 @@ function SettingsWindowApp() {
   const [busy, setBusy] = useState<Provider | `${Provider}-open` | `${Provider}-close` | `${Provider}-reload` | `${Provider}-logout` | `${Provider}-discover` | null>(null);
   const [message, setMessage] = useState("Settings");
   const [pinned, setPinned] = useState(true);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     void getCurrentWindow().setAlwaysOnTop(pinned);
@@ -862,7 +959,7 @@ function SettingsWindowApp() {
 
   return (
     <main className={`control-shell ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag}>
-      <div className="scale-shell">
+      <div ref={scrollRef} className="scale-shell">
         <header className="titlebar">
           <div className="window-title">
             <strong>UsageView.cfg</strong>
@@ -918,6 +1015,7 @@ function SettingsWindowApp() {
           providerPercents={providerPercents}
         />
       </div>
+      <OverlayScrollbar targetRef={scrollRef} />
     </main>
   );
 }
