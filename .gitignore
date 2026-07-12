@@ -6,6 +6,7 @@ redesign/
 design/
 assets/
 *.md
+!README.md
 
 .env
 .env.*
