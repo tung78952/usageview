@@ -967,7 +967,19 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
    --provider-color, so this is scoped to the Pixel themes only. */
 .theme-terminal .provider-tile.mark-paused,
 .theme-light .provider-tile.mark-paused {
-  --tone: color-mix(in oklch, var(--muted) 82%, var(--fg));
+  /* Xám dịu, hướng về --border thay vì --fg (trước bị đẩy gần trắng ở dark → nhìn như còn chạy). */
+  --tone: color-mix(in oklch, var(--muted) 55%, var(--border));
+}
+/* Paused = trạng thái tĩnh: bỏ glow của số/đồng hồ (Full + Mini) */
+:is(.theme-terminal, .theme-light) .provider-tile.mark-paused
+  :is(.percent, .timer-clock, .mini-timer-clock) {
+  text-shadow: none;
+}
+/* ...và làm mờ số / thanh bar / đồng hồ ở cả Full và Mini
+   (opacity trên .bar/.mini-bar mờ luôn ô .cell.active + box-shadow glow của chúng). */
+:is(.theme-terminal, .theme-light) .provider-tile.mark-paused
+  :is(.percent, .bar, .timer-clock, .mini-percent, .mini-bar, .mini-timer-clock) {
+  opacity: 0.62;
 }
 
 
