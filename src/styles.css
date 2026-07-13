@@ -1185,23 +1185,23 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   font: 700 13px/1 var(--font-body); border: 1px solid var(--border);
 }
 .scope-checks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px 8px; }
-.scope-check { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 11px; color: var(--muted); cursor: pointer; text-transform: none; }
+.scope-check { display: inline-flex; align-items: center; justify-content: center; gap: 7px; margin: 0; font-size: 11px; color: var(--muted); cursor: pointer; text-transform: none; }
 .scope-check input { width: 16px; height: 16px; min-width: 16px; min-height: 16px; flex: 0 0 auto; padding: 0; accent-color: var(--accent); }
-.base-presets { display: flex; flex-wrap: wrap; gap: 7px; }
-.base-chip { display: inline-flex; align-items: center; gap: 7px; min-height: 30px; padding: 0 10px 0 7px; font-size: 11px; letter-spacing: 0.01em; text-transform: none; }
+.base-presets { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.base-chip { display: inline-flex; align-items: center; justify-content: flex-start; gap: 8px; width: 100%; min-height: 34px; padding: 0 11px 0 8px; font-size: 11px; letter-spacing: 0.01em; text-transform: none; }
 .base-chip.is-active { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 45%, transparent); background: color-mix(in oklch, var(--accent) 14%, transparent); }
 .base-chip:hover { transform: none; box-shadow: none; }
 .base-chip-swatch { position: relative; width: 20px; height: 20px; border-radius: 5px; border: 1px solid; overflow: hidden; flex: 0 0 auto; }
 .base-chip-swatch i { position: absolute; left: 3px; top: 3px; width: 7px; height: 7px; border-radius: 2px; }
 .base-chip-swatch em { position: absolute; right: 2px; bottom: 2px; width: 8px; height: 5px; border-radius: 2px; }
-.base-fine { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; align-items: center; }
-.fine-swatch { display: inline-flex; align-items: center; gap: 7px; min-height: 30px; padding: 0 11px; font-size: 11px; text-transform: none; }
+.base-fine { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 8px; align-items: stretch; }
+.fine-swatch { display: inline-flex; align-items: center; justify-content: flex-start; gap: 6px; width: 100%; min-width: 0; min-height: 34px; padding: 0 9px; font-size: 11px; text-transform: none; }
 .fine-swatch:hover { transform: none; box-shadow: none; }
 .fine-swatch.is-active { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 45%, transparent); background: color-mix(in oklch, var(--accent) 14%, transparent); }
-.fine-ic { position: relative; width: 18px; height: 18px; border-radius: 4px; border: 1px solid color-mix(in srgb, #000 22%, transparent); overflow: hidden; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; }
-.fine-ic-surface i { position: absolute; inset: 4px 3px; border-radius: 2px; }
-.fine-ic-text { font: 800 9px/1 var(--font-body); letter-spacing: 0; }
-.base-reset { min-height: 28px; padding: 0 10px; font-size: 11px; margin-left: auto; }
+.fine-ic { position: relative; width: 16px; height: 16px; border-radius: 4px; border: 1px solid color-mix(in srgb, #000 22%, transparent); overflow: hidden; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; }
+.fine-ic-surface i { position: absolute; inset: 3px; border-radius: 2px; }
+.fine-ic-text { font: 800 8px/1 var(--font-body); letter-spacing: 0; }
+.base-reset { width: 100%; min-height: 34px; padding: 0 8px; font-size: 11px; margin: 0; justify-content: center; }
 
 /* Custom color picker (inline popover) */
 .color-picker { margin-top: 9px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); display: grid; gap: 9px; }
