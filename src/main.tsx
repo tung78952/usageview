@@ -43,7 +43,15 @@ type Settings = {
   showClaude: boolean;
   showCodex: boolean;
   showCodex1: boolean;
+  providerColors: ProviderColors;
+  colorScope: ColorScope;
+  baseOverrides: Partial<Record<ThemeKey, BaseOverride>>;
 };
+
+type ThemeKey = "terminal" | "light" | "glass-light" | "glass-dark";
+type ProviderColors = { claude: string | null; codex: string | null; "codex-1": string | null };
+type ColorScope = { text: boolean; bar: boolean; border: boolean; bgTint: boolean };
+type BaseOverride = { preset?: string; bg?: string; surface?: string; text?: string };
 
 type AppMode = "widget" | "settings" | "mini";
 
@@ -78,7 +86,42 @@ const defaultSettings: Settings = {
   showClaude: true,
   showCodex: true,
   showCodex1: false,
+  providerColors: { claude: null, codex: null, "codex-1": null },
+  colorScope: { text: true, bar: true, border: true, bgTint: false },
+  baseOverrides: {},
 };
+
+// Built-in default base tokens per theme (mirror the CSS defaults) — used as the starting point when the
+// user fine-tunes base colors without picking a preset.
+const DEFAULT_BASE: Record<ThemeKey, { bg: string; surface: string; surface2: string; fg: string; muted: string; border: string }> = {
+  terminal: { bg: "#15171c", surface: "#1c1f26", surface2: "#262a33", fg: "#e9ebef", muted: "#a7aeba", border: "#363b45" },
+  light: { bg: "#eef0f3", surface: "#f8f9fb", surface2: "#e4e7ec", fg: "#1b1f27", muted: "#59616e", border: "#d3d8e0" },
+  "glass-light": { bg: "#e9ebf0", surface: "#f6f7fa", surface2: "#dfe3ea", fg: "#20242c", muted: "#58606d", border: "#d1d6de" },
+  "glass-dark": { bg: "#191a1a", surface: "#232424", surface2: "#2d2e2e", fg: "#ecebe8", muted: "#b9b6af", border: "#42403b" },
+};
+
+// Curated base palettes offered in the Colors panel (per light/dark). First of each = the shipped default.
+const BASE_PRESETS: Record<"light" | "dark", { id: string; name: string; bg: string; surface: string; surface2: string; fg: string; muted: string; border: string }[]> = {
+  light: [
+    { id: "clean-gray", name: "Clean Gray", bg: "#eef0f3", surface: "#f8f9fb", surface2: "#e4e7ec", fg: "#1b1f27", muted: "#59616e", border: "#d3d8e0" },
+    { id: "warm-ivory", name: "Warm Ivory", bg: "#efe3c6", surface: "#f7edda", surface2: "#e7d7b8", fg: "#241d14", muted: "#4c4231", border: "#cec4b2" },
+    { id: "sage", name: "Sage", bg: "#e8ede4", surface: "#f4f7f1", surface2: "#dbe3d5", fg: "#1e241b", muted: "#54604c", border: "#cdd8c6" },
+    { id: "slate", name: "Slate", bg: "#e7ebf0", surface: "#f3f6fa", surface2: "#dae1ea", fg: "#1a2130", muted: "#556074", border: "#ccd4e0" },
+  ],
+  dark: [
+    { id: "cool-charcoal", name: "Cool Charcoal", bg: "#15171c", surface: "#1c1f26", surface2: "#262a33", fg: "#e9ebef", muted: "#a7aeba", border: "#363b45" },
+    { id: "neutral-black", name: "Neutral Black", bg: "#141414", surface: "#1d1d1d", surface2: "#282726", fg: "#ecebe8", muted: "#b9b6af", border: "#42403b" },
+    { id: "navy", name: "Navy", bg: "#111725", surface: "#182034", surface2: "#212c45", fg: "#e6ebf5", muted: "#9aa6bd", border: "#2c3a57" },
+    { id: "plum", name: "Plum", bg: "#1a1420", surface: "#221a2b", surface2: "#2e2338", fg: "#efe9f2", muted: "#b0a3bb", border: "#3d3049" },
+  ],
+};
+
+// Curated accent swatches for the provider color rows (custom picker covers anything else).
+const ACCENT_PRESETS = ["#c46f42", "#e0913d", "#d8552f", "#d6486a", "#4faa62", "#2fa8a0", "#3aa3d4", "#5b8def", "#7b8cff", "#9b6be0", "#8a8f9c"];
+
+function baseModeOf(theme: ThemeKey): "light" | "dark" {
+  return theme === "light" || theme === "glass-light" ? "light" : "dark";
+}
 
 const GEOMETRY_KEY = "usageview.windowGeometry.v7";
 const WIDGET_BASE_WIDTH = 392;
@@ -140,9 +183,12 @@ function loadSettings(): Settings {
       showClaude: loaded.showClaude ?? true,
       showCodex: loaded.showCodex ?? true,
       showCodex1: loaded.showCodex1 ?? false,
+      providerColors: { claude: null, codex: null, "codex-1": null, ...(loaded.providerColors ?? {}) },
+      colorScope: { text: true, bar: true, border: true, bgTint: false, ...(loaded.colorScope ?? {}) },
+      baseOverrides: loaded.baseOverrides ?? {},
     };
   } catch {
-    return { ...defaultSettings, uiScale: 1, showClaude: true, showCodex: true, showCodex1: false };
+    return { ...defaultSettings };
   }
 }
 
@@ -198,14 +244,51 @@ function composeTheme(style: ThemeStyle, mode: ThemeMode): Settings["theme"] {
   return mode === "light" ? "light" : "terminal";
 }
 
-function panelStyle(settings: Settings): React.CSSProperties {
+// Resolve a theme's base tokens from an override (preset then fine-tune); null = use CSS defaults.
+function resolveBaseTokens(theme: ThemeKey, base: BaseOverride | undefined) {
+  if (!base || (!base.preset && !base.bg && !base.surface && !base.text)) return null;
+  const preset = base.preset ? BASE_PRESETS[baseModeOf(theme)].find((p) => p.id === base.preset) : undefined;
+  const start = preset ?? DEFAULT_BASE[theme];
   return {
+    bg: base.bg ?? start.bg,
+    surface: base.surface ?? start.surface,
+    surface2: start.surface2,
+    fg: base.text ?? start.fg,
+    muted: start.muted,
+    border: start.border,
+  };
+}
+
+function panelStyle(settings: Settings): React.CSSProperties {
+  const style: Record<string, string | number> = {
     "--panel-opacity": settings.opacity,
     "--panel-opacity-pct": `${Math.round(settings.opacity * 100)}%`,
     "--effect-duration": `${settings.effectDurationMs}ms`,
     "--effect-bar-brightness": settings.effectBarBrightness,
     "--effect-delta-brightness": settings.effectDeltaBrightness,
-  } as React.CSSProperties;
+  };
+  const pc = settings.providerColors;
+  if (pc.claude) style["--u-claude"] = pc.claude;
+  if (pc.codex) style["--u-codex"] = pc.codex;
+  if (pc["codex-1"]) style["--u-codex-1"] = pc["codex-1"];
+  const base = resolveBaseTokens(settings.theme, settings.baseOverrides[settings.theme]);
+  if (base) {
+    const glass = settings.theme === "glass-light" || settings.theme === "glass-dark";
+    const map = glass
+      ? { "--paper-bg": base.bg, "--paper-panel": base.surface, "--paper-panel-2": base.surface2, "--paper-ink": base.fg, "--paper-soft": base.muted, "--paper-faint": base.muted, "--paper-line": base.border }
+      : { "--bg": base.bg, "--surface": base.surface, "--surface-2": base.surface2, "--fg": base.fg, "--muted": base.muted, "--border": base.border };
+    Object.assign(style, map);
+  }
+  return style as React.CSSProperties;
+}
+
+// Scope classes toggle where a provider's accent lands (text/bar/border/bg). Default-on scopes keep the
+// current look; the CSS only overrides the OFF states + adds the bg tint.
+function panelScopeClasses(settings: Settings): string {
+  const s = settings.colorScope;
+  return [s.text && "scope-text", s.bar && "scope-bar", s.border && "scope-border", s.bgTint && "scope-bgtint"]
+    .filter(Boolean)
+    .join(" ");
 }
 
 function loadWindowGeometry(): Partial<Record<AppMode, WindowGeometry>> {
@@ -1661,7 +1744,7 @@ function WidgetApp() {
 
   if (mode === "mini") {
     return (
-      <main className={`compact-widget mini-widget ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={prepareCompactDrag} onMouseMove={maybeStartCompactDrag} onContextMenu={openCompactMenu}>
+      <main className={`compact-widget mini-widget ${themeClass(settings.theme)} ${panelScopeClasses(settings)}`} style={panelStyle(settings)} onMouseDown={prepareCompactDrag} onMouseMove={maybeStartCompactDrag} onContextMenu={openCompactMenu}>
         <div ref={compactProvidersRef} className="mini-providers">
           {shown.length > 0 ? shown.map((provider) => (
             timerSet.has(provider)
@@ -1674,7 +1757,7 @@ function WidgetApp() {
   }
 
   return (
-    <main ref={widgetRef} className={`widget ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag}>
+    <main ref={widgetRef} className={`widget ${themeClass(settings.theme)} ${panelScopeClasses(settings)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag}>
       <div className="scale-shell">
       <div ref={widgetHeaderRef} className="widget-header">
         <div className="window-title">
@@ -1991,6 +2074,204 @@ const ZOOM_OPTIONS: { label: string; value: number }[] = [
   { label: "200%", value: 2 },
 ];
 
+// ── Color helpers (hex ↔ HSV) for the custom picker ──
+function hexToRgb(hex: string): [number, number, number] {
+  let h = hex.replace("#", "").trim();
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const n = parseInt(h, 16);
+  return Number.isFinite(n) ? [(n >> 16) & 255, (n >> 8) & 255, n & 255] : [136, 136, 136];
+}
+function rgbToHex(r: number, g: number, b: number): string {
+  const to = (v: number) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0");
+  return `#${to(r)}${to(g)}${to(b)}`;
+}
+function rgbToHsv(r: number, g: number, b: number): [number, number, number] {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  let h = 0;
+  if (d) {
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60; if (h < 0) h += 360;
+  }
+  return [h, max === 0 ? 0 : d / max, max];
+}
+function hsvToRgb(h: number, s: number, v: number): [number, number, number] {
+  const c = v * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = v - c;
+  let r = 0, g = 0, b = 0;
+  if (h < 60) [r, g, b] = [c, x, 0];
+  else if (h < 120) [r, g, b] = [x, c, 0];
+  else if (h < 180) [r, g, b] = [0, c, x];
+  else if (h < 240) [r, g, b] = [0, x, c];
+  else if (h < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  return [(r + m) * 255, (g + m) * 255, (b + m) * 255];
+}
+const hexToHsv = (hex: string): [number, number, number] => rgbToHsv(...hexToRgb(hex));
+const hsvToHex = (h: number, s: number, v: number): string => rgbToHex(...hsvToRgb(h, s, v));
+const isHex = (s: string) => /^#?[0-9a-fA-F]{6}$/.test(s.trim());
+
+// Full custom color picker: 2D saturation/value square + hue strip + hex field. Rendered inline (expands
+// under the control). Live onChange; Esc or the Done button closes.
+function ColorPicker({ value, onChange, onClose }: { value: string; onChange: (hex: string) => void; onClose: () => void }) {
+  const [hsv, setHsv] = useState<[number, number, number]>(() => hexToHsv(value || "#888888"));
+  const [hexText, setHexText] = useState(value || "#888888");
+  const svRef = useRef<HTMLDivElement | null>(null);
+  const hueRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<"sv" | "hue" | null>(null);
+
+  function apply(next: [number, number, number]) {
+    setHsv(next);
+    const hex = hsvToHex(next[0], next[1], next[2]);
+    setHexText(hex);
+    onChange(hex);
+  }
+  function fromSv(clientX: number, clientY: number) {
+    const el = svRef.current; if (!el) return;
+    const r = el.getBoundingClientRect();
+    const s = Math.max(0, Math.min(1, (clientX - r.left) / r.width));
+    const v = Math.max(0, Math.min(1, 1 - (clientY - r.top) / r.height));
+    apply([hsv[0], s, v]);
+  }
+  function fromHue(clientX: number) {
+    const el = hueRef.current; if (!el) return;
+    const r = el.getBoundingClientRect();
+    const h = Math.max(0, Math.min(1, (clientX - r.left) / r.width)) * 360;
+    apply([h, hsv[1], hsv[2]]);
+  }
+  useEffect(() => {
+    function onMove(e: PointerEvent) {
+      if (dragRef.current === "sv") fromSv(e.clientX, e.clientY);
+      else if (dragRef.current === "hue") fromHue(e.clientX);
+    }
+    function onUp() { dragRef.current = null; }
+    function onKey(e: KeyboardEvent) { if (e.key === "Escape") onClose(); }
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("keydown", onKey);
+    };
+  });
+
+  const hueHex = hsvToHex(hsv[0], 1, 1);
+  const thumbHex = hsvToHex(hsv[0], hsv[1], hsv[2]);
+  return (
+    <div className="color-picker" onMouseDown={(e) => e.stopPropagation()}>
+      <div
+        ref={svRef}
+        className="cp-sv"
+        style={{ background: `linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, ${hueHex})` }}
+        onPointerDown={(e) => { dragRef.current = "sv"; fromSv(e.clientX, e.clientY); }}
+      >
+        <span className="cp-sv-thumb" style={{ left: `${hsv[1] * 100}%`, top: `${(1 - hsv[2]) * 100}%`, background: thumbHex }} />
+      </div>
+      <div ref={hueRef} className="cp-hue" onPointerDown={(e) => { dragRef.current = "hue"; fromHue(e.clientX); }}>
+        <span className="cp-hue-thumb" style={{ left: `${(hsv[0] / 360) * 100}%` }} />
+      </div>
+      <div className="cp-foot">
+        <span className="cp-preview" style={{ background: thumbHex }} />
+        <input
+          className="cp-hex"
+          value={hexText}
+          onChange={(e) => {
+            setHexText(e.target.value);
+            if (isHex(e.target.value)) {
+              const hex = e.target.value.startsWith("#") ? e.target.value : `#${e.target.value}`;
+              setHsv(hexToHsv(hex));
+              onChange(hex);
+            }
+          }}
+        />
+        <button type="button" className="cp-done" onClick={onClose}>Done</button>
+      </div>
+    </div>
+  );
+}
+
+function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: Partial<Settings>) => void }) {
+  type PickerTarget = { kind: "accent"; provider: keyof ProviderColors } | { kind: "base"; field: "bg" | "surface" | "text" };
+  const [picker, setPicker] = useState<PickerTarget | null>(null);
+  const themeKey = settings.theme;
+  const mode = baseModeOf(themeKey);
+  const base = settings.baseOverrides[themeKey] ?? {};
+  const resolvedBase = resolveBaseTokens(themeKey, base) ?? DEFAULT_BASE[themeKey];
+  const providers: [keyof ProviderColors, string, string][] = [["claude", "Claude", "#c46f42"], ["codex", "Codex", "#7b8cff"], ["codex-1", "Codex 2", "#7b8cff"]];
+  const baseFieldValue = (field: "bg" | "surface" | "text") => field === "text" ? resolvedBase.fg : resolvedBase[field];
+
+  const setProviderColor = (p: keyof ProviderColors, color: string | null) => patch({ providerColors: { ...settings.providerColors, [p]: color } });
+  const setScope = (key: keyof ColorScope, val: boolean) => patch({ colorScope: { ...settings.colorScope, [key]: val } });
+  const setBase = (next: Partial<BaseOverride>) => patch({ baseOverrides: { ...settings.baseOverrides, [themeKey]: { ...base, ...next } } });
+  const resetBase = () => { const nb = { ...settings.baseOverrides }; delete nb[themeKey]; patch({ baseOverrides: nb }); };
+  const samePicker = (t: PickerTarget) => picker && picker.kind === t.kind && (t.kind === "accent" ? (picker as any).provider === t.provider : (picker as any).field === (t as any).field);
+
+  return (
+    <details className="effect-settings colors-settings">
+      <summary>
+        <span className="summary-left">
+          <svg className="disclosure-chevron" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+          <span>Colors</span>
+        </span>
+        <strong>{settings.providerColors.claude || settings.providerColors.codex || settings.providerColors["codex-1"] || Object.keys(settings.baseOverrides).length ? "custom" : "default"}</strong>
+      </summary>
+
+      {providers.map(([p, label]) => (
+        <div className="color-row" key={p}>
+          <span className="seg-label">{label}</span>
+          <div className="swatch-row">
+            {ACCENT_PRESETS.map((c) => (
+              <button type="button" key={c} className={`swatch${(settings.providerColors[p] ?? "").toLowerCase() === c.toLowerCase() ? " is-active" : ""}`} style={{ background: c }} title={c} onClick={() => setProviderColor(p, c)} />
+            ))}
+            <button type="button" className={`swatch swatch-custom${samePicker({ kind: "accent", provider: p }) ? " is-active" : ""}`} title="Custom color" onClick={() => setPicker(samePicker({ kind: "accent", provider: p }) ? null : { kind: "accent", provider: p })}>+</button>
+            <button type="button" className="swatch swatch-reset" title="Reset to brand" onClick={() => { setProviderColor(p, null); if (samePicker({ kind: "accent", provider: p })) setPicker(null); }}>⟲</button>
+          </div>
+          {samePicker({ kind: "accent", provider: p }) && (
+            <ColorPicker value={settings.providerColors[p] ?? (p === "claude" ? "#c46f42" : "#7b8cff")} onChange={(hex) => setProviderColor(p, hex)} onClose={() => setPicker(null)} />
+          )}
+        </div>
+      ))}
+
+      <div className="color-row">
+        <span className="seg-label">Apply accent to</span>
+        <div className="scope-checks">
+          {([["text", "Text"], ["bar", "Bar"], ["border", "Border"], ["bgTint", "Tint"]] as [keyof ColorScope, string][]).map(([k, l]) => (
+            <label className="scope-check" key={k}><input type="checkbox" checked={settings.colorScope[k]} onChange={(e) => setScope(k, e.target.checked)} /><span>{l}</span></label>
+          ))}
+        </div>
+      </div>
+
+      <div className="color-row">
+        <span className="seg-label">Base — {mode} theme</span>
+        <div className="base-presets">
+          {BASE_PRESETS[mode].map((preset) => (
+            <button type="button" key={preset.id} className={`base-chip${base.preset === preset.id ? " is-active" : ""}`} onClick={() => setBase({ preset: preset.id })}>
+              <span className="base-chip-swatch" style={{ background: preset.bg, borderColor: preset.border }}><i style={{ background: preset.fg }} /><em style={{ background: preset.surface2 }} /></span>
+              {preset.name}
+            </button>
+          ))}
+        </div>
+        <div className="base-fine">
+          {([["bg", "Background"], ["surface", "Surface"], ["text", "Text"]] as ["bg" | "surface" | "text", string][]).map(([field, l]) => (
+            <button type="button" key={field} className={`fine-swatch${samePicker({ kind: "base", field }) ? " is-active" : ""}`} onClick={() => setPicker(samePicker({ kind: "base", field }) ? null : { kind: "base", field })}>
+              {field === "bg" && <span className="fine-ic" style={{ background: baseFieldValue("bg") }} />}
+              {field === "surface" && <span className="fine-ic fine-ic-surface" style={{ background: baseFieldValue("bg") }}><i style={{ background: baseFieldValue("surface") }} /></span>}
+              {field === "text" && <span className="fine-ic fine-ic-text" style={{ background: baseFieldValue("surface"), color: baseFieldValue("text") }}>Aa</span>}
+              {l}
+            </button>
+          ))}
+          <button type="button" className="base-reset" onClick={() => { resetBase(); setPicker(null); }}>Reset base</button>
+        </div>
+        {picker?.kind === "base" && (
+          <ColorPicker value={baseFieldValue(picker.field)} onChange={(hex) => setBase({ [picker.field]: hex })} onClose={() => setPicker(null)} />
+        )}
+      </div>
+    </details>
+  );
+}
+
 function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRestore, providerPercents }: {
   settings: Settings;
   savedAt: Date | null;
@@ -2204,6 +2485,7 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
           </div>
         )}
       </details>
+      <ColorsSection settings={settings} patch={patch} />
     </section>
   );
 }
@@ -2228,16 +2510,33 @@ function parseResetMs(resetLabel?: string): number | null {
   return null;
 }
 
-function formatCountdown(resetMs: number): string {
+function countdownParts(resetMs: number): { days: number; clock: string } | null {
   const remaining = resetMs - Date.now();
-  if (remaining <= 0) return "Resetting soon";
+  if (remaining <= 0) return null;
   const d = Math.floor(remaining / 86_400_000);
   const h = Math.floor((remaining % 86_400_000) / 3_600_000);
   const m = Math.floor((remaining % 3_600_000) / 60_000);
   const s = Math.floor((remaining % 60_000) / 1_000);
   const hh = d > 0 ? String(h).padStart(2, "0") : String(h);
-  const clock = `${hh}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-  return d > 0 ? `${d}d ${clock}` : clock;
+  return { days: d, clock: `${hh}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` };
+}
+
+// Renders "6d | 23:30:12" — a dimmed day count + thin divider before the live ticking clock (the divider
+// and days appear only when >=24h remain). Falls back to a text label when there's no live countdown.
+function CountdownFace({ resetMs, fallback }: { resetMs: number | null; fallback: string }) {
+  const parts = resetMs !== null ? countdownParts(resetMs) : null;
+  if (!parts) return <>{fallback}</>;
+  return (
+    <>
+      {parts.days > 0 && (
+        <>
+          <span className="count-days">{parts.days}d</span>
+          <span className="count-divider" aria-hidden="true" />
+        </>
+      )}
+      {parts.clock}
+    </>
+  );
 }
 
 function TimerView({ snapshot, onBack, paused = false }: { snapshot: UsageSnapshot; onBack: () => void; paused?: boolean }) {
@@ -2247,14 +2546,13 @@ function TimerView({ snapshot, onBack, paused = false }: { snapshot: UsageSnapsh
     return () => clearInterval(id);
   }, []);
   const resetMs = parseResetMs(snapshot.resetLabel);
-  const countdown = resetMs !== null ? formatCountdown(resetMs) : null;
   return (
     <article className={`usage compact provider-tile ${snapshot.provider} timer-view flippable${paused ? " mark-paused" : ""}`} onClick={onBack} title="Tap to dismiss">
       <div className="usage-top">
         <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
         <span className="timer-label">reset in</span>
       </div>
-      <div className="timer-clock">{countdown ?? (snapshot.resetLabel ? "Resetting soon" : "—")}</div>
+      <div className="timer-clock"><CountdownFace resetMs={resetMs} fallback={snapshot.resetLabel ? "Resetting soon" : "—"} /></div>
       <div className="timer-sub">
         {snapshot.resetLabel && <span>{snapshot.resetLabel}</span>}
         <span className="timer-hint">tap to dismiss</span>
@@ -2471,11 +2769,10 @@ function MiniTimerRow({ snapshot, onBack, paused = false }: { snapshot: UsageSna
     return () => clearInterval(id);
   }, []);
   const resetMs = parseResetMs(snapshot.resetLabel);
-  const countdown = resetMs !== null ? formatCountdown(resetMs) : null;
   return (
     <article className={`mini-usage mini-timer provider-tile ${snapshot.provider}${paused ? " mark-paused" : ""}`}>
       <MiniMarkButton provider={snapshot.provider} onClick={onBack} title="Tap to dismiss" />
-      <strong className="mini-timer-clock">{countdown ?? (snapshot.resetLabel ? "soon" : "--")}</strong>
+      <strong className="mini-timer-clock"><CountdownFace resetMs={resetMs} fallback={snapshot.resetLabel ? "soon" : "--"} /></strong>
     </article>
   );
 }
