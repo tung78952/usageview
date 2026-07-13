@@ -1184,7 +1184,7 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   background: var(--surface-2); color: var(--muted);
   font: 700 13px/1 var(--font-body); border: 1px solid var(--border);
 }
-.scope-checks { display: flex; flex-wrap: wrap; gap: 10px 14px; }
+.scope-checks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px 8px; }
 .scope-check { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 11px; color: var(--muted); cursor: pointer; text-transform: none; }
 .scope-check input { width: 16px; height: 16px; min-width: 16px; min-height: 16px; flex: 0 0 auto; padding: 0; accent-color: var(--accent); }
 .base-presets { display: flex; flex-wrap: wrap; gap: 7px; }
