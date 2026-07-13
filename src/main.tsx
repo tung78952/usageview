@@ -490,8 +490,10 @@ function resetCountdownLabel(snapshot: UsageSnapshot): string | undefined {
   if (resetMs === null) return "resetting soon";
   const remaining = resetMs - Date.now();
   if (remaining <= 0) return "resetting soon";
-  const hours = Math.floor(remaining / 3_600_000);
+  const days = Math.floor(remaining / 86_400_000);
+  const hours = Math.floor((remaining % 86_400_000) / 3_600_000);
   const minutes = Math.floor((remaining % 3_600_000) / 60_000);
+  if (days > 0) return `resets in ${days}d ${hours}h`;
   return hours > 0 ? `resets in ${hours}h ${minutes}m` : `resets in ${minutes}m`;
 }
 
@@ -2229,10 +2231,13 @@ function parseResetMs(resetLabel?: string): number | null {
 function formatCountdown(resetMs: number): string {
   const remaining = resetMs - Date.now();
   if (remaining <= 0) return "Resetting soon";
-  const h = Math.floor(remaining / 3_600_000);
+  const d = Math.floor(remaining / 86_400_000);
+  const h = Math.floor((remaining % 86_400_000) / 3_600_000);
   const m = Math.floor((remaining % 3_600_000) / 60_000);
   const s = Math.floor((remaining % 60_000) / 1_000);
-  return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  const hh = d > 0 ? String(h).padStart(2, "0") : String(h);
+  const clock = `${hh}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  return d > 0 ? `${d}d ${clock}` : clock;
 }
 
 function TimerView({ snapshot, onBack, paused = false }: { snapshot: UsageSnapshot; onBack: () => void; paused?: boolean }) {
