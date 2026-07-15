@@ -25,14 +25,13 @@ const CONTEXT_CLOSE: &str = "widget_context_close";
 const CONTEXT_ACTION_EVENT: &str = "usageview-context-action";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-struct WindowGeometry {
-  width: f64,
-  height: f64,
+struct WindowPosition {
   x: f64,
   y: f64,
 }
 
 struct CurrentWidgetMode(Mutex<String>);
+struct WindowPositionStoreLock(Mutex<()>);
 
 #[tauri::command]
 fn open_provider_window(app: tauri::AppHandle, provider: String, url: String) -> Result<(), String> {
@@ -74,15 +73,42 @@ fn open_widget_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn load_window_geometry(app: tauri::AppHandle) -> Result<HashMap<String, WindowGeometry>, String> {
+fn load_window_geometry(app: tauri::AppHandle) -> Result<HashMap<String, WindowPosition>, String> {
+  let state = app.state::<WindowPositionStoreLock>();
+  let _guard = state.0.lock().map_err(|error| error.to_string())?;
   read_window_geometry_store(&app)
 }
 
 #[tauri::command]
-fn save_window_geometry(app: tauri::AppHandle, mode: String, geometry: WindowGeometry) -> Result<(), String> {
+fn save_window_geometry(app: tauri::AppHandle, mode: String, position: WindowPosition) -> Result<(), String> {
+  if (mode != "widget" && mode != "mini") || !valid_window_position(&position) {
+    return Err("Invalid window position".to_string());
+  }
+  let state = app.state::<WindowPositionStoreLock>();
+  let _guard = state.0.lock().map_err(|error| error.to_string())?;
   let mut store = read_window_geometry_store(&app)?;
-  store.insert(mode, geometry);
+  store.insert(mode, position);
   write_window_geometry_store(&app, &store)
+}
+
+#[tauri::command]
+fn reset_window_geometry(app: tauri::AppHandle) -> Result<(), String> {
+  let state = app.state::<WindowPositionStoreLock>();
+  let _guard = state.0.lock().map_err(|error| error.to_string())?;
+  let path = geometry_store_path(&app)?;
+  for path in [
+    path.clone(),
+    path.with_file_name("window-position-v3.json.tmp"),
+    path.with_file_name("window-position-v3.json.bak"),
+    legacy_geometry_store_path(&app)?,
+  ] {
+    match fs::remove_file(path) {
+      Ok(()) => {}
+      Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+      Err(error) => return Err(error.to_string()),
+    }
+  }
+  Ok(())
 }
 
 #[tauri::command]
@@ -125,42 +151,73 @@ fn show_widget_context_menu(
 }
 
 fn geometry_store_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-  // v2: geometry is now stored in PHYSICAL px (was logical). New filename discards the old logical
-  // store so a machine with scaled monitors doesn't restore mismatched coordinates once.
+  Ok(app.path().app_data_dir().map_err(|error| error.to_string())?.join("window-position-v3.json"))
+}
+
+fn legacy_geometry_store_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
   Ok(app.path().app_data_dir().map_err(|error| error.to_string())?.join("window-geometry-v2.json"))
 }
 
-fn read_window_geometry_store(app: &tauri::AppHandle) -> Result<HashMap<String, WindowGeometry>, String> {
-  let path = geometry_store_path(app)?;
-  if !path.exists() {
-    return Ok(HashMap::new());
-  }
-  let text = fs::read_to_string(path).map_err(|error| error.to_string())?;
-  serde_json::from_str(&text).map_err(|error| error.to_string())
+fn valid_window_position(position: &WindowPosition) -> bool {
+  position.x.is_finite()
+    && position.y.is_finite()
+    && position.x.abs() <= 10_000_000.0
+    && position.y.abs() <= 10_000_000.0
 }
 
-fn write_window_geometry_store(app: &tauri::AppHandle, store: &HashMap<String, WindowGeometry>) -> Result<(), String> {
+fn read_window_geometry_store(app: &tauri::AppHandle) -> Result<HashMap<String, WindowPosition>, String> {
+  let path = geometry_store_path(app)?;
+  for source in [
+    path.clone(),
+    path.with_file_name("window-position-v3.json.bak"),
+    legacy_geometry_store_path(app)?,
+  ] {
+    if !source.exists() { continue; }
+    let text = fs::read_to_string(source).map_err(|error| error.to_string())?;
+    if let Ok(parsed) = serde_json::from_str::<HashMap<String, WindowPosition>>(&text) {
+      let clean: HashMap<_, _> = parsed.into_iter().filter(|(_, position)| valid_window_position(position)).collect();
+      if !clean.is_empty() { return Ok(clean); }
+    }
+  }
+  Ok(HashMap::new())
+}
+
+fn write_window_geometry_store(app: &tauri::AppHandle, store: &HashMap<String, WindowPosition>) -> Result<(), String> {
   let path = geometry_store_path(app)?;
   if let Some(parent) = path.parent() {
     fs::create_dir_all(parent).map_err(|error| error.to_string())?;
   }
-  let text = serde_json::to_string_pretty(store).map_err(|error| error.to_string())?;
-  fs::write(path, text).map_err(|error| error.to_string())
+  let clean: HashMap<_, _> = store
+    .iter()
+    .filter(|(_, position)| valid_window_position(position))
+    .map(|(mode, position)| (mode.clone(), position))
+    .collect();
+  let text = serde_json::to_string_pretty(&clean).map_err(|error| error.to_string())?;
+  let temp_path = path.with_file_name("window-position-v3.json.tmp");
+  let backup_path = path.with_file_name("window-position-v3.json.bak");
+  fs::write(&temp_path, text).map_err(|error| error.to_string())?;
+  let moved_primary = path.exists();
+  if moved_primary {
+    if backup_path.exists() { fs::remove_file(&backup_path).map_err(|error| error.to_string())?; }
+    fs::rename(&path, &backup_path).map_err(|error| error.to_string())?;
+  }
+  if let Err(error) = fs::rename(&temp_path, &path) {
+    if moved_primary && backup_path.exists() { let _ = fs::rename(&backup_path, &path); }
+    return Err(error.to_string());
+  }
+  let _ = fs::remove_file(backup_path);
+  let _ = fs::remove_file(legacy_geometry_store_path(app)?);
+  Ok(())
 }
 
 fn save_widget_geometry(app: &tauri::AppHandle, mode: &str) {
   let Some(window) = app.get_webview_window("widget") else { return; };
   let Ok(position) = window.outer_position() else { return; };
-  let Ok(size) = window.inner_size() else { return; };
-  // Store PHYSICAL px directly (matches the JS side) — no dividing by scale. Physical is the only
-  // unambiguous coordinate space across monitors with different DPI.
-  let geometry = WindowGeometry {
-    width: size.width as f64,
-    height: size.height as f64,
+  let position = WindowPosition {
     x: position.x as f64,
     y: position.y as f64,
   };
-  let _ = save_window_geometry(app.clone(), mode.to_string(), geometry);
+  let _ = save_window_geometry(app.clone(), mode.to_string(), position);
 }
 
 fn save_current_widget_geometry(app: &tauri::AppHandle) {
@@ -528,6 +585,7 @@ pub fn run() {
     }))
     .plugin(tauri_plugin_opener::init())
     .manage(CurrentWidgetMode(Mutex::new("widget".to_string())))
+    .manage(WindowPositionStoreLock(Mutex::new(())))
     .setup(|app| {
       setup_tray(app.handle())?;
       Ok(())
@@ -571,6 +629,7 @@ pub fn run() {
       open_widget_window,
       load_window_geometry,
       save_window_geometry,
+      reset_window_geometry,
       set_widget_mode,
       show_widget_context_menu,
       toggle_settings_window,

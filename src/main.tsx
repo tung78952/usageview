@@ -62,6 +62,8 @@ type WindowGeometry = {
   y: number;
 };
 
+type WindowPosition = Pick<WindowGeometry, "x" | "y">;
+
 // All window geometry (WindowGeometry) and screen rects below are in PHYSICAL pixels: they live in the
 // OS virtual-desktop coordinate space (what outerPosition()/availableMonitors() return). Physical is the
 // only unambiguous space across multiple monitors with different DPI/scale — mixing logical spaces per
@@ -123,12 +125,14 @@ function baseModeOf(theme: ThemeKey): "light" | "dark" {
   return theme === "light" || theme === "glass-light" ? "light" : "dark";
 }
 
-const GEOMETRY_KEY = "usageview.windowGeometry.v7";
+const GEOMETRY_KEY = "usageview.windowPosition.v8";
+const LEGACY_GEOMETRY_KEY = "usageview.windowGeometry.v7";
 const WIDGET_BASE_WIDTH = 392;
 const MINI_LOCK_WIDTH = 240;
 const MINI_MIN_HEIGHT_FALLBACK = 48;
 const MODE_KEY = "usageview.mode";
-let windowGeometryCache: Partial<Record<AppMode, WindowGeometry>> | undefined;
+let windowGeometryCache: Partial<Record<AppMode, WindowPosition>> | undefined;
+let windowGeometryResetGeneration = 0;
 
 function loadMode(): AppMode {
   try {
@@ -291,32 +295,47 @@ function panelScopeClasses(settings: Settings): string {
     .join(" ");
 }
 
-function loadWindowGeometry(): Partial<Record<AppMode, WindowGeometry>> {
+function parseWindowPositions(saved: string | null): Partial<Record<AppMode, WindowPosition>> {
+  if (!saved) return {};
   try {
-    const saved = localStorage.getItem(GEOMETRY_KEY);
-    return saved ? JSON.parse(saved) : {};
+    const parsed = JSON.parse(saved) as Record<string, Partial<WindowPosition>>;
+    const positions: Partial<Record<AppMode, WindowPosition>> = {};
+    for (const mode of ["widget", "settings", "mini"] as AppMode[]) {
+      const position = parsed[mode];
+      if (Number.isFinite(position?.x) && Number.isFinite(position?.y)) {
+        positions[mode] = { x: Math.round(position!.x!), y: Math.round(position!.y!) };
+      }
+    }
+    return positions;
   } catch {
     return {};
   }
 }
 
-async function loadWindowGeometryAsync(): Promise<Partial<Record<AppMode, WindowGeometry>>> {
+function loadWindowGeometry(): Partial<Record<AppMode, WindowPosition>> {
+  const current = parseWindowPositions(localStorage.getItem(GEOMETRY_KEY));
+  const legacy = parseWindowPositions(localStorage.getItem(LEGACY_GEOMETRY_KEY));
+  return { ...legacy, ...current };
+}
+
+async function loadWindowGeometryAsync(): Promise<Partial<Record<AppMode, WindowPosition>>> {
   if (windowGeometryCache) return windowGeometryCache;
   const localGeometry = loadWindowGeometry();
   try {
-    const stored = await invoke<Partial<Record<AppMode, WindowGeometry>>>("load_window_geometry");
-    windowGeometryCache = Object.keys(stored).length ? stored : localGeometry;
+    const stored = await invoke<Partial<Record<AppMode, WindowPosition>>>("load_window_geometry");
+    windowGeometryCache = { ...localGeometry, ...stored };
   } catch {
     windowGeometryCache = localGeometry;
   }
   return windowGeometryCache;
 }
 
-function saveWindowGeometry(mode: AppMode, geometry: WindowGeometry) {
+function saveWindowGeometry(mode: AppMode, position: WindowPosition) {
   const current = windowGeometryCache ?? loadWindowGeometry();
-  windowGeometryCache = { ...current, [mode]: geometry };
+  windowGeometryCache = { ...current, [mode]: position };
   localStorage.setItem(GEOMETRY_KEY, JSON.stringify(windowGeometryCache));
-  void invoke("save_window_geometry", { mode, geometry }).catch(() => undefined);
+  localStorage.removeItem(LEGACY_GEOMETRY_KEY);
+  void invoke("save_window_geometry", { mode, position }).catch(() => undefined);
 }
 
 function defaultWindowSize(mode: AppMode) {
@@ -454,9 +473,11 @@ async function normalizeWindowGeometryForMonitors(mode: AppMode, geometry: Parti
 
 async function recoverVisibleWindow(mode: AppMode, corner: Settings["corner"], widgetScale = 1) {
   const appWindow = getCurrentWindow();
+  const restoreGeneration = windowGeometryResetGeneration;
   const fallbackPosition = defaultWindowPosition(corner);
   const saved = (await loadWindowGeometryAsync())[mode];
   const geometry = await normalizeWindowGeometryForMonitors(mode, saved, fallbackPosition, widgetScale);
+  if (restoreGeneration !== windowGeometryResetGeneration) return;
   try {
     if (await appWindow.isMaximized()) await appWindow.unmaximize();
   } catch {
@@ -464,7 +485,14 @@ async function recoverVisibleWindow(mode: AppMode, corner: Settings["corner"], w
   }
   await appWindow.unminimize().catch(() => undefined);
   await appWindow.setSize(new PhysicalSize(geometry.width, geometry.height)).catch(() => undefined);
-  await appWindow.setPosition(new PhysicalPosition(geometry.x, geometry.y)).catch(() => undefined);
+  if (restoreGeneration !== windowGeometryResetGeneration) return;
+  const positionApplied = await appWindow.setPosition(new PhysicalPosition(geometry.x, geometry.y)).then(() => true).catch(() => false);
+  if (positionApplied) {
+    const actualPosition = await appWindow.outerPosition().catch(() => new PhysicalPosition(geometry.x, geometry.y));
+    if (restoreGeneration === windowGeometryResetGeneration) {
+      saveWindowGeometry(mode, { x: Math.round(actualPosition.x), y: Math.round(actualPosition.y) });
+    }
+  }
   await appWindow.show().catch(() => undefined);
   await appWindow.setFocus().catch(() => undefined);
 }
@@ -474,13 +502,12 @@ async function recoverVisibleWindow(mode: AppMode, corner: Settings["corner"], w
 // taller mode stays on-screen).
 async function resizeWindowForMode(mode: AppMode, widgetScale = 1) {
   const appWindow = getCurrentWindow();
-  // Keep the current top-left (physical px); only change size. Saved size is physical too.
+  // Keep the current top-left (physical px); only change the layout-controlled size.
   const position = await appWindow.outerPosition();
   const here = { x: Math.round(position.x), y: Math.round(position.y) };
-  const saved = (await loadWindowGeometryAsync())[mode];
   const geometry = await normalizeWindowGeometryForMonitors(
     mode,
-    { width: saved?.width, height: saved?.height, x: here.x, y: here.y },
+    { x: here.x, y: here.y },
     here,
     widgetScale,
   );
@@ -494,15 +521,12 @@ async function resizeWindowForMode(mode: AppMode, widgetScale = 1) {
   await appWindow.setPosition(new PhysicalPosition(geometry.x, geometry.y)).catch(() => undefined);
 }
 
-// Returns the window geometry in PHYSICAL px (outer position + inner size), matching what is stored and
-// restored. No toLogical() conversion — physical keeps multi-monitor / mixed-DPI coordinates exact.
-async function readCurrentGeometry(): Promise<WindowGeometry> {
+// Persist only the outer position. Full and Mini sizes are layout-controlled and can be transient while
+// zoom, content measurement, or DPI changes are settling.
+async function readCurrentPosition(): Promise<WindowPosition> {
   const appWindow = getCurrentWindow();
-  const size = await appWindow.innerSize();
   const position = await appWindow.outerPosition();
   return {
-    width: Math.round(size.width),
-    height: Math.round(size.height),
     x: Math.round(position.x),
     y: Math.round(position.y),
   };
@@ -838,7 +862,8 @@ const APP_CMD_KEY = "usageview.appcmd";
 type AppCommand =
   | { nonce: string; type: "play"; provider: Provider; from: number; to: number; driveBar: boolean }
   | { nonce: string; type: "restore" }
-  | { nonce: string; type: "refresh"; provider: Provider };
+  | { nonce: string; type: "refresh"; provider: Provider }
+  | { nonce: string; type: "reset-window" };
 
 function postAppCommand(command: AppCommand) {
   localStorage.setItem(APP_CMD_KEY, JSON.stringify(command));
@@ -1097,6 +1122,11 @@ function SettingsWindowApp() {
           onChange={handleChange}
           onEffectPlay={(provider, from, to, driveBar) => postAppCommand({ nonce: newNonce(), type: "play", provider, from, to, driveBar })}
           onEffectRestore={() => postAppCommand({ nonce: newNonce(), type: "restore" })}
+          onResetWindow={() => {
+            void invoke("reset_window_geometry").catch(() => undefined);
+            postAppCommand({ nonce: newNonce(), type: "reset-window" });
+            setMessage("Widget position reset.");
+          }}
           providerPercents={providerPercents}
         />
       </div>
@@ -1225,6 +1255,15 @@ function WidgetApp() {
     const providers = ["claude", "codex", "codex-1"] as Provider[];
     const results = await Promise.all(providers.map((p) => guardedRefresh(p, providerUrl(p, settings), true)));
     setSnapshots((current) => results.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), current));
+  }
+
+  async function resetWindowPosition() {
+    windowGeometryResetGeneration += 1;
+    localStorage.removeItem(GEOMETRY_KEY);
+    localStorage.removeItem(LEGACY_GEOMETRY_KEY);
+    windowGeometryCache = {};
+    await invoke("reset_window_geometry").catch(() => undefined);
+    await recoverVisibleWindow(modeRef.current, settingsRef.current.corner, settingsRef.current.uiScale);
   }
 
   useEffect(() => {
@@ -1392,12 +1431,12 @@ function WidgetApp() {
     };
   }, [mode, settings.theme, snapshots.claude, snapshots.codex, snapshots["codex-1"], settings.showClaude, settings.showCodex, settings.showCodex1, settings.uiScale]);
 
-  async function saveCurrentGeometryNow(targetMode = modeRef.current) {
+  async function saveCurrentPositionNow(targetMode = modeRef.current) {
     // Never persist before the saved geometry has been restored, or a startup resize event would
     // overwrite the remembered position with the initial default one.
     if (!hasRestoredGeometryRef.current) return;
     try {
-      saveWindowGeometry(targetMode, await readCurrentGeometry());
+      saveWindowGeometry(targetMode, await readCurrentPosition());
     } catch {
       // Best-effort persistence; close/hide should never fail because geometry couldn't be read.
     }
@@ -1412,13 +1451,13 @@ function WidgetApp() {
 
     function flushSave() {
       window.clearTimeout(saveTimer);
-      if (!disposed) void saveCurrentGeometryNow(modeRef.current);
+      if (!disposed) void saveCurrentPositionNow(modeRef.current);
     }
 
     function scheduleSave() {
       window.clearTimeout(saveTimer);
       saveTimer = window.setTimeout(async () => {
-        if (!disposed) await saveCurrentGeometryNow(modeRef.current);
+        if (!disposed) await saveCurrentPositionNow(modeRef.current);
       }, 250);
     }
 
@@ -1658,6 +1697,7 @@ function WidgetApp() {
       if (command.type === "play") playTestEffect(command.provider, command.from, command.to, command.driveBar);
       else if (command.type === "restore") void restoreTestEffect();
       else if (command.type === "refresh") void refresh(command.provider);
+      else if (command.type === "reset-window") void resetWindowPosition();
     }
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
@@ -1688,7 +1728,7 @@ function WidgetApp() {
   }
 
   async function closeWindow() {
-    await saveCurrentGeometryNow();
+    await saveCurrentPositionNow();
     await getCurrentWindow().close();
   }
 
@@ -2272,12 +2312,13 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
   );
 }
 
-function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRestore, providerPercents }: {
+function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRestore, onResetWindow, providerPercents }: {
   settings: Settings;
   savedAt: Date | null;
   onChange: (settings: Settings) => void;
   onEffectPlay?: (provider: Provider, from: number, to: number, driveBar: boolean) => void;
   onEffectRestore?: () => void;
+  onResetWindow?: () => void;
   providerPercents?: Partial<Record<Provider, number>>;
 }) {
   function patch(next: Partial<Settings>) {
@@ -2403,6 +2444,14 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
           <input type="range" min="0.45" max="1" step="0.01" value={settings.opacity} onChange={(event) => patch({ opacity: Number(event.target.value) })} />
         </div>
       </div>
+      {onResetWindow && (
+        <div className="settings-row">
+          <div className="seg-field">
+            <span className="seg-label">Window position</span>
+            <button type="button" onClick={onResetWindow}>Reset position</button>
+          </div>
+        </div>
+      )}
       {pendingLow !== null && (
         <div className="settings-warn">
           <span>Under 60s refreshes more often — costs more resources and may get rate-limited. Apply {pendingLow}s anyway?</span>
