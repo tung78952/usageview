@@ -17,15 +17,12 @@
 .liquid-ripple,
 .liquid-drop { display: none; }
 
-.theme-glass .bar .liquid-refraction,
-.theme-glass .compact-bar .liquid-refraction {
+.theme-glass .bar .liquid-refraction {
         display: block;
         position: absolute;
         pointer-events: none;
       }
-
-.theme-glass .bar .liquid-refraction,
-.theme-glass .compact-bar .liquid-refraction {
+.theme-glass .bar .liquid-refraction {
         left: 3px;
         top: 3px;
         bottom: 3px;
@@ -40,16 +37,8 @@
           radial-gradient(ellipse at 24% 45%, color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 22%), transparent), transparent 48%);
         mix-blend-mode: screen;
         transform-origin: 0% 50%;
-      }
-
-.theme-glass .compact-bar .liquid-refraction {
-        top: 2px;
-        bottom: 2px;
-        opacity: 0.46;
-      }
-
-.theme-glass .bar.drop-impact .liquid-impact-pocket,
-.theme-glass .compact-bar.drop-impact .liquid-impact-pocket {
+       }
+.theme-glass .bar.drop-impact .liquid-impact-pocket {
         display: block;
         position: absolute;
         left: var(--pocket-start, 0%);
@@ -72,25 +61,15 @@
         animation: liquid-impact-pocket var(--effect-duration, 5600ms) cubic-bezier(0.18, 0.86, 0.22, 1) both;
       }
 
-.theme-glass .compact-bar.drop-impact .liquid-impact-pocket {
-        top: 1px;
-        bottom: 1px;
-        width: max(6px, var(--pocket-width, 0%));
-      }
-
 .theme-glass .bar.drop-impact .liquid-dimple,
-.theme-glass .compact-bar.drop-impact .liquid-dimple,
 .theme-glass .bar.drop-impact .liquid-neck-left,
-.theme-glass .compact-bar.drop-impact .liquid-neck-left,
-.theme-glass .bar.drop-impact .liquid-neck,
-.theme-glass .compact-bar.drop-impact .liquid-neck {
+.theme-glass .bar.drop-impact .liquid-neck {
         display: block;
         position: absolute;
         pointer-events: none;
       }
 
-.theme-glass .bar.drop-impact .liquid-dimple,
-.theme-glass .compact-bar.drop-impact .liquid-dimple {
+.theme-glass .bar.drop-impact .liquid-dimple {
         left: var(--gl-drop-left, 50%);
         top: 50%;
         z-index: 8;
@@ -110,8 +89,7 @@
         animation: liquid-dimple-cycle var(--effect-duration, 5600ms) cubic-bezier(0.2, 0.82, 0.22, 1) both;
       }
 
-.theme-glass .bar.drop-impact .liquid-dimple::after,
-.theme-glass .compact-bar.drop-impact .liquid-dimple::after {
+.theme-glass .bar.drop-impact .liquid-dimple::after {
         content: "";
         position: absolute;
         left: 50%;
@@ -128,8 +106,7 @@
         animation: liquid-microjet var(--effect-duration, 5600ms) ease-out both;
       }
 
-.theme-glass .bar.drop-impact .liquid-neck,
-.theme-glass .compact-bar.drop-impact .liquid-neck {
+.theme-glass .bar.drop-impact .liquid-neck {
         left: var(--gl-drop-left, 50%);
         top: 2px;
         bottom: 2px;
@@ -149,8 +126,7 @@
         animation: liquid-neck-open var(--effect-duration, 5600ms) cubic-bezier(0.16, 0.84, 0.2, 1) both;
       }
 
-.theme-glass .bar.drop-impact .liquid-neck-left,
-.theme-glass .compact-bar.drop-impact .liquid-neck-left {
+.theme-glass .bar.drop-impact .liquid-neck-left {
         right: calc(100% - var(--gl-drop-left, 50%));
         top: 2px;
         bottom: 2px;
@@ -170,50 +146,27 @@
         animation: liquid-neck-open var(--effect-duration, 5600ms) cubic-bezier(0.16, 0.84, 0.2, 1) both;
       }
 
-.theme-glass .compact-bar.drop-impact .liquid-dimple {
-        width: calc(14px * var(--impact-strength, 1));
-      }
-
-.theme-glass .compact-bar.drop-impact .liquid-dimple::after {
-        width: calc(3px * var(--impact-strength, 1));
-        height: calc(6px * var(--impact-strength, 1));
-      }
-
-.theme-glass .compact-bar.drop-impact .liquid-neck,
-.theme-glass .compact-bar.drop-impact .liquid-neck-left {
-        top: 1px;
-        bottom: 1px;
-      }
-
-.theme-glass .bar.usage-effect-bar.drop-impact,
-.theme-glass .compact-bar.usage-effect-bar.drop-impact {
+.theme-glass .bar.usage-effect-bar.drop-impact {
         overflow: visible;
         animation: none;
       }
 
-.theme-glass .bar.usage-effect-bar.drop-impact::before,
-.theme-glass .compact-bar.usage-effect-bar.drop-impact::before {
+.theme-glass .bar.usage-effect-bar.drop-impact::before {
         animation: liquid-fill-gel-settle var(--effect-duration, 5600ms) cubic-bezier(0.2, 0.86, 0.2, 1) both;
       }
 
-.theme-glass .bar.usage-effect-bar.drop-impact::after,
-.theme-glass .compact-bar.usage-effect-bar.drop-impact::after {
+.theme-glass .bar.usage-effect-bar.drop-impact::after {
         animation: liquid-surface-settle var(--effect-duration, 5600ms) ease-out both;
       }
 
 .theme-glass .bar.drop-wait,
-.theme-glass .compact-bar.drop-wait,
 .theme-glass .bar.drop-wait::before,
-.theme-glass .bar.drop-wait::after,
-.theme-glass .compact-bar.drop-wait::before,
-.theme-glass .compact-bar.drop-wait::after {
+.theme-glass .bar.drop-wait::after {
         animation-delay: 0ms;
       }
 
 .theme-glass.widget.theme-terminal .bar.bar-active,
-.theme-glass.widget.theme-light .bar.bar-active,
-.theme-glass.compact-widget.theme-terminal .compact-bar.bar-active,
-.theme-glass.compact-widget.theme-light .compact-bar.bar-active {
+.theme-glass.widget.theme-light .bar.bar-active {
         filter: saturate(1.08) brightness(0.98);
         border-color: color-mix(in srgb, var(--provider-color, var(--tone)) 36%, var(--paper-glass-line));
         box-shadow:
@@ -327,19 +280,16 @@
         100% { opacity: 0.38; transform: scaleY(1); background-position: 24px 0, 0 0; }
       }
 
-.theme-glass .bar.drop-impact .drop-cell,
-.theme-glass .compact-bar.drop-impact .drop-cell {
+.theme-glass .bar.drop-impact .drop-cell {
         display: none !important;
       }
 
-.theme-glass .bar.usage-effect-bar.drop-impact,
-.theme-glass .compact-bar.usage-effect-bar.drop-impact {
+.theme-glass .bar.usage-effect-bar.drop-impact {
         overflow: visible;
         animation: none !important;
       }
 
-.theme-glass .bar.bar-active,
-.theme-glass .compact-bar.bar-active {
+.theme-glass .bar.bar-active {
         filter: saturate(1.06) brightness(0.98) !important;
         border-color: color-mix(in srgb, var(--provider-color, var(--tone)) 34%, var(--paper-glass-line)) !important;
         box-shadow:
@@ -349,9 +299,7 @@
       }
 
 .theme-glass .bar.bar-active::before,
-.theme-glass .compact-bar.bar-active::before,
-.theme-glass .bar.bar-fading::before,
-.theme-glass .compact-bar.bar-fading::before {
+.theme-glass .bar.bar-fading::before {
         content: "";
         position: absolute;
         left: 3px !important;
@@ -371,38 +319,29 @@
           0 0 13px color-mix(in srgb, var(--provider-color, var(--paper-ink)) 20%, transparent) !important;
       }
 
-.theme-glass .bar.usage-effect-bar.drop-impact::before,
-.theme-glass .compact-bar.usage-effect-bar.drop-impact::before {
+.theme-glass .bar.usage-effect-bar.drop-impact::before {
         animation: liquid-fill-gel-settle var(--effect-duration, 5600ms) cubic-bezier(0.2, 0.82, 0.24, 1) both !important;
       }
 
-.theme-glass .bar.usage-effect-bar.drop-impact::after,
-.theme-glass .compact-bar.usage-effect-bar.drop-impact::after {
+.theme-glass .bar.usage-effect-bar.drop-impact::after {
         animation: liquid-surface-settle var(--effect-duration, 5600ms) ease-out both !important;
       }
 
-.theme-glass .bar.usage-effect-bar.drop-impact .liquid-refraction,
-.theme-glass .compact-bar.usage-effect-bar.drop-impact .liquid-refraction {
+.theme-glass .bar.usage-effect-bar.drop-impact .liquid-refraction {
         animation: liquid-refraction-shiver var(--effect-duration, 5600ms) ease-out both;
       }
 
 .theme-glass .bar.drop-impact .liquid-drop,
-.theme-glass .compact-bar.drop-impact .liquid-drop,
 .theme-glass .bar.drop-impact .liquid-ripple,
-.theme-glass .compact-bar.drop-impact .liquid-ripple,
 .theme-glass .bar.drop-impact .liquid-flow,
-.theme-glass .compact-bar.drop-impact .liquid-flow,
 .theme-glass .bar.drop-impact .liquid-wave-left,
-.theme-glass .compact-bar.drop-impact .liquid-wave-left,
-.theme-glass .bar.drop-impact .liquid-wave-right,
-.theme-glass .compact-bar.drop-impact .liquid-wave-right {
+.theme-glass .bar.drop-impact .liquid-wave-right {
         display: block;
         position: absolute;
         pointer-events: none;
       }
 
-.theme-glass .bar.drop-impact .liquid-drop,
-.theme-glass .compact-bar.drop-impact .liquid-drop {
+.theme-glass .bar.drop-impact .liquid-drop {
         left: var(--gl-drop-left, 50%);
         top: 50%;
         z-index: 9;
@@ -422,13 +361,7 @@
         animation: liquid-drop-fall calc(var(--effect-duration, 5600ms) * 0.48) cubic-bezier(0.18, 0.86, 0.24, 1) both;
       }
 
-.theme-glass .compact-bar.drop-impact .liquid-drop {
-        width: calc(9px * var(--drop-scale, 1));
-        height: calc(11px * var(--drop-scale, 1));
-      }
-
-.theme-glass .bar.drop-impact .liquid-ripple,
-.theme-glass .compact-bar.drop-impact .liquid-ripple {
+.theme-glass .bar.drop-impact .liquid-ripple {
         left: var(--gl-drop-left, 50%);
         top: 50%;
         z-index: 8;
@@ -444,8 +377,7 @@
         animation: liquid-impact-ripple var(--effect-duration, 5600ms) cubic-bezier(0.18, 0.82, 0.22, 1) both;
       }
 
-.theme-glass .bar.drop-impact .liquid-flow,
-.theme-glass .compact-bar.drop-impact .liquid-flow {
+.theme-glass .bar.drop-impact .liquid-flow {
         left: var(--gl-drop-left, 50%);
         top: 50%;
         z-index: 7;
@@ -464,15 +396,8 @@
         animation: liquid-impact-bulge var(--effect-duration, 5600ms) cubic-bezier(0.18, 0.82, 0.22, 1) both;
       }
 
-.theme-glass .compact-bar.drop-impact .liquid-flow {
-        width: max(10px, calc(var(--gl-drop-width, 10%) * 0.24));
-        height: calc(100% - 4px);
-      }
-
 .theme-glass .bar.drop-impact .liquid-wave-left,
-.theme-glass .compact-bar.drop-impact .liquid-wave-left,
-.theme-glass .bar.drop-impact .liquid-wave-right,
-.theme-glass .compact-bar.drop-impact .liquid-wave-right {
+.theme-glass .bar.drop-impact .liquid-wave-right {
         top: 2px;
         bottom: 2px;
         z-index: 6;
@@ -487,8 +412,7 @@
           inset 0 -1px 0 color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 12%), transparent);
       }
 
-.theme-glass .bar.drop-impact .liquid-wave-left,
-.theme-glass .compact-bar.drop-impact .liquid-wave-left {
+.theme-glass .bar.drop-impact .liquid-wave-left {
         right: calc(100% - var(--gl-drop-left, 50%));
         width: max(var(--left-wave-width, 0%), 10px);
         --wave-origin: 100%;
@@ -496,8 +420,7 @@
         animation: liquid-wave-left var(--effect-duration, 5600ms) cubic-bezier(0.16, 0.86, 0.2, 1) both;
       }
 
-.theme-glass .bar.drop-impact .liquid-wave-right,
-.theme-glass .compact-bar.drop-impact .liquid-wave-right {
+.theme-glass .bar.drop-impact .liquid-wave-right {
         left: var(--gl-drop-left, 50%);
         width: max(var(--right-wave-width, 0%), 10px);
         --wave-origin: 0%;
@@ -513,8 +436,7 @@
         100% { opacity: 0; transform: scaleX(0); }
       }
 
-.theme-glass .bar.drop-impact .liquid-fill-mask,
-.theme-glass .compact-bar.drop-impact .liquid-fill-mask {
+.theme-glass .bar.drop-impact .liquid-fill-mask {
         display: block;
         position: absolute;
         left: var(--delta-start, 0%);
@@ -528,10 +450,5 @@
           linear-gradient(180deg, color-mix(in srgb, var(--paper-panel) 82%, transparent), color-mix(in srgb, var(--paper-bg) 78%, transparent));
         box-shadow: none;
         transform-origin: 100% 50%;
-        animation: liquid-fill-mask-reveal var(--effect-duration, 5600ms) ease-out both;
-      }
-
-.theme-glass .compact-bar.drop-impact .liquid-fill-mask {
-        top: 2px;
-        bottom: 2px;
-      }
+         animation: liquid-fill-mask-reveal var(--effect-duration, 5600ms) ease-out both;
+       }

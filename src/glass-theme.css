@@ -19,9 +19,7 @@
   --paper-soft: #58606d;
   --paper-faint: #878f9c;
   --paper-line: #d1d6de;
-  --paper-glass-bg: color-mix(in srgb, var(--paper-panel) 30%, transparent);
   --paper-glass-line: color-mix(in srgb, var(--paper-line) 62%, transparent);
-  --paper-glass-edge: color-mix(in srgb, #fff 78%, transparent);
   --paper-shadow: 0 20px 64px rgba(40, 28, 14, 0.16);
   --glass-reflex-dark: 1;
   --glass-reflex-light: 1;
@@ -35,9 +33,7 @@
   --paper-soft: #b9b6af;
   --paper-faint: #87837a;
   --paper-line: #42403b;
-  --paper-glass-bg: color-mix(in srgb, #bbbbbc 11%, transparent);
   --paper-glass-line: color-mix(in srgb, #fff 12%, transparent);
-  --paper-glass-edge: color-mix(in srgb, #fff 11%, transparent);
   --paper-shadow: 0 24px 74px rgba(0, 0, 0, 0.52);
   --glass-reflex-dark: 2;
   --glass-reflex-light: .3;
@@ -45,7 +41,6 @@
 
 .theme-glass.widget,
 .theme-glass.compact-widget,
-.theme-glass.control-shell,
 .theme-glass.control-shell {
         --bg: var(--paper-bg);
         --surface: var(--paper-panel);
@@ -76,17 +71,19 @@
         image-rendering: auto;
       }
 
-.theme-glass.widget::before,
-.theme-glass.compact-widget::before,
-.theme-glass.control-shell::before,
-.theme-glass.control-shell::before {
-        content: none;
-      }
-
 .theme-glass .scale-shell,
 .theme-glass.control-shell > * {
         position: relative;
         z-index: 1;
+      }
+
+/* The custom Settings scrollbar is an overlay, not a normal Glass content child. */
+.theme-glass.control-shell > .overlay-scrollbar {
+        position: absolute;
+        top: 3px;
+        right: 3px;
+        bottom: 3px;
+        z-index: 20;
       }
 
 .theme-glass.control-shell {
@@ -124,7 +121,6 @@
 /* Dimensions must match Pixel so switching theme only changes skin, not layout size
    (tránh compact "dài hơn" và auto-fit nhảy khi bật/tắt Glass). */
 .theme-glass .usage.provider-tile { padding: 12px; gap: 8px; }
-.theme-glass .compact-usage.provider-tile { padding: 9px; gap: 7px; }
 
 /* --u-<provider> override vars (set by panelStyle when the user picks a custom accent) layer on top of
    the theme's tuned defaults, so a custom color reaches Glass too while defaults stay per-theme. */
@@ -181,8 +177,7 @@
 .theme-glass .pill,
 .theme-glass button,
 .theme-glass select,
-.theme-glass input:not([type="range"]),
-.theme-glass textarea {
+ .theme-glass input:not([type="range"]) {
         position: relative;
         isolation: isolate;
         overflow: hidden;
@@ -212,6 +207,11 @@
           inset -2px -2px 0 -2px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 86%), transparent),
           0 10px 24px 0 color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 12%), transparent);
       }
+.theme-glass button:disabled:hover {
+        transform: none;
+        box-shadow: none;
+      }
+.theme-glass button:disabled:hover::before { opacity: 0; }
 
 .theme-glass .mark::before,
 .theme-glass .window-control::before,
@@ -298,8 +298,7 @@
         stroke: none !important;
       }
 
-.theme-glass .percent,
-.theme-glass .compact-percent {
+ .theme-glass .percent {
         color: var(--provider-color, var(--paper-ink));
         letter-spacing: -0.03em;
         text-shadow: 0 1px 0 color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 30%), transparent);
@@ -330,10 +329,6 @@
         padding: 0;
       }
 
-.theme-glass .window-control.close::first-letter {
-        line-height: 1;
-      }
-
 .theme-glass input[type="checkbox"] {
         appearance: none;
         -webkit-appearance: none;
@@ -354,10 +349,8 @@
         color: #fff;
       }
 
-.theme-glass .message,
-.theme-glass .compact-message,
-.theme-glass .usage-meta,
-.theme-glass .compact-meta,
+ .theme-glass .message,
+ .theme-glass .usage-meta,
 .theme-glass .updated-ago,
 .theme-glass .window-title span,
 .theme-glass .mini-head p,
@@ -365,8 +358,7 @@
         color: var(--paper-soft);
       }
 
-.theme-glass .bar,
-.theme-glass .compact-bar {
+ .theme-glass .bar {
         position: relative;
         display: block;
         height: 18px;
@@ -385,17 +377,7 @@
           0 8px 22px -14px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 24%), transparent);
       }
 
-.theme-glass .compact-bar {
-        height: 12px;
-      }
-
-.theme-glass .bar .cell,
-.theme-glass .compact-bar .cell,
-.theme-glass .subfill-mark,
-.theme-glass .delta-range,
-.theme-glass .spark-marker,
-.theme-glass .pixel-ripple,
-.theme-glass .drop-cell,
+ .theme-glass .bar .cell,
 .theme-glass .effect-delta-range,
 .theme-glass .effect-edge-glow,
 .theme-glass .effect-ripple,
@@ -404,8 +386,7 @@
         display: none !important;
       }
 
-.theme-glass .bar::before,
-.theme-glass .compact-bar::before {
+ .theme-glass .bar::before {
         content: "";
         position: absolute;
         left: 3px;
@@ -422,15 +403,7 @@
           0 0 14px color-mix(in srgb, var(--provider-color, var(--paper-ink)) 22%, transparent);
       }
 
-.theme-glass .provider-tile.tile-ripple::after,
-.theme-glass .provider-tile.tile-ripple .pixel-particle {
-        display: none !important;
-        content: none !important;
-        animation: none !important;
-      }
-
-.theme-glass .bar::after,
-.theme-glass .compact-bar::after {
+ .theme-glass .bar::after {
         content: "";
         position: absolute;
         inset: 1px;
@@ -456,11 +429,6 @@
         box-shadow:
           inset 0 0 0 1px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 12%), transparent),
           0 12px 32px -20px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 30%), transparent) !important;
-      }
-
-.theme-glass .status-line::before,
-.theme-glass .status-line::after {
-        display: none;
       }
 
 .theme-glass .status-line span {
@@ -516,9 +484,8 @@
         overflow: hidden;
       }
 
-.theme-glass .effect-settings {
-        width: 100%;
-        margin-left: 0;
+ .theme-glass .effect-settings {
+         margin-left: 0;
         margin-right: 0;
       }
 
@@ -627,13 +594,11 @@
 }
 .theme-glass .seg-btn.active:hover { transform: none; }
 
-/* Full bar height must match Pixel (22px) so full widget doesn't change size on theme switch.
-   (compact-bar already 12px = pixel). Placed last to win over the glass .bar,.compact-bar 18px rule. */
+/* Full bar height must match Pixel (22px) so full widget doesn't change size on theme switch. */
 .theme-glass .bar { height: 22px; }
 
 /* Hover tooltip (Weekly/Reset) restyled for the glass vibe: frosted, rounded, provider-tinted border. */
-.theme-glass .usage-meta[data-tip]::after,
-.theme-glass .compact-meta[data-tip]::after {
+ .theme-glass .usage-meta[data-tip]::after {
   border-radius: 14px;
   border: 1px solid color-mix(in srgb, var(--provider-color, var(--paper-ink)) 28%, var(--paper-glass-line));
   background: color-mix(in srgb, var(--paper-panel) 80%, transparent);

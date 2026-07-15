@@ -1,7 +1,7 @@
 import React, { Component, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { availableMonitors, getCurrentWindow, LogicalSize, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -53,7 +53,7 @@ type ProviderColors = { claude: string | null; codex: string | null; "codex-1": 
 type ColorScope = { text: boolean; bar: boolean; border: boolean; bgTint: boolean };
 type BaseOverride = { preset?: string; bg?: string; surface?: string; text?: string };
 
-type AppMode = "widget" | "settings" | "mini";
+type AppMode = "widget" | "mini";
 
 type WindowGeometry = {
   width: number;
@@ -265,7 +265,6 @@ function resolveBaseTokens(theme: ThemeKey, base: BaseOverride | undefined) {
 
 function panelStyle(settings: Settings): React.CSSProperties {
   const style: Record<string, string | number> = {
-    "--panel-opacity": settings.opacity,
     "--panel-opacity-pct": `${Math.round(settings.opacity * 100)}%`,
     "--effect-duration": `${settings.effectDurationMs}ms`,
     "--effect-bar-brightness": settings.effectBarBrightness,
@@ -300,7 +299,7 @@ function parseWindowPositions(saved: string | null): Partial<Record<AppMode, Win
   try {
     const parsed = JSON.parse(saved) as Record<string, Partial<WindowPosition>>;
     const positions: Partial<Record<AppMode, WindowPosition>> = {};
-    for (const mode of ["widget", "settings", "mini"] as AppMode[]) {
+    for (const mode of ["widget", "mini"] as AppMode[]) {
       const position = parsed[mode];
       if (Number.isFinite(position?.x) && Number.isFinite(position?.y)) {
         positions[mode] = { x: Math.round(position!.x!), y: Math.round(position!.y!) };
@@ -339,7 +338,6 @@ function saveWindowGeometry(mode: AppMode, position: WindowPosition) {
 }
 
 function defaultWindowSize(mode: AppMode) {
-  if (mode === "settings") return { width: 460, height: 720 };
   if (mode === "mini") return { width: MINI_LOCK_WIDTH, height: 124 };
   return { width: WIDGET_BASE_WIDTH, height: 500 };
 }
@@ -439,23 +437,14 @@ function normalizeWindowGeometry(mode: AppMode, geometry: Partial<WindowGeometry
   const scale = targetRect?.scale ?? (window.devicePixelRatio || 1);
   const fallbackSize = defaultWindowSize(mode);
   const fixedModeScale = mode === "widget" ? widgetScale : 1;
-  const minWidthL = mode === "settings" ? 430 : fallbackSize.width * fixedModeScale;
-  const minHeightL = mode === "settings" ? 520 : fallbackSize.height * fixedModeScale;
-  const maxWidthL = mode === "settings" ? Math.max(minWidthL, fallbackSize.width) : minWidthL;
+  const minWidthL = fallbackSize.width * fixedModeScale;
+  const minHeightL = fallbackSize.height * fixedModeScale;
   const minWidth = Math.round(minWidthL * scale);
   const minHeight = Math.round(minHeightL * scale);
-  const maxWindowWidth = mode === "settings"
-    ? Math.max(minWidth, targetRect?.width ?? Math.round(maxWidthL * scale))
-    : Math.round(maxWidthL * scale);
-  const maxWindowHeight = Math.max(minHeight, targetRect?.height ?? Math.round(Math.max(minHeightL, fallbackSize.height) * scale));
   // Widget and Mini dimensions are controlled by their layout engines. Persisted geometry contributes
   // position only, so a stale manually-resized width can never become the next 100% zoom baseline.
-  const width = mode !== "settings"
-    ? minWidth
-    : Number.isFinite(geometry?.width) ? Math.min(maxWindowWidth, Math.max(minWidth, Math.round(geometry!.width!))) : Math.round(fallbackSize.width * scale);
-  const height = mode !== "settings"
-    ? minHeight
-    : Number.isFinite(geometry?.height) ? Math.min(maxWindowHeight, Math.max(minHeight, Math.round(geometry!.height!))) : Math.round(fallbackSize.height * scale);
+  const width = minWidth;
+  const height = minHeight;
   const rawX = Number.isFinite(geometry?.x) ? Math.round(geometry!.x!) : fallbackPosition.x;
   const rawY = Number.isFinite(geometry?.y) ? Math.round(geometry!.y!) : fallbackPosition.y;
 
@@ -471,7 +460,7 @@ async function normalizeWindowGeometryForMonitors(mode: AppMode, geometry: Parti
   return normalizeWindowGeometry(mode, geometry, fallbackPosition, screenRects.length ? screenRects : browserScreenRects(), widgetScale);
 }
 
-async function recoverVisibleWindow(mode: AppMode, corner: Settings["corner"], widgetScale = 1) {
+async function recoverVisibleWindow(mode: AppMode, corner: Settings["corner"], widgetScale = 1, reveal = true) {
   const appWindow = getCurrentWindow();
   const restoreGeneration = windowGeometryResetGeneration;
   const fallbackPosition = defaultWindowPosition(corner);
@@ -484,7 +473,7 @@ async function recoverVisibleWindow(mode: AppMode, corner: Settings["corner"], w
     // no-op: older platforms can reject this while the window is being created.
   }
   await appWindow.unminimize().catch(() => undefined);
-  await appWindow.setSize(new PhysicalSize(geometry.width, geometry.height)).catch(() => undefined);
+  if (reveal) await appWindow.setSize(new PhysicalSize(geometry.width, geometry.height)).catch(() => undefined);
   if (restoreGeneration !== windowGeometryResetGeneration) return;
   const positionApplied = await appWindow.setPosition(new PhysicalPosition(geometry.x, geometry.y)).then(() => true).catch(() => false);
   if (positionApplied) {
@@ -493,32 +482,10 @@ async function recoverVisibleWindow(mode: AppMode, corner: Settings["corner"], w
       saveWindowGeometry(mode, { x: Math.round(actualPosition.x), y: Math.round(actualPosition.y) });
     }
   }
-  await appWindow.show().catch(() => undefined);
-  await appWindow.setFocus().catch(() => undefined);
-}
-
-// Switching modes (widget <-> settings <-> compact) should resize the window in place, not teleport
-// it to that mode's remembered corner. Keep the current top-left; only change the size (clamped so a
-// taller mode stays on-screen).
-async function resizeWindowForMode(mode: AppMode, widgetScale = 1) {
-  const appWindow = getCurrentWindow();
-  // Keep the current top-left (physical px); only change the layout-controlled size.
-  const position = await appWindow.outerPosition();
-  const here = { x: Math.round(position.x), y: Math.round(position.y) };
-  const geometry = await normalizeWindowGeometryForMonitors(
-    mode,
-    { x: here.x, y: here.y },
-    here,
-    widgetScale,
-  );
-  try {
-    if (await appWindow.isMaximized()) await appWindow.unmaximize();
-  } catch {
-    // no-op
+  if (reveal) {
+    await appWindow.show().catch(() => undefined);
+    await appWindow.setFocus().catch(() => undefined);
   }
-  await appWindow.unminimize().catch(() => undefined);
-  await appWindow.setSize(new PhysicalSize(geometry.width, geometry.height)).catch(() => undefined);
-  await appWindow.setPosition(new PhysicalPosition(geometry.x, geometry.y)).catch(() => undefined);
 }
 
 // Persist only the outer position. Full and Mini sizes are layout-controlled and can be transient while
@@ -636,7 +603,7 @@ function resetLabelToClock(label?: string) {
   return undefined;
 }
 
-function usageMetaLeft(snapshot: UsageSnapshot, _percent?: number) {
+function usageMetaLeft(snapshot: UsageSnapshot) {
   // Only ever show a clean "Weekly left X%" (or a placeholder) — never raw scraped text, which for
   // Claude's DOM fallback can contain promo/Fable copy.
   const weeklyUsed = snapshot.weeklyLabel?.match(/Weekly\s+(\d{1,3})(?:\.\d+)?%\s+used/i)?.[1];
@@ -855,10 +822,11 @@ function App() {
 }
 
 // Cross-window command bus: the detached Settings window can't touch the widget's tile/engine directly.
-// Effect-tester and per-account "Refresh now" are posted to localStorage; the widget window runs them via
-// its "storage" listener (single owner of the extract engine + in-flight guard). Other account actions
-// (login/logout/reload/browser/find-api) act on global provider windows and run locally in either window.
+// Refresh uses a targeted Tauri event with localStorage as fallback; visual tester commands remain on
+// localStorage. The widget stays the single owner of extraction and its in-flight guard.
 const APP_CMD_KEY = "usageview.appcmd";
+type RefreshRequest = { nonce: string; provider: Provider };
+type RefreshResult = { nonce: string; provider: Provider; status: UsageStatus; message: string };
 type AppCommand =
   | { nonce: string; type: "play"; provider: Provider; from: number; to: number; driveBar: boolean }
   | { nonce: string; type: "restore" }
@@ -986,6 +954,7 @@ function SettingsWindowApp() {
   const [message, setMessage] = useState("Settings");
   const [pinned, setPinned] = useState(true);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const refreshNonceRef = useRef<Partial<Record<Provider, string>>>({});
 
   useEffect(() => {
     void getCurrentWindow().setAlwaysOnTop(pinned);
@@ -1004,6 +973,20 @@ function SettingsWindowApp() {
       window.removeEventListener("usageview:settings", reload);
       window.removeEventListener("usageview:snapshot", reload);
     };
+  }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<RefreshResult>("usageview-refresh-result", ({ payload }) => {
+      if (refreshNonceRef.current[payload.provider] !== payload.nonce) return;
+      setSnapshots({ claude: loadSnapshot("claude"), codex: loadSnapshot("codex"), "codex-1": loadSnapshot("codex-1") });
+      setBusy((current) => current === payload.provider ? null : current);
+      delete refreshNonceRef.current[payload.provider];
+      setMessage(payload.status === "ok"
+        ? `${providerLabel(payload.provider)}: usage refreshed.`
+        : `${providerLabel(payload.provider)}: ${readableStatus(payload.status)}. ${payload.message}`);
+    }).then((dispose) => { unlisten = dispose; });
+    return () => unlisten?.();
   }, []);
 
   function handleChange(next: Settings) {
@@ -1049,11 +1032,19 @@ function SettingsWindowApp() {
     catch (error) { setMessage(`${providerLabel(provider)} logout failed: ${String(error)}`); }
     setBusy(null);
   }
-  // Refresh runs on the widget (single engine owner) via the command bus; the fresh snapshot comes back
-  // here through the storage event that saveSnapshot fires.
-  function refresh(provider: Provider) {
-    postAppCommand({ nonce: newNonce(), type: "refresh", provider });
-    setMessage(`${providerLabel(provider)}: refresh requested.`);
+  // Refresh runs on the widget (single engine owner). A targeted result event drives the busy/message
+  // state; saveSnapshot's storage write carries the actual snapshot back to this window.
+  async function refresh(provider: Provider) {
+    const nonce = newNonce();
+    refreshNonceRef.current[provider] = nonce;
+    setBusy(provider);
+    setMessage(`${providerLabel(provider)}: refreshing...`);
+    try {
+      await emitTo("widget", "usageview-refresh-request", { nonce, provider } satisfies RefreshRequest);
+    } catch {
+      // Keep the localStorage path as a fallback for older/race-prone WebView event startup.
+      postAppCommand({ nonce, type: "refresh", provider });
+    }
   }
 
   const providerPercents: Partial<Record<Provider, number>> = {
@@ -1061,10 +1052,10 @@ function SettingsWindowApp() {
     codex: snapshotPercent(snapshots.codex),
     "codex-1": snapshotPercent(snapshots["codex-1"]),
   };
-  const providerFields: [Provider, keyof Settings, keyof Settings, keyof Settings][] = [
-    ["claude", "claudeUrl", "showClaude", "showClaude"],
-    ["codex", "codexUrl", "showCodex", "showCodex"],
-    ["codex-1", "codex1Url", "showCodex1", "showCodex1"],
+  const providerFields: [Provider, keyof Settings, keyof Settings][] = [
+    ["claude", "claudeUrl", "showClaude"],
+    ["codex", "codexUrl", "showCodex"],
+    ["codex-1", "codex1Url", "showCodex1"],
   ];
 
   return (
@@ -1079,11 +1070,7 @@ function SettingsWindowApp() {
             <WindowControls
               pinned={pinned}
               onTogglePin={() => setPinned((prev) => !prev)}
-              onMinimize={() => undefined}
-              onMaximize={() => undefined}
               onClose={() => void getCurrentWindow().hide()}
-              showMinimize={false}
-              showMaximize={false}
             />
           </div>
         </header>
@@ -1108,7 +1095,7 @@ function SettingsWindowApp() {
               onLogout={() => void logoutInApp(provider)}
               onDiscover={() => void findApi(provider)}
               discovery={discovery[provider]}
-              onExtract={() => refresh(provider)}
+              onExtract={() => void refresh(provider)}
               onUrlChange={(url) => handleChange({ ...settings, [urlKey]: url })}
               shownInWidget={settings[showKey] as boolean}
               onToggleShown={() => handleChange({ ...settings, [showKey]: !(settings[showKey] as boolean) })}
@@ -1149,8 +1136,11 @@ function WidgetApp() {
   const modeRef = useRef(mode);
   const webviewZoomRef = useRef<number | null>(null);
   const webviewZoomQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const fullContentHeightRef = useRef(defaultWindowSize("widget").height);
-  const skipInitialModeResizeRef = useRef(true);
+  const windowSizeQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const windowSizeGenerationRef = useRef(0);
+  const initialPositionRestoredRef = useRef(false);
+  const initialLayoutCommittedRef = useRef(false);
+  const initialRevealDoneRef = useRef(false);
   function setWidgetWebviewZoom(target: number) {
     const operation = webviewZoomQueueRef.current.catch(() => undefined).then(async () => {
       if (webviewZoomRef.current === target) return;
@@ -1160,9 +1150,8 @@ function WidgetApp() {
     webviewZoomQueueRef.current = operation.catch(() => undefined);
     return operation;
   }
-  // Guard against persisting the initial default position: the window is created visible at its
-  // tauri.conf.json corner and auto-fit fires resize events before recoverVisibleWindow has applied the
-  // saved position. Don't save geometry until the restore has run, or we'd overwrite it with the default.
+  // Don't persist auto-fit resize events until recoverVisibleWindow has applied the saved position,
+  // otherwise startup work could overwrite it with the tauri.conf.json fallback corner.
   const hasRestoredGeometryRef = useRef(false);
   const [snapshots, setSnapshots] = useState<Record<Provider, UsageSnapshot>>({
     claude: loadSnapshot("claude"),
@@ -1170,7 +1159,7 @@ function WidgetApp() {
     "codex-1": loadSnapshot("codex-1"),
   });
   const snapshotsRef = useRef(snapshots);
-  const refreshInFlightRef = useRef<Set<Provider>>(new Set());
+  const refreshInFlightRef = useRef<Partial<Record<Provider, Promise<UsageSnapshot>>>>({});
   const lastLimitedAutoRefreshRef = useRef<Record<Provider, number>>({ claude: 0, codex: 0, "codex-1": 0 });
   const prevFlashTokenRef = useRef<Partial<Record<Provider, string>>>({});
   const prevEffectPercentRef = useRef<Partial<Record<Provider, number>>>({});
@@ -1183,13 +1172,11 @@ function WidgetApp() {
   const [activeEffects, setActiveEffects] = useState<Partial<Record<Provider, UsageEffect>>>({});
   const [, setAgoTick] = useState(0);
   const [lastUpdated, setLastUpdated] = useState(new Date());
-  const [busy, setBusy] = useState<Provider | `${Provider}-open` | `${Provider}-close` | `${Provider}-reload` | `${Provider}-logout` | `${Provider}-discover` | null>(null);
-  const [settingsSavedAt, setSettingsSavedAt] = useState<Date | null>(null);
+  const [busy, setBusy] = useState<Provider | null>(null);
 
   function updateSettings(next: Settings) {
     setSettings(next);
     saveSettings(next);
-    setSettingsSavedAt(new Date());
   }
 
   function activateUsageEffects(effectPayloads: Partial<Record<Provider, UsageEffect>>) {
@@ -1266,6 +1253,14 @@ function WidgetApp() {
     await recoverVisibleWindow(modeRef.current, settingsRef.current.corner, settingsRef.current.uiScale);
   }
 
+  async function revealInitialWidget() {
+    if (initialRevealDoneRef.current || !initialPositionRestoredRef.current || !initialLayoutCommittedRef.current) return;
+    initialRevealDoneRef.current = true;
+    const appWindow = getCurrentWindow();
+    await appWindow.show().catch(() => undefined);
+    await appWindow.setFocus().catch(() => undefined);
+  }
+
   useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
@@ -1287,59 +1282,49 @@ function WidgetApp() {
   }, [settings.alwaysOnTop]);
 
   useEffect(() => {
-    const appWindow = getCurrentWindow();
-    void appWindow.clearEffects().catch(() => undefined);
-    // Reopen in the last-used mode + its saved geometry (mode here is the value restored by loadMode).
-    // Only allow geometry to be persisted once the restore has actually applied, so early auto-fit
-    // resize events can't save the initial default position over the saved one.
-    void recoverVisibleWindow(mode, settings.corner, settings.uiScale).finally(() => {
+    // Restore position while the widget remains hidden. The layout effect reveals it after the first
+    // measured size is locked, avoiding a visible fallback-height frame on cold launch.
+    void recoverVisibleWindow(mode, settings.corner, settings.uiScale, false).finally(() => {
       hasRestoredGeometryRef.current = true;
+      initialPositionRestoredRef.current = true;
+      void revealInitialWidget();
     });
   }, []);
 
   useEffect(() => {
     saveMode(mode);
-    if (skipInitialModeResizeRef.current) {
-      skipInitialModeResizeRef.current = false;
-      return;
-    }
-    void resizeWindowForMode(mode, settingsRef.current.uiScale);
   }, [mode]);
 
 
   useEffect(() => {
-    if (mode !== "widget" && mode !== "mini") {
-      void getCurrentWindow().setMinSize(new LogicalSize(430, 620)).catch(() => undefined);
-      return;
-    }
-
     const appWindow = getCurrentWindow();
     let animationFrame = 0;
-    let desiredSize: { width: number; height: number } | undefined;
-    let applyingSize = false;
     let disposed = false;
     let layoutReady = false;
+    ++windowSizeGenerationRef.current;
     void appWindow.setResizable(false).catch(() => undefined);
 
-    // Every mode uses one serialized size writer. Clearing the previous exact constraints first lets
-    // 25% Full and 240px Mini shrink below the old static minimum without racing ResizeObserver bursts.
+    // One queue survives effect recreation. A generation check after every native await prevents an
+    // old provider-count/layout request from re-locking the window after a newer request has arrived.
     function applyLockedSize(width: number, height: number) {
-      desiredSize = { width: Math.max(1, Math.round(width)), height: Math.max(1, Math.round(height)) };
-      if (applyingSize) return;
-      applyingSize = true;
-      void (async () => {
-        while (desiredSize && !disposed) {
-          const target = desiredSize;
-          desiredSize = undefined;
-          await appWindow.setMinSize(null).catch(() => undefined);
-          await appWindow.setMaxSize(null).catch(() => undefined);
-          if (disposed) break;
-          await appWindow.setSize(new LogicalSize(target.width, target.height)).catch(() => undefined);
-          await appWindow.setMinSize(new LogicalSize(target.width, target.height)).catch(() => undefined);
-          await appWindow.setMaxSize(new LogicalSize(target.width, target.height)).catch(() => undefined);
+      const target = { width: Math.max(1, Math.round(width)), height: Math.max(1, Math.round(height)) };
+      const requestGeneration = ++windowSizeGenerationRef.current;
+      windowSizeQueueRef.current = windowSizeQueueRef.current.catch(() => undefined).then(async () => {
+        const isCurrent = () => !disposed && requestGeneration === windowSizeGenerationRef.current;
+        if (!isCurrent()) return;
+        await appWindow.setMinSize(null).catch(() => undefined);
+        await appWindow.setMaxSize(null).catch(() => undefined);
+        if (!isCurrent()) return;
+        await appWindow.setSize(new LogicalSize(target.width, target.height)).catch(() => undefined);
+        if (!isCurrent()) return;
+        await appWindow.setMinSize(new LogicalSize(target.width, target.height)).catch(() => undefined);
+        if (!isCurrent()) return;
+        await appWindow.setMaxSize(new LogicalSize(target.width, target.height)).catch(() => undefined);
+        if (isCurrent()) {
+          initialLayoutCommittedRef.current = true;
+          void revealInitialWidget();
         }
-        applyingSize = false;
-      })();
+      }).catch(() => undefined);
     }
 
     function scheduleLayout(measure: () => void) {
@@ -1362,20 +1347,17 @@ function WidgetApp() {
             (Number.parseFloat(style.paddingBottom) || 0) +
             (Number.parseFloat(style.borderTopWidth) || 0) +
             (Number.parseFloat(style.borderBottomWidth) || 0);
-          const height = Math.max(MINI_MIN_HEIGHT_FALLBACK, Math.ceil(providers.scrollHeight + chromeHeight));
+          const height = Math.max(MINI_MIN_HEIGHT_FALLBACK, Math.ceil(providers.getBoundingClientRect().height + chromeHeight));
           applyLockedSize(MINI_LOCK_WIDTH, height);
         });
       }
 
       const observer = new ResizeObserver(updateCompactLayout);
       if (compactProvidersRef.current) observer.observe(compactProvidersRef.current);
-      compactProvidersRef.current?.querySelectorAll(".provider-tile, .empty-state").forEach((element) => observer.observe(element));
       void (async () => {
         await appWindow.setMinSize(null).catch(() => undefined);
         await appWindow.setMaxSize(null).catch(() => undefined);
         await setWidgetWebviewZoom(1).catch(() => undefined);
-        if (disposed) return;
-        await appWindow.setSize(new LogicalSize(MINI_LOCK_WIDTH, defaultWindowSize("mini").height)).catch(() => undefined);
         if (disposed) return;
         layoutReady = true;
         updateCompactLayout();
@@ -1398,27 +1380,19 @@ function WidgetApp() {
 
         const widgetStyle = window.getComputedStyle(widget);
         const borderHeight = (Number.parseFloat(widgetStyle.borderTopWidth) || 0) + (Number.parseFloat(widgetStyle.borderBottomWidth) || 0);
-        const boxesMin = Math.ceil(header.getBoundingClientRect().height + providers.scrollHeight + borderHeight);
+        const boxesMin = Math.ceil(header.getBoundingClientRect().height + providers.getBoundingClientRect().height + borderHeight);
         const contentH = Math.max(96, boxesMin);
-        fullContentHeightRef.current = contentH;
         applyLockedSize(WIDGET_BASE_WIDTH * fullScale, contentH * fullScale);
       });
     }
 
     const observer = new ResizeObserver(updateFullLayout);
-    if (widgetRef.current) observer.observe(widgetRef.current);
     if (widgetHeaderRef.current) observer.observe(widgetHeaderRef.current);
     if (providersRef.current) observer.observe(providersRef.current);
-    providersRef.current?.querySelectorAll(".provider-tile").forEach((element) => observer.observe(element));
     void (async () => {
       await appWindow.setMinSize(null).catch(() => undefined);
       await appWindow.setMaxSize(null).catch(() => undefined);
       await setWidgetWebviewZoom(fullScale).catch(() => undefined);
-      if (disposed) return;
-      await appWindow.setSize(new LogicalSize(
-        Math.round(WIDGET_BASE_WIDTH * fullScale),
-        Math.max(96, Math.round(fullContentHeightRef.current * fullScale)),
-      )).catch(() => undefined);
       if (disposed) return;
       layoutReady = true;
       updateFullLayout();
@@ -1429,7 +1403,7 @@ function WidgetApp() {
       window.cancelAnimationFrame(animationFrame);
       observer.disconnect();
     };
-  }, [mode, settings.theme, snapshots.claude, snapshots.codex, snapshots["codex-1"], settings.showClaude, settings.showCodex, settings.showCodex1, settings.uiScale]);
+  }, [mode, settings.uiScale]);
 
   async function saveCurrentPositionNow(targetMode = modeRef.current) {
     // Never persist before the saved geometry has been restored, or a startup resize event would
@@ -1594,24 +1568,36 @@ function WidgetApp() {
   }, [settings.showClaude, settings.showCodex, settings.showCodex1]);
 
   // Never let two reads of the same provider run at once. At low refresh intervals a slow Claude
-  // read (reload + scrape, ~3-15s) would otherwise be reloaded out from under itself by the next
-  // tick, fail, and fall back to the cached value. Codex reads are fast so they are never skipped.
+  // read would otherwise be reloaded out from under itself by the next tick. A manual request that
+  // arrives mid-read awaits that read instead of being silently answered with the stale snapshot.
   async function guardedRefresh(provider: Provider, url: string, background: boolean): Promise<UsageSnapshot> {
-    if (refreshInFlightRef.current.has(provider)) return snapshotsRef.current[provider];
-    refreshInFlightRef.current.add(provider);
-    try {
-      return await refreshProviderFromUrl(provider, url, background);
-    } finally {
-      refreshInFlightRef.current.delete(provider);
-    }
+    const existing = refreshInFlightRef.current[provider];
+    if (existing) return existing;
+    const operation = refreshProviderFromUrl(provider, url, background);
+    refreshInFlightRef.current[provider] = operation;
+    void operation.then(
+      () => { if (refreshInFlightRef.current[provider] === operation) delete refreshInFlightRef.current[provider]; },
+      () => { if (refreshInFlightRef.current[provider] === operation) delete refreshInFlightRef.current[provider]; },
+    );
+    return operation;
   }
 
-  async function refresh(provider: Provider) {
+async function refresh(provider: Provider, requestNonce: string) {
     setBusy(provider);
-    const snapshot = await guardedRefresh(provider, providerUrl(provider, settings), false);
-    triggerManualReplay(provider, snapshot);
-    setSnapshots((currentSnapshots) => ({ ...currentSnapshots, [provider]: snapshot }));
-    setBusy(null);
+    try {
+      const snapshot = await guardedRefresh(provider, providerUrl(provider, settings), false);
+      triggerManualReplay(provider, snapshot);
+      setSnapshots((currentSnapshots) => ({ ...currentSnapshots, [provider]: snapshot }));
+      setLastUpdated(new Date());
+      await emitTo("settings", "usageview-refresh-result", {
+        nonce: requestNonce,
+        provider,
+        status: snapshot.status,
+        message: snapshot.message,
+      } satisfies RefreshResult).catch(() => undefined);
+    } finally {
+      setBusy((current) => current === provider ? null : current);
+    }
   }
 
   useEffect(() => {
@@ -1688,6 +1674,7 @@ function WidgetApp() {
 
   // Execute commands posted by the detached Settings window (single engine owner lives here).
   useEffect(() => {
+    let unlistenRefresh: (() => void) | undefined;
     function onStorage(event: StorageEvent) {
       if (event.key !== APP_CMD_KEY || !event.newValue) return;
       let command: AppCommand;
@@ -1696,11 +1683,19 @@ function WidgetApp() {
       lastCmdNonceRef.current = command.nonce;
       if (command.type === "play") playTestEffect(command.provider, command.from, command.to, command.driveBar);
       else if (command.type === "restore") void restoreTestEffect();
-      else if (command.type === "refresh") void refresh(command.provider);
+      else if (command.type === "refresh") void refresh(command.provider, command.nonce);
       else if (command.type === "reset-window") void resetWindowPosition();
     }
     window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
+    void listen<RefreshRequest>("usageview-refresh-request", ({ payload }) => {
+      if (!payload?.nonce || payload.nonce === lastCmdNonceRef.current) return;
+      lastCmdNonceRef.current = payload.nonce;
+      void refresh(payload.provider, payload.nonce);
+    }).then((dispose) => { unlistenRefresh = dispose; });
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      unlistenRefresh?.();
+    };
   }, [settings]);
 
   async function refreshAll() {
@@ -1712,19 +1707,6 @@ function WidgetApp() {
     setSnapshots((currentSnapshots) => results.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), currentSnapshots));
     setLastUpdated(new Date());
     setBusy(null);
-  }
-
-  async function minimizeWindow() {
-    await getCurrentWindow().minimize();
-  }
-
-  async function toggleMaximizeWindow() {
-    const appWindow = getCurrentWindow();
-    if (await appWindow.isMaximized()) {
-      await appWindow.unmaximize();
-    } else {
-      await appWindow.maximize();
-    }
   }
 
   async function closeWindow() {
@@ -1807,14 +1789,14 @@ function WidgetApp() {
           <button className={`window-control refresh${busy !== null ? " spinning" : ""}`} type="button" title="Refresh now" aria-label="Refresh now" onClick={() => void refreshAll()} disabled={busy !== null}><RefreshIcon /></button>
           <button className="window-control gear" type="button" title="Settings" aria-label="Settings" onClick={() => void invoke("toggle_settings_window")}><GearIcon /></button>
           <button className="window-control mini" type="button" title="Mini mode" aria-label="Mini mode" onClick={() => setMode("mini")}><MiniIcon /></button>
-          <WindowControls pinned={settings.alwaysOnTop} onTogglePin={togglePinned} onMinimize={() => void minimizeWindow()} onMaximize={() => void toggleMaximizeWindow()} onClose={() => void closeWindow()} showMinimize={false} showMaximize={false} />
+          <WindowControls pinned={settings.alwaysOnTop} onTogglePin={togglePinned} onClose={() => void closeWindow()} />
         </div>
       </div>
       <div ref={providersRef} className="providers">
         {shown.length > 0 ? shown.map((provider) => (
           timerSet.has(provider)
             ? <TimerView key={provider} snapshot={snapshots[provider]} onBack={() => toggleTimer(provider)} paused={isPaused(provider)} />
-            : <UsageBlock key={provider} snapshot={snapshots[provider]} compact flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} onFlip={() => toggleTimer(provider)} />
+             : <UsageBlock key={provider} snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} onFlip={() => toggleTimer(provider)} />
         )) : <EmptyProviderState />}
       </div>
       </div>
@@ -1825,25 +1807,15 @@ function WidgetApp() {
 function WindowControls({
   pinned,
   onTogglePin,
-  onMinimize,
-  onMaximize,
   onClose,
-  showMinimize = true,
-  showMaximize = true,
 }: {
   pinned: boolean;
   onTogglePin: () => void;
-  onMinimize: () => void;
-  onMaximize: () => void;
   onClose: () => void;
-  showMinimize?: boolean;
-  showMaximize?: boolean;
 }) {
   return (
     <div className="window-controls" aria-label="Window controls">
       <button className={`window-control pin ${pinned ? "active" : ""}`} type="button" title={pinned ? "Unpin from top" : "Pin always on top"} aria-label={pinned ? "Unpin from top" : "Pin always on top"} onClick={onTogglePin}><PinIcon /></button>
-      {showMinimize && <button className="window-control minimize" type="button" title="Minimize" aria-label="Minimize" onClick={onMinimize}>-</button>}
-      {showMaximize && <button className="window-control maximize" type="button" title="Maximize" aria-label="Maximize" onClick={onMaximize}>[]</button>}
       <button className="window-control close" type="button" title="Close" aria-label="Close" onClick={onClose}>x</button>
     </div>
   );
@@ -1970,7 +1942,7 @@ function ProviderPanel({
         </div>
         <StatusPill status={snapshot.status} />
       </div>
-      <UsageBlock snapshot={snapshot} compact />
+      <UsageBlock snapshot={snapshot} />
       <div className="daily-actions">
         <button className="primary" onClick={onOpen} disabled={busy === `${provider}-open`}>{busy === `${provider}-open` ? "Opening" : "Login"}</button>
         <button onClick={onExtract} disabled={busy === provider}>{busy === provider ? "Refreshing" : "Refresh now"}</button>
@@ -2316,10 +2288,10 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
   settings: Settings;
   savedAt: Date | null;
   onChange: (settings: Settings) => void;
-  onEffectPlay?: (provider: Provider, from: number, to: number, driveBar: boolean) => void;
-  onEffectRestore?: () => void;
-  onResetWindow?: () => void;
-  providerPercents?: Partial<Record<Provider, number>>;
+  onEffectPlay: (provider: Provider, from: number, to: number, driveBar: boolean) => void;
+  onEffectRestore: () => void;
+  onResetWindow: () => void;
+  providerPercents: Partial<Record<Provider, number>>;
 }) {
   function patch(next: Partial<Settings>) {
     onChange({ ...settings, ...next });
@@ -2330,11 +2302,11 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
   const [testFrom, setTestFrom] = useState(36);
   const [testTo, setTestTo] = useState(37);
   const [driveBar, setDriveBar] = useState(false);
-  const testable = !!onEffectPlay && settings.effectsEnabled;
+  const testable = settings.effectsEnabled;
   const presets: [string, number, number][] = [["36→37", 36, 37], ["80→81", 80, 81], ["0→63", 0, 63], ["99→100", 99, 100], ["0→100", 0, 100]];
 
   function play(from: number, to: number) {
-    onEffectPlay?.(testProvider, from, to, driveBar);
+    onEffectPlay(testProvider, from, to, driveBar);
   }
   function stepUp() {
     const from = Math.max(0, Math.min(100, testTo));
@@ -2344,7 +2316,7 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
     setTestTo(to);
   }
   function loadCurrent() {
-    const cur = providerPercents?.[testProvider];
+    const cur = providerPercents[testProvider];
     if (typeof cur === "number") { setTestFrom(cur); setTestTo(Math.min(100, cur + 1)); }
   }
 
@@ -2444,14 +2416,12 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
           <input type="range" min="0.45" max="1" step="0.01" value={settings.opacity} onChange={(event) => patch({ opacity: Number(event.target.value) })} />
         </div>
       </div>
-      {onResetWindow && (
-        <div className="settings-row">
-          <div className="seg-field">
-            <span className="seg-label">Window position</span>
-            <button type="button" onClick={onResetWindow}>Reset position</button>
-          </div>
+      <div className="settings-row">
+        <div className="seg-field">
+          <span className="seg-label">Window position</span>
+          <button type="button" onClick={onResetWindow}>Reset position</button>
         </div>
-      )}
+      </div>
       {pendingLow !== null && (
         <div className="settings-warn">
           <span>Under 60s refreshes more often — costs more resources and may get rate-limited. Apply {pendingLow}s anyway?</span>
@@ -2501,8 +2471,7 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
           <span>Drop cell effect</span>
           <input type="checkbox" checked={settings.effectDropCell} onChange={(event) => patch({ effectDropCell: event.target.checked })} />
         </label>
-        {onEffectPlay && (
-          <div className="effect-tester">
+        <div className="effect-tester">
             <div className="effect-tester-head">
               <span>Test / replay</span>
               {!settings.effectsEnabled && <em>enable effect to test</em>}
@@ -2524,15 +2493,14 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
             <div className="effect-tester-actions">
               <button type="button" className="primary" disabled={!testable} onClick={() => play(testFrom, testTo)}>Play</button>
               <button type="button" disabled={!testable} onClick={stepUp}>Step +1%</button>
-              <button type="button" onClick={() => onEffectRestore?.()}>Restore</button>
+              <button type="button" onClick={onEffectRestore}>Restore</button>
             </div>
             <div className="effect-tester-presets">
               {presets.map(([label, from, to]) => (
                 <button type="button" key={label} disabled={!testable} onClick={() => { setTestFrom(from); setTestTo(to); play(from, to); }}>{label}</button>
               ))}
             </div>
-          </div>
-        )}
+        </div>
       </details>
       <ColorsSection settings={settings} patch={patch} />
     </section>
@@ -2634,12 +2602,12 @@ function makeEffectParticles(from: number, to: number): EffectParticle[] {
   });
 }
 
-function effectStyle(effect: UsageEffect | undefined, fallbackPercent: number | undefined, compact = false): React.CSSProperties {
+function effectStyle(effect: UsageEffect | undefined, fallbackPercent: number | undefined): React.CSSProperties {
   const from = effect ? Math.max(0, Math.min(100, effect.from)) : fallbackPercent ?? 0;
   const to = effect ? Math.max(0, Math.min(100, effect.to)) : fallbackPercent ?? 0;
   const start = Math.min(from, to);
   const width = Math.abs(to - from);
-  const dropMinWidth = compact ? 6 : 8;
+  const dropMinWidth = 8;
   const dropWidth = width > 0 ? `max(${dropMinWidth}px, ${width}%)` : `${dropMinWidth}px`;
 
   // Glass liquid variables — mirror the prototype's barShell() math (redesign/interactive-prototype).
@@ -2651,7 +2619,7 @@ function effectStyle(effect: UsageEffect | undefined, fallbackPercent: number | 
   const flowWidth = Math.max(0, target - glDropLeft);
   const leftWave = Math.max(0, glDropLeft);
   const rightWave = Math.max(0, target - glDropLeft);
-  const pocketMin = compact ? 3 : 4;
+  const pocketMin = 4;
   const pocketWidth = width > 0 || flowWidth > 0
     ? Math.min(target, Math.max(pocketMin, Math.min(18, width + 2), flowWidth * 0.28))
     : 0;
@@ -2661,8 +2629,7 @@ function effectStyle(effect: UsageEffect | undefined, fallbackPercent: number | 
   const pocketOrigin = pocketWidth > 0 ? clamp(((glDropLeft - pocketStart) / pocketWidth) * 100, 0, 100) : 50;
   const dropScale = clamp(0.72 + Math.sqrt(Math.max(0, width)) * 0.16, 0.72, 1.65);
   const impactStrength = clamp(0.72 + Math.sqrt(Math.max(0, width)) * 0.14, 0.72, 1.55);
-  const rippleScale = clamp(1.55 + flowWidth / 8, 1.8, 6.8);
-  const glDropMinWidth = compact ? 5 : 8;
+  const glDropMinWidth = 8;
   const glDropWidth = `max(${glDropMinWidth}px, ${flowWidth || 2}%)`;
 
   return {
@@ -2671,7 +2638,7 @@ function effectStyle(effect: UsageEffect | undefined, fallbackPercent: number | 
     "--delta-edge": `${to}%`,
     "--drop-left": `${start + width / 2}%`,
     "--drop-width": dropWidth,
-    "--pixel-impact-strength": compact ? impactStrength * 0.72 : impactStrength,
+    "--pixel-impact-strength": impactStrength,
     // Glass fill + liquid drivers (real prototype variable names).
     "--bar-fill": `${to}%`,
     "--gl-drop-left": `${glDropLeft}%`,
@@ -2684,7 +2651,6 @@ function effectStyle(effect: UsageEffect | undefined, fallbackPercent: number | 
     "--pocket-start": `${pocketStart}%`,
     "--pocket-width": `${pocketWidth}%`,
     "--pocket-origin": `${pocketOrigin}%`,
-    "--ripple-scale": rippleScale,
   } as React.CSSProperties;
 }
 
@@ -2825,13 +2791,13 @@ function MiniTimerRow({ snapshot, onBack, paused = false }: { snapshot: UsageSna
     </article>
   );
 }
-function UsageBlock({ snapshot, compact = false, flash = false, paused = false, updatedAgo, effect, dropCell = false, onFlip }: { snapshot: UsageSnapshot; compact?: boolean; flash?: boolean; paused?: boolean; updatedAgo?: string; effect?: UsageEffect; dropCell?: boolean; onFlip?: () => void }) {
+function UsageBlock({ snapshot, flash = false, paused = false, updatedAgo, effect, dropCell = false, onFlip }: { snapshot: UsageSnapshot; flash?: boolean; paused?: boolean; updatedAgo?: string; effect?: UsageEffect; dropCell?: boolean; onFlip?: () => void }) {
   const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
   const stale = isStale(snapshot);
-  const metaLeft = usageMetaLeft(snapshot, percent);
+   const metaLeft = usageMetaLeft(snapshot);
   const metaRight = usageMetaRight(snapshot);
   return (
-    <article className={`${compact ? "usage compact" : "usage"} provider-tile ${snapshot.provider}${flash ? " mark-flash" : ""}${paused ? " mark-paused" : ""}${onFlip ? " flippable" : ""}`} onClick={onFlip} title={onFlip ? "Tap for reset countdown" : undefined}>
+    <article className={`usage compact provider-tile ${snapshot.provider}${flash ? " mark-flash" : ""}${paused ? " mark-paused" : ""}${onFlip ? " flippable" : ""}`} onClick={onFlip} title={onFlip ? "Tap for reset countdown" : undefined}>
       <div className="usage-top">
         <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
         <span className="tile-status">

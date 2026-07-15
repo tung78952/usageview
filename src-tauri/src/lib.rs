@@ -476,6 +476,7 @@ async fn extract_provider(app: tauri::AppHandle, provider: String, url: String) 
   let mut last_payload: Option<String> = None;
   // Claude's SPA can be slow after a forced navigation, so give it a larger budget.
   let mut result: Option<String> = None;
+  let mut last_webview_error: Option<String> = None;
   let max_attempts = if provider == "claude" { 48 } else { 24 };
   for attempt in 0..max_attempts {
     if let Ok((status, encoded)) = event_rx.try_recv() {
@@ -485,14 +486,27 @@ async fn extract_provider(app: tauri::AppHandle, provider: String, url: String) 
         break;
       }
     }
-    let current = window.url().map_err(|error| error.to_string())?;
+    let current = match window.url() {
+      Ok(current) => current,
+      Err(error) => {
+        last_webview_error = Some(error.to_string());
+        std::thread::sleep(Duration::from_millis(250));
+        continue;
+      }
+    };
     // Eval as soon as we are on the provider's host. Claude now reads usage from a same-origin JSON
     // API (works on any claude.ai page), so we must NOT gate on the /settings path: the SPA often
     // routes away from it, which previously blocked the eval entirely and starved the API fetch.
     let here = current.host_str().unwrap_or_default().contains(expected_host);
     if here {
       if attempt % 4 == 0 {
-        window.eval(&script).map_err(|error| error.to_string())?;
+        if let Err(error) = window.eval(&script) {
+          // WebView2 can accept url() before the document is ready to evaluate scripts. Treat this
+          // as transient during the polling window; a later attempt can read the same loaded page.
+          last_webview_error = Some(error.to_string());
+          std::thread::sleep(Duration::from_millis(150));
+          continue;
+        }
       }
       if let Some((_, rest)) = current.as_str().split_once(&marker) {
         if let Some((status, encoded)) = rest.split_once('|') {
@@ -515,10 +529,10 @@ async fn extract_provider(app: tauri::AppHandle, provider: String, url: String) 
 
   // Timed out: hand back the last (incomplete) snapshot if we got one, else a clear hint.
   last_payload.ok_or_else(|| {
-    format!(
-      "Could not read {} usage. Open Settings and Login if your session expired.",
-      provider
-    )
+    match last_webview_error {
+      Some(error) => format!("Could not read {} usage: {}", provider, error),
+      None => format!("Could not read {} usage. Open Settings and Login if your session expired.", provider),
+    }
   })
 }
 

@@ -55,7 +55,6 @@ button {
 button:hover { transform: translate(-2px, -2px); box-shadow: 3px 3px 0 var(--shadow); }
 button:disabled { cursor: wait; opacity: 0.62; transform: none; box-shadow: none; }
 button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 44%, transparent); background: color-mix(in oklch, var(--accent) 14%, transparent); }
-.danger { color: var(--danger); }
 
 .seg-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .seg-label { display: flex; align-items: baseline; gap: 6px; font: 750 10px/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
@@ -356,8 +355,6 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   transform: none;
   box-shadow: none;
 }
-.window-control.minimize { color: #f59e0b; }
-.window-control.minimize:hover { color: #fbbf24; }
 .window-control.pin { color: var(--muted); }
 .window-control.pin.active { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 48%, var(--border)); }
 .window-control.pin:hover { color: var(--accent); }
@@ -372,11 +369,9 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 }
 .header-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 .action-icon { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.window-control.refresh:hover, .window-control.gear:hover, .window-control.compact:hover { color: var(--accent); }
+.window-control.refresh:hover, .window-control.gear:hover, .window-control.mini:hover { color: var(--accent); }
 @keyframes uv-spin { to { transform: rotate(360deg); } }
 .window-control.refresh.spinning .action-icon { animation: uv-spin 0.8s linear infinite; transform-origin: 50% 50%; }
-.window-control.maximize { color: #10b981; }
-.window-control.maximize:hover { color: #34d399; }
 .window-control.close { color: #ef4444; }
 .window-control.close:hover { color: #f87171; }
 
@@ -390,7 +385,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   font: 11px/1 var(--font-mono);
   letter-spacing: 0.04em;
 }
-.back-btn, .window-btn { min-width: 76px; }
+.window-btn { min-width: 76px; }
 
 .providers { min-width: 0; flex: 0 0 auto; padding: 10px; display: grid; gap: 10px; align-content: start; }
 
@@ -414,7 +409,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   gap: 10px;
   min-width: 0;
 }
-.usage-top strong, .brand {
+.usage-top strong {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -423,7 +418,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   letter-spacing: 0.02em;
   text-transform: uppercase;
 }
-.usage-top strong span, .brand span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-top strong span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mark {
   width: 24px;
   height: 24px;
@@ -435,10 +430,9 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   background: color-mix(in oklch, var(--tone, var(--accent)) 16%, transparent);
 }
 .mark svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: square; stroke-linejoin: miter; }
-.mark .claude-face { fill: color-mix(in srgb, var(--tone, var(--accent)) 20%, transparent); stroke-width: 1.6; }
 .mark .codex-knot { stroke-width: 1.55; }
 .pixel-claude-mark svg { width: 18px; height: 18px; fill: currentColor; stroke: none; image-rendering: pixelated; }
-.pixel-claude-fill { fill: var(--claude); }
+.pixel-claude-fill { fill: currentColor; }
 .pixel-claude-eye { fill: color-mix(in srgb, var(--bg) 88%, #000); }
 
 .source-pill, .pill {
@@ -503,9 +497,6 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   background: linear-gradient(180deg, color-mix(in srgb, var(--tone) 78%, #fff), var(--tone));
   box-shadow: inset -1px -1px 0 color-mix(in srgb, #000 16%, transparent);
 }
-.compact-bar .cell.partial::after {
-  width: max(1px, calc(100% * var(--partial-ratio, 0)));
-}
 
 /* ============================================================================
    USAGE EFFECT — chỉ port CSS trong vùng này (từ HTML sandbox design/usage-effect-sandbox.html).
@@ -513,7 +504,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
    Ngoài vùng này (layout / theme / tile) KHÔNG đụng → không thể vỡ bố cục app.
 
    Hợp đồng biến/class mà JSX (effectStyle + EffectOverlays trong main.tsx) cam kết cung cấp:
-   - vars trên .bar/.compact-bar khi có effect:
+   - vars trên .bar khi có effect:
        --delta-start --delta-width --delta-edge --drop-left --drop-width
        --effect-duration --effect-bar-brightness --effect-delta-brightness
    - class overlay (con của .bar): .effect-delta-range .effect-edge-glow
@@ -558,11 +549,6 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 .cell.partial.fx-partial .mini-cell.added {
   animation: usage-mini-cell-land var(--effect-duration, 4000ms) cubic-bezier(.16, 1, .3, 1) both;
 }
-.compact-bar .cell.partial.fx-partial {
-  column-gap: 1px;
-  padding: 0;
-}
-
 .usage-effect-bar {
   overflow: visible;
   clip-path: inset(-90px -48px -48px -48px);
@@ -577,8 +563,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 .usage-effect-bar .cell.active {
   animation: usage-cell-glow var(--effect-duration, 4000ms) cubic-bezier(.16, 1, .3, 1) both;
 }
-.bar.usage-effect-bar.drop-impact,
-.compact-bar.usage-effect-bar.drop-impact {
+.bar.usage-effect-bar.drop-impact {
   animation:
     usage-bar-glow var(--effect-duration, 4000ms) cubic-bezier(.16, 1, .3, 1) both,
     impact-shake 360ms steps(2, end) calc(var(--effect-duration, 4000ms) * 0.27) both;
@@ -623,16 +608,6 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
     0 0 10px color-mix(in srgb, var(--tone) 88%, transparent),
     0 0 24px color-mix(in srgb, var(--tone) 48%, transparent);
 }
-.compact-bar .effect-delta-range {
-  top: 1px;
-  bottom: 1px;
-  width: max(var(--delta-width), 2px);
-}
-.compact-bar .effect-delta-range::after {
-  top: -2px;
-  bottom: -2px;
-  width: 4px;
-}
 .effect-edge-glow {
   left: var(--delta-edge);
   top: 0;
@@ -657,11 +632,6 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
     0 0 0 0 color-mix(in srgb, var(--tone) 34%, transparent);
   opacity: 0;
   animation: usage-pixel-ripple var(--effect-duration, 4000ms) cubic-bezier(.16, 1, .3, 1) both;
-}
-.compact-bar .effect-ripple {
-  top: 1px;
-  bottom: 1px;
-  width: max(var(--delta-width), 2px);
 }
 .effect-drop-cell {
   left: var(--drop-left);
@@ -1142,7 +1112,13 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   18%  { filter: brightness(2.4) drop-shadow(0 0 5px var(--tone)); }
   100% { filter: brightness(1); }
 }
+@keyframes mark-flash-paused {
+  0%   { filter: saturate(0) brightness(1); }
+  18%  { filter: saturate(0) brightness(2.4) drop-shadow(0 0 5px var(--muted)); }
+  100% { filter: saturate(0) brightness(1); }
+}
 .provider-tile.mark-flash .mark { animation: mark-flash 1.8s ease-out; }
+.provider-tile.mark-paused.mark-flash .mark { animation-name: mark-flash-paused; }
 .provider-tile.mark-paused .mark {
   opacity: 0.28;
   filter: saturate(0);
@@ -1243,7 +1219,9 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   .settings-row { grid-template-columns: 1fr; gap: 4px; }
 }
 
-@media (max-width: 340px), (max-height: 420px) {
+/* Full view auto-sizes from its content, so viewport height must not change the content it measures.
+   Otherwise hiding a provider can cross this breakpoint and trap Full view in a compressed layout. */
+@media (max-width: 340px) {
   button { min-height: 28px; padding: 0 6px; font-size: 9px; letter-spacing: 0.04em; }
   .window-control { width: 24px; min-width: 24px; height: 24px; min-height: 24px; font-size: 12px; }
   .window-controls { gap: 5px; }
@@ -1254,7 +1232,7 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   .usage { padding: 7px; }
   .mark { width: 20px; height: 20px; }
   .mark svg { width: 14px; height: 14px; }
-  .usage-top strong, .brand { gap: 5px; font-size: 11px; }
+  .usage-top strong { gap: 5px; font-size: 11px; }
   .source-pill, .pill { padding: 3px 5px; font-size: 8px; letter-spacing: 0.05em; }
   .metric { margin-top: 8px; gap: 6px; }
   .percent { font-size: 30px; }
@@ -1264,35 +1242,6 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 
 }
 
-
-@media (max-height: 350px) {
-  .widget-header {
-    padding: 6px 8px 4px;
-  }
-  .providers {
-    padding: 5px 8px;
-    gap: 5px;
-  }
-  .usage {
-    padding: 6px;
-  }
-  .metric {
-    margin-top: 5px;
-  }
-  .percent {
-    font-size: 26px;
-  }
-  .bar {
-    height: 12px;
-    margin: 6px 0 4px;
-    padding: 2px;
-  }
-  .usage-meta {
-    font-size: 10px;
-    line-height: 1.15;
-  }
-
-}
 
 /* ── Mini mode: one glanceable provider row, fixed 240px window ── */
 .mini-widget { padding: 7px; }
@@ -1328,6 +1277,9 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 .mini-usage:hover > .mini-provider,
 .mini-usage:hover > .mini-percent,
 .mini-usage:hover > .mini-bar { opacity: 0; }
+/* Paused-state dimming is more specific than the normal hover rule. Keep the hover replacement
+   authoritative so the old percent/bar cannot show through the transparent detail overlay. */
+.mini-usage.provider-tile.mark-paused:hover > :is(.mini-percent, .mini-bar) { opacity: 0; }
 /* On hover the status dot + label fade out, so slide the logo flush to the left edge
    (status col 8px + 6px gap = 14px) for a tidy hover state. */
 .mini-usage > .mini-mark-btn { transition: transform 120ms ease; }
@@ -1406,6 +1358,7 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   inset: 2px 8px 2px 28px; /* clear the logo once it slides flush-left on hover */
   z-index: 8;
   min-width: 0;
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1420,7 +1373,9 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   transition: opacity 100ms ease;
 }
 .mini-reset { flex: 0 0 auto; color: var(--fg); }
-.mini-detail-meta { min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.mini-detail-meta { min-width: 0; flex: 1 1 auto; display: flex; align-items: center; justify-content: flex-end; gap: 4px; overflow: hidden; }
+.mini-detail-meta > strong,
+.mini-detail-meta > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mini-detail-meta i { color: var(--muted); font-style: normal; }
 .mini-detail-meta .ok { color: var(--ok); }
 .mini-detail-meta .stale,

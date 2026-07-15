@@ -24,6 +24,7 @@
     "core:window:allow-start-dragging",
     "core:window:allow-set-resizable",
     "core:webview:allow-set-webview-zoom",
+    "core:event:allow-emit-to",
     "opener:default"
   ]
 }
