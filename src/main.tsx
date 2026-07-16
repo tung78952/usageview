@@ -25,6 +25,34 @@ type UsageSnapshot = {
   updatedAt: string;
 };
 
+// --- System monitors (RAM/CPU/GPU/temperatures) ---------------------------------
+// A fully parallel model to UsageSnapshot: these are live local-hardware readings, not
+// scraped provider usage. Nothing here touches the protected Provider/UsageSnapshot flow.
+type MonitorKind = "cpu" | "ram" | "gpu" | "cputemp" | "gputemp";
+type MonitorColors = Record<MonitorKind, string | null>;
+
+// Shape returned by the Rust `read_system_metrics` command (snake_case matches serde).
+type SystemMetrics = {
+  ram_percent: number;
+  ram_used_mb: number;
+  ram_total_mb: number;
+  cpu_percent: number;
+  cpu_temp_c: number | null;
+  gpu_percent: number | null;
+  gpu_temp_c: number | null;
+  gpu_name: string | null;
+};
+
+type MonitorReading = {
+  kind: MonitorKind;
+  label: string;
+  percent?: number; // 0-100 used for the bar fill; for temps this mirrors the °C value
+  displayValue: string; // big readout, e.g. "42%", "58°C", or "N/A"
+  unit: "%" | "°C";
+  sub?: string; // small meta line (e.g. "12.3 / 31.9 GB")
+  available: boolean;
+};
+
 type Settings = {
   claudeUrl: string;
   codexUrl: string;
@@ -43,6 +71,13 @@ type Settings = {
   showClaude: boolean;
   showCodex: boolean;
   showCodex1: boolean;
+  showCpu: boolean;
+  showRam: boolean;
+  showGpu: boolean;
+  showCpuTemp: boolean;
+  showGpuTemp: boolean;
+  monitorIntervalSec: number;
+  monitorColors: MonitorColors;
   providerColors: ProviderColors;
   colorScope: ColorScope;
   baseOverrides: Partial<Record<ThemeKey, BaseOverride>>;
@@ -88,6 +123,13 @@ const defaultSettings: Settings = {
   showClaude: true,
   showCodex: true,
   showCodex1: false,
+  showCpu: false,
+  showRam: false,
+  showGpu: false,
+  showCpuTemp: false,
+  showGpuTemp: false,
+  monitorIntervalSec: 2,
+  monitorColors: { cpu: null, ram: null, gpu: null, cputemp: null, gputemp: null },
   providerColors: { claude: null, codex: null, "codex-1": null },
   colorScope: { text: true, bar: true, border: true, bgTint: false },
   baseOverrides: {},
@@ -187,6 +229,13 @@ function loadSettings(): Settings {
       showClaude: loaded.showClaude ?? true,
       showCodex: loaded.showCodex ?? true,
       showCodex1: loaded.showCodex1 ?? false,
+      showCpu: loaded.showCpu ?? false,
+      showRam: loaded.showRam ?? false,
+      showGpu: loaded.showGpu ?? false,
+      showCpuTemp: loaded.showCpuTemp ?? false,
+      showGpuTemp: loaded.showGpuTemp ?? false,
+      monitorIntervalSec: clampNumber(loaded.monitorIntervalSec, 1, 30, 2),
+      monitorColors: { cpu: null, ram: null, gpu: null, cputemp: null, gputemp: null, ...(loaded.monitorColors ?? {}) },
       providerColors: { claude: null, codex: null, "codex-1": null, ...(loaded.providerColors ?? {}) },
       colorScope: { text: true, bar: true, border: true, bgTint: false, ...(loaded.colorScope ?? {}) },
       baseOverrides: loaded.baseOverrides ?? {},
@@ -1173,6 +1222,7 @@ function WidgetApp() {
   const [, setAgoTick] = useState(0);
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [busy, setBusy] = useState<Provider | null>(null);
+  const [monitorReadings, setMonitorReadings] = useState<Record<MonitorKind, MonitorReading>>(() => buildMonitorReadings(null));
 
   function updateSettings(next: Settings) {
     setSettings(next);
@@ -1567,6 +1617,29 @@ function WidgetApp() {
     );
   }, [settings.showClaude, settings.showCodex, settings.showCodex1]);
 
+  const shownMonitors = useMemo(
+    () => MONITOR_ORDER.filter((kind) => settings[MONITOR_SHOW_KEY[kind]] as boolean),
+    [settings.showCpu, settings.showRam, settings.showGpu, settings.showCpuTemp, settings.showGpuTemp],
+  );
+
+  // Live hardware polling — independent of the 60s usage refresh, and only while at least one
+  // monitor tile is shown so it costs nothing when the feature is off. Failures degrade to "N/A".
+  const anyMonitorShown = shownMonitors.length > 0;
+  useEffect(() => {
+    if (!anyMonitorShown) return;
+    let cancelled = false;
+    async function tick() {
+      const metrics = await readSystemMetrics();
+      if (!cancelled) setMonitorReadings(buildMonitorReadings(metrics));
+    }
+    void tick();
+    const interval = window.setInterval(tick, Math.max(1, settings.monitorIntervalSec) * 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [anyMonitorShown, settings.monitorIntervalSec]);
+
   // Never let two reads of the same provider run at once. At low refresh intervals a slow Claude
   // read would otherwise be reloaded out from under itself by the next tick. A manual request that
   // arrives mid-read awaits that read instead of being silently answered with the stale snapshot.
@@ -1768,11 +1841,15 @@ async function refresh(provider: Provider, requestNonce: string) {
     return (
       <main className={`compact-widget mini-widget ${themeClass(settings.theme)} ${panelScopeClasses(settings)}`} style={panelStyle(settings)} onMouseDown={prepareCompactDrag} onMouseMove={maybeStartCompactDrag} onContextMenu={openCompactMenu}>
         <div ref={compactProvidersRef} className="mini-providers">
-          {shown.length > 0 ? shown.map((provider) => (
+          {shown.map((provider) => (
             timerSet.has(provider)
               ? <MiniTimerRow key={provider} snapshot={snapshots[provider]} onBack={() => toggleTimer(provider)} paused={isPaused(provider)} />
               : <MiniUsageRow key={provider} snapshot={snapshots[provider]} paused={isPaused(provider)} updatedAgo={agoFor(provider)} flash={flashSet.has(provider)} onFlip={() => toggleTimer(provider)} />
-          )) : <EmptyProviderState />}
+          ))}
+          {shownMonitors.map((kind) => (
+            <MonitorMiniRow key={`mon-${kind}`} reading={monitorReadings[kind]} tone={monitorTone(settings, monitorReadings[kind])} />
+          ))}
+          {shown.length === 0 && shownMonitors.length === 0 && <EmptyProviderState />}
         </div>
       </main>
     );
@@ -1793,11 +1870,15 @@ async function refresh(provider: Provider, requestNonce: string) {
         </div>
       </div>
       <div ref={providersRef} className="providers">
-        {shown.length > 0 ? shown.map((provider) => (
+        {shown.map((provider) => (
           timerSet.has(provider)
             ? <TimerView key={provider} snapshot={snapshots[provider]} onBack={() => toggleTimer(provider)} paused={isPaused(provider)} />
              : <UsageBlock key={provider} snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} onFlip={() => toggleTimer(provider)} />
-        )) : <EmptyProviderState />}
+        ))}
+        {shownMonitors.map((kind) => (
+          <MonitorBlock key={`mon-${kind}`} reading={monitorReadings[kind]} tone={monitorTone(settings, monitorReadings[kind])} />
+        ))}
+        {shown.length === 0 && shownMonitors.length === 0 && <EmptyProviderState />}
       </div>
       </div>
     </main>
@@ -2205,7 +2286,7 @@ function ColorPicker({ value, onChange, onClose }: { value: string; onChange: (h
 }
 
 function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: Partial<Settings>) => void }) {
-  type PickerTarget = { kind: "accent"; provider: keyof ProviderColors } | { kind: "base"; field: "bg" | "surface" | "text" };
+  type PickerTarget = { kind: "accent"; provider: keyof ProviderColors } | { kind: "monitor"; monitor: MonitorKind } | { kind: "base"; field: "bg" | "surface" | "text" };
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const themeKey = settings.theme;
   const mode = baseModeOf(themeKey);
@@ -2215,10 +2296,11 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
   const baseFieldValue = (field: "bg" | "surface" | "text") => field === "text" ? resolvedBase.fg : resolvedBase[field];
 
   const setProviderColor = (p: keyof ProviderColors, color: string | null) => patch({ providerColors: { ...settings.providerColors, [p]: color } });
+  const setMonitorColor = (m: MonitorKind, color: string | null) => patch({ monitorColors: { ...settings.monitorColors, [m]: color } });
   const setScope = (key: keyof ColorScope, val: boolean) => patch({ colorScope: { ...settings.colorScope, [key]: val } });
   const setBase = (next: Partial<BaseOverride>) => patch({ baseOverrides: { ...settings.baseOverrides, [themeKey]: { ...base, ...next } } });
   const resetBase = () => { const nb = { ...settings.baseOverrides }; delete nb[themeKey]; patch({ baseOverrides: nb }); };
-  const samePicker = (t: PickerTarget) => picker && picker.kind === t.kind && (t.kind === "accent" ? (picker as any).provider === t.provider : (picker as any).field === (t as any).field);
+  const samePicker = (t: PickerTarget) => picker && picker.kind === t.kind && (t.kind === "accent" ? (picker as any).provider === t.provider : t.kind === "monitor" ? (picker as any).monitor === t.monitor : (picker as any).field === (t as any).field);
 
   return (
     <details className="effect-settings colors-settings">
@@ -2227,7 +2309,7 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
           <svg className="disclosure-chevron" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
           <span>Colors</span>
         </span>
-        <strong>{settings.providerColors.claude || settings.providerColors.codex || settings.providerColors["codex-1"] || Object.keys(settings.baseOverrides).length ? "custom" : "default"}</strong>
+        <strong>{settings.providerColors.claude || settings.providerColors.codex || settings.providerColors["codex-1"] || MONITOR_ORDER.some((k) => settings.monitorColors[k]) || Object.keys(settings.baseOverrides).length ? "custom" : "default"}</strong>
       </summary>
 
       {providers.map(([p, label]) => (
@@ -2242,6 +2324,22 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
           </div>
           {samePicker({ kind: "accent", provider: p }) && (
             <ColorPicker value={settings.providerColors[p] ?? (p === "claude" ? "#c46f42" : "#7b8cff")} onChange={(hex) => setProviderColor(p, hex)} onClose={() => setPicker(null)} />
+          )}
+        </div>
+      ))}
+
+      {MONITOR_ORDER.some((k) => settings[MONITOR_SHOW_KEY[k]]) && MONITOR_ORDER.filter((k) => settings[MONITOR_SHOW_KEY[k]]).map((k) => (
+        <div className="color-row" key={`mon-${k}`}>
+          <span className="seg-label">{MONITOR_LABELS[k]} <em className="color-hint">load</em></span>
+          <div className="swatch-row">
+            {ACCENT_PRESETS.map((c) => (
+              <button type="button" key={c} className={`swatch${(settings.monitorColors[k] ?? "").toLowerCase() === c.toLowerCase() ? " is-active" : ""}`} style={{ background: c }} title={c} onClick={() => setMonitorColor(k, c)} />
+            ))}
+            <button type="button" className={`swatch swatch-custom${samePicker({ kind: "monitor", monitor: k }) ? " is-active" : ""}`} title="Custom color" onClick={() => setPicker(samePicker({ kind: "monitor", monitor: k }) ? null : { kind: "monitor", monitor: k })}>+</button>
+            <button type="button" className="swatch swatch-reset" title="Reset to load color" onClick={() => { setMonitorColor(k, null); if (samePicker({ kind: "monitor", monitor: k })) setPicker(null); }}>⟲</button>
+          </div>
+          {samePicker({ kind: "monitor", monitor: k }) && (
+            <ColorPicker value={settings.monitorColors[k] ?? "#4faa62"} onChange={(hex) => setMonitorColor(k, hex)} onClose={() => setPicker(null)} />
           )}
         </div>
       ))}
@@ -2502,6 +2600,36 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
             </div>
         </div>
       </details>
+      <details className="effect-settings monitor-settings">
+        <summary>
+          <span className="summary-left">
+            <svg className="disclosure-chevron" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+            <span>System monitors</span>
+          </span>
+          <strong>{MONITOR_ORDER.some((k) => settings[MONITOR_SHOW_KEY[k]]) ? "on" : "off"}</strong>
+        </summary>
+        {MONITOR_ORDER.map((k) => (
+          <label className="toggle-row" key={k}>
+            <span>{MONITOR_FULL_LABELS[k]}</span>
+            <input
+              type="checkbox"
+              checked={settings[MONITOR_SHOW_KEY[k]] as boolean}
+              onChange={(event) => patch({ [MONITOR_SHOW_KEY[k]]: event.target.checked } as Partial<Settings>)}
+            />
+          </label>
+        ))}
+        <label>Update every <span>{settings.monitorIntervalSec}s</span><input
+          type="range"
+          min="1"
+          max="10"
+          step="1"
+          value={settings.monitorIntervalSec}
+          onChange={(event) => patch({ monitorIntervalSec: Number(event.target.value) })}
+        /></label>
+        {settings.showCpuTemp && (
+          <p className="monitor-note">CPU temperature needs elevated hardware access on Windows — the tile shows N/A until that source is added.</p>
+        )}
+      </details>
       <ColorsSection settings={settings} patch={patch} />
     </section>
   );
@@ -2749,6 +2877,220 @@ function MiniMarkButton({ provider, onClick, title }: { provider: Provider; onCl
     >
       <ProviderMark provider={provider} />
     </span>
+  );
+}
+
+// --- System monitor tiles ------------------------------------------------------
+// Additive UI: reuses the provider-tile shell + buildUsageCells for a consistent look,
+// but deliberately renders NO drop/particle effect (those are for slow monotonic usage).
+// Live values ease between reads via useSmoothedValue; color reflects load (green→red).
+const MONITOR_ORDER: MonitorKind[] = ["cpu", "ram", "gpu", "cputemp", "gputemp"];
+const MONITOR_LABELS: Record<MonitorKind, string> = {
+  cpu: "CPU",
+  ram: "RAM",
+  gpu: "GPU",
+  cputemp: "CPU TEMP",
+  gputemp: "GPU TEMP",
+};
+const MONITOR_FULL_LABELS: Record<MonitorKind, string> = {
+  cpu: "CPU usage",
+  ram: "RAM usage",
+  gpu: "GPU usage",
+  cputemp: "CPU temperature",
+  gputemp: "GPU temperature",
+};
+const MONITOR_SHOW_KEY: Record<MonitorKind, keyof Settings> = {
+  cpu: "showCpu",
+  ram: "showRam",
+  gpu: "showGpu",
+  cputemp: "showCpuTemp",
+  gputemp: "showGpuTemp",
+};
+
+async function readSystemMetrics(): Promise<SystemMetrics | null> {
+  try {
+    return await invoke<SystemMetrics>("read_system_metrics");
+  } catch {
+    return null;
+  }
+}
+
+function clampPercent(value: number): number {
+  return Math.max(0, Math.min(100, value));
+}
+
+function emptyReading(kind: MonitorKind): MonitorReading {
+  const unit: "%" | "°C" = kind === "cputemp" || kind === "gputemp" ? "°C" : "%";
+  return { kind, label: MONITOR_LABELS[kind], displayValue: "N/A", unit, available: false };
+}
+
+function shortGpuName(name: string | null): string | undefined {
+  if (!name) return undefined;
+  return name.replace(/^NVIDIA\s+GeForce\s+/i, "").replace(/^NVIDIA\s+/i, "");
+}
+
+function buildMonitorReadings(m: SystemMetrics | null): Record<MonitorKind, MonitorReading> {
+  const make = (kind: MonitorKind): MonitorReading => {
+    if (!m) return emptyReading(kind);
+    switch (kind) {
+      case "cpu": {
+        const pct = clampPercent(m.cpu_percent);
+        return { kind, label: "CPU", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", available: true };
+      }
+      case "ram": {
+        const pct = clampPercent(m.ram_percent);
+        const used = (m.ram_used_mb / 1024).toFixed(1);
+        const total = (m.ram_total_mb / 1024).toFixed(1);
+        return { kind, label: "RAM", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", sub: `${used} / ${total} GB`, available: true };
+      }
+      case "gpu": {
+        if (m.gpu_percent == null) return emptyReading(kind);
+        const pct = clampPercent(m.gpu_percent);
+        return { kind, label: "GPU", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", sub: shortGpuName(m.gpu_name), available: true };
+      }
+      case "cputemp": {
+        if (m.cpu_temp_c == null) return emptyReading(kind);
+        return { kind, label: "CPU TEMP", percent: clampPercent(m.cpu_temp_c), displayValue: `${Math.round(m.cpu_temp_c)}°C`, unit: "°C", available: true };
+      }
+      case "gputemp": {
+        if (m.gpu_temp_c == null) return emptyReading(kind);
+        return { kind, label: "GPU TEMP", percent: clampPercent(m.gpu_temp_c), displayValue: `${Math.round(m.gpu_temp_c)}°C`, unit: "°C", sub: shortGpuName(m.gpu_name), available: true };
+      }
+    }
+  };
+  return { cpu: make("cpu"), ram: make("ram"), gpu: make("gpu"), cputemp: make("cputemp"), gputemp: make("gputemp") };
+}
+
+// Load-based accent: low = calm green, mid = amber, high = red. Temps use their own thresholds.
+function loadTone(kind: MonitorKind, value: number | undefined): string {
+  const v = value ?? 0;
+  if (kind === "cputemp" || kind === "gputemp") {
+    if (v >= 85) return "#e5484d";
+    if (v >= 70) return "#e0913d";
+    return "#4faa62";
+  }
+  if (v >= 85) return "#e5484d";
+  if (v >= 60) return "#e0913d";
+  return "#4faa62";
+}
+
+function monitorTone(settings: Settings, reading: MonitorReading): string {
+  const override = settings.monitorColors[reading.kind];
+  if (override) return override;
+  return loadTone(reading.kind, reading.percent);
+}
+
+// Ease a displayed number toward its target with requestAnimationFrame so fast-changing
+// metrics glide instead of snapping each poll. Cheap: stops itself once it reaches the goal.
+function useSmoothedValue(target: number, speed = 0.2): number {
+  const [display, setDisplay] = useState(target);
+  const currentRef = useRef(target);
+  const goalRef = useRef(target);
+  const rafRef = useRef<number | null>(null);
+  useEffect(() => {
+    goalRef.current = target;
+    const tick = () => {
+      const diff = goalRef.current - currentRef.current;
+      if (Math.abs(diff) < 0.15) {
+        currentRef.current = goalRef.current;
+        setDisplay(goalRef.current);
+        rafRef.current = null;
+        return;
+      }
+      currentRef.current += diff * speed;
+      setDisplay(currentRef.current);
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    if (rafRef.current === null) rafRef.current = requestAnimationFrame(tick);
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, [target, speed]);
+  return display;
+}
+
+function MonitorMark({ kind }: { kind: MonitorKind }) {
+  const glyph = (() => {
+    switch (kind) {
+      case "cpu":
+        return (
+          <>
+            <rect x="7" y="7" width="10" height="10" rx="1" />
+            <rect x="10" y="10" width="4" height="4" />
+            <path d="M9 4v3M12 4v3M15 4v3M9 17v3M12 17v3M15 17v3M4 9h3M4 12h3M4 15h3M17 9h3M17 12h3M17 15h3" />
+          </>
+        );
+      case "gpu":
+        return (
+          <>
+            <rect x="3" y="7" width="18" height="10" rx="1" />
+            <circle cx="9" cy="12" r="2.2" />
+            <circle cx="15" cy="12" r="2.2" />
+          </>
+        );
+      case "ram":
+        return (
+          <>
+            <rect x="3" y="8" width="18" height="8" rx="1" />
+            <path d="M7 8V6M11 8V6M13 8V6M17 8V6M7 16v2M17 16v2" />
+          </>
+        );
+      default: // cputemp / gputemp
+        return (
+          <>
+            <path d="M12 4a2 2 0 0 1 2 2v7a3.5 3.5 0 1 1-4 0V6a2 2 0 0 1 2-2z" />
+            <circle cx="12" cy="16.5" r="1.3" fill="currentColor" stroke="none" />
+          </>
+        );
+    }
+  })();
+  return (
+    <span className="mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24">{glyph}</svg>
+    </span>
+  );
+}
+
+function MonitorBlock({ reading, tone }: { reading: MonitorReading; tone: string }) {
+  const smoothed = useSmoothedValue(reading.available ? reading.percent ?? 0 : 0);
+  return (
+    <article className={`usage compact provider-tile monitor monitor-${reading.kind}${reading.available ? "" : " monitor-unavailable"}`} style={{ "--tone": tone } as React.CSSProperties}>
+      <div className="usage-top">
+        <strong><MonitorMark kind={reading.kind} /><span>{reading.label}</span></strong>
+        <span className="tile-status">
+          <span className={`source-pill ${reading.available ? "ok" : "warn"}`}>{reading.available ? "live" : "n/a"}</span>
+        </span>
+      </div>
+      <div className="metric">
+        <span className="percent">{reading.available ? reading.displayValue : "N/A"}</span>
+        {reading.sub && <span className="message">{reading.sub}</span>}
+      </div>
+      <div className="bar monitor-bar" aria-label={`${reading.label} ${reading.displayValue}`}>
+        {buildUsageCells(reading.available ? smoothed : 0, 10)}
+      </div>
+    </article>
+  );
+}
+
+function MonitorMiniRow({ reading, tone }: { reading: MonitorReading; tone: string }) {
+  const smoothed = useSmoothedValue(reading.available ? reading.percent ?? 0 : 0);
+  const fill = reading.available ? smoothed : 0;
+  return (
+    <article className={`mini-usage provider-tile monitor monitor-${reading.kind}${reading.available ? "" : " monitor-unavailable"}`} style={{ "--tone": tone } as React.CSSProperties}>
+      <span className={`mini-status ${reading.available ? "ok" : "warn"}`} aria-label={reading.available ? "live" : "n/a"} />
+      <span className="mini-mark-btn"><MonitorMark kind={reading.kind} /></span>
+      <span className="mini-provider">{reading.label}</span>
+      <strong className="mini-percent">{reading.available ? reading.displayValue : "N/A"}</strong>
+      <span className="mini-bar" style={{ "--bar-fill": `${fill}%` } as React.CSSProperties} aria-label={`${reading.label} ${reading.displayValue}`}>
+        {buildUsageCells(fill, 8)}
+      </span>
+      <span className="mini-details" aria-hidden="true">
+        <span className="mini-reset">{reading.sub ?? (reading.available ? "live" : "n/a")}</span>
+      </span>
+    </article>
   );
 }
 

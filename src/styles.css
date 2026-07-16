@@ -402,6 +402,15 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 .usage.claude, .provider-tile.claude { --tone: var(--u-claude, var(--claude)); }
 .usage.codex, .provider-tile.codex { --tone: var(--u-codex, var(--codex)); }
 .usage.codex-1, .provider-tile.codex-1 { --tone: var(--u-codex-1, var(--u-codex, var(--codex))); }
+/* System monitor tiles — live hardware readings. Additive and outside the USAGE EFFECT block.
+   --tone is set inline (load color or user override), so the shared .percent/.cell/.mark rules
+   colour these tiles automatically. A short transition softens the discrete cell flips; the
+   continuous glide comes from useSmoothedValue driving the fill each frame. No drop/particle. */
+.provider-tile.monitor .cell { transition: background-color 160ms linear, box-shadow 160ms linear; }
+.provider-tile.monitor.monitor-unavailable { opacity: 0.72; }
+.provider-tile.monitor.monitor-unavailable .percent { color: var(--muted); text-shadow: none; }
+.monitor-note { margin: 8px 2px 2px; font-size: 10.5px; line-height: 1.45; color: var(--muted); }
+.color-hint { font-style: normal; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.5; }
 .usage-top {
   display: flex;
   align-items: center;

@@ -33,6 +33,26 @@ struct WindowPosition {
 struct CurrentWidgetMode(Mutex<String>);
 struct WindowPositionStoreLock(Mutex<()>);
 
+/// Live hardware readings. Purely additive: nothing here touches usage extraction.
+/// The `sysinfo::System` is kept alive so CPU% has two samples to diff between reads.
+/// NVML is optional — if the NVIDIA driver/lib is missing, GPU fields stay `None`.
+struct SystemMonitorState {
+  sys: Mutex<sysinfo::System>,
+  nvml: Option<nvml_wrapper::Nvml>,
+}
+
+#[derive(Clone, Serialize)]
+struct SystemMetrics {
+  ram_percent: f32,
+  ram_used_mb: u64,
+  ram_total_mb: u64,
+  cpu_percent: f32,
+  cpu_temp_c: Option<f32>,
+  gpu_percent: Option<f32>,
+  gpu_temp_c: Option<f32>,
+  gpu_name: Option<String>,
+}
+
 #[tauri::command]
 fn open_provider_window(app: tauri::AppHandle, provider: String, url: String) -> Result<(), String> {
   let label = provider_label(&provider)?;
@@ -591,6 +611,64 @@ async fn discover_provider_api(app: tauri::AppHandle, provider: String, url: Str
   })
 }
 
+/// Read live hardware metrics. Never returns `Err` and never panics: any source that
+/// fails degrades to `None` (or 0) so the widget just shows "N/A" for that tile and the
+/// rest of the app is unaffected. CPU temperature is intentionally `None` in Phase 1.
+#[tauri::command]
+fn read_system_metrics(state: tauri::State<SystemMonitorState>) -> SystemMetrics {
+  let (ram_percent, ram_used_mb, ram_total_mb, cpu_percent) = {
+    match state.sys.lock() {
+      Ok(mut sys) => {
+        sys.refresh_memory();
+        sys.refresh_cpu_usage();
+        let total = sys.total_memory();
+        let used = sys.used_memory();
+        let ram_percent = if total > 0 {
+          (used as f64 / total as f64 * 100.0) as f32
+        } else {
+          0.0
+        };
+        let cpu_percent = sys.global_cpu_usage();
+        (
+          ram_percent,
+          used / (1024 * 1024),
+          total / (1024 * 1024),
+          cpu_percent,
+        )
+      }
+      Err(_) => (0.0, 0, 0, 0.0),
+    }
+  };
+
+  let mut gpu_percent = None;
+  let mut gpu_temp_c = None;
+  let mut gpu_name = None;
+  if let Some(nvml) = state.nvml.as_ref() {
+    if let Ok(device) = nvml.device_by_index(0) {
+      if let Ok(util) = device.utilization_rates() {
+        gpu_percent = Some(util.gpu as f32);
+      }
+      if let Ok(temp) = device.temperature(nvml_wrapper::enum_wrappers::device::TemperatureSensor::Gpu) {
+        gpu_temp_c = Some(temp as f32);
+      }
+      if let Ok(name) = device.name() {
+        gpu_name = Some(name);
+      }
+    }
+  }
+
+  SystemMetrics {
+    ram_percent,
+    ram_used_mb,
+    ram_total_mb,
+    cpu_percent,
+    cpu_temp_c: None,
+    gpu_percent,
+    gpu_temp_c,
+    gpu_name,
+  }
+}
+
 pub fn run() {
   tauri::Builder::default()
     // Single-instance must be registered first: a second launch just focuses the running widget.
@@ -600,6 +678,16 @@ pub fn run() {
     .plugin(tauri_plugin_opener::init())
     .manage(CurrentWidgetMode(Mutex::new("widget".to_string())))
     .manage(WindowPositionStoreLock(Mutex::new(())))
+    .manage({
+      let mut sys = sysinfo::System::new();
+      sys.refresh_memory();
+      sys.refresh_cpu_usage(); // prime a baseline so the first CPU% read isn't 0
+      let nvml = nvml_wrapper::Nvml::init().ok();
+      SystemMonitorState {
+        sys: Mutex::new(sys),
+        nvml,
+      }
+    })
     .setup(|app| {
       setup_tray(app.handle())?;
       Ok(())
@@ -651,7 +739,8 @@ pub fn run() {
       open_in_chrome,
       logout_provider,
       extract_provider,
-      discover_provider_api
+      discover_provider_api,
+      read_system_metrics
     ])
     .run(tauri::generate_context!())
     .expect("error while running UsageView");
