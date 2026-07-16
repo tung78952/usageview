@@ -28,7 +28,7 @@ type UsageSnapshot = {
 // --- System monitors (RAM/CPU/GPU/temperatures) ---------------------------------
 // A fully parallel model to UsageSnapshot: these are live local-hardware readings, not
 // scraped provider usage. Nothing here touches the protected Provider/UsageSnapshot flow.
-type MonitorKind = "cpu" | "ram" | "gpu" | "cputemp" | "gputemp";
+type MonitorKind = "cpu" | "ram" | "gpu" | "igpu" | "cputemp" | "gputemp";
 type MonitorColors = Record<MonitorKind, string | null>;
 
 // Shape returned by the Rust `read_system_metrics` command (snake_case matches serde).
@@ -41,6 +41,8 @@ type SystemMetrics = {
   gpu_percent: number | null;
   gpu_temp_c: number | null;
   gpu_name: string | null;
+  igpu_percent: number | null;
+  igpu_name: string | null;
 };
 
 type MonitorReading = {
@@ -74,6 +76,7 @@ type Settings = {
   showCpu: boolean;
   showRam: boolean;
   showGpu: boolean;
+  showIgpu: boolean;
   showCpuTemp: boolean;
   showGpuTemp: boolean;
   monitorIntervalSec: number;
@@ -126,10 +129,11 @@ const defaultSettings: Settings = {
   showCpu: false,
   showRam: false,
   showGpu: false,
+  showIgpu: false,
   showCpuTemp: false,
   showGpuTemp: false,
   monitorIntervalSec: 2,
-  monitorColors: { cpu: null, ram: null, gpu: null, cputemp: null, gputemp: null },
+  monitorColors: { cpu: null, ram: null, gpu: null, igpu: null, cputemp: null, gputemp: null },
   providerColors: { claude: null, codex: null, "codex-1": null },
   colorScope: { text: true, bar: true, border: true, bgTint: false },
   baseOverrides: {},
@@ -232,10 +236,11 @@ function loadSettings(): Settings {
       showCpu: loaded.showCpu ?? false,
       showRam: loaded.showRam ?? false,
       showGpu: loaded.showGpu ?? false,
+      showIgpu: loaded.showIgpu ?? false,
       showCpuTemp: loaded.showCpuTemp ?? false,
       showGpuTemp: loaded.showGpuTemp ?? false,
       monitorIntervalSec: clampNumber(loaded.monitorIntervalSec, 1, 30, 2),
-      monitorColors: { cpu: null, ram: null, gpu: null, cputemp: null, gputemp: null, ...(loaded.monitorColors ?? {}) },
+      monitorColors: { cpu: null, ram: null, gpu: null, igpu: null, cputemp: null, gputemp: null, ...(loaded.monitorColors ?? {}) },
       providerColors: { claude: null, codex: null, "codex-1": null, ...(loaded.providerColors ?? {}) },
       colorScope: { text: true, bar: true, border: true, bgTint: false, ...(loaded.colorScope ?? {}) },
       baseOverrides: loaded.baseOverrides ?? {},
@@ -1619,7 +1624,7 @@ function WidgetApp() {
 
   const shownMonitors = useMemo(
     () => MONITOR_ORDER.filter((kind) => settings[MONITOR_SHOW_KEY[kind]] as boolean),
-    [settings.showCpu, settings.showRam, settings.showGpu, settings.showCpuTemp, settings.showGpuTemp],
+    [settings.showCpu, settings.showRam, settings.showGpu, settings.showIgpu, settings.showCpuTemp, settings.showGpuTemp],
   );
 
   // Live hardware polling — independent of the 60s usage refresh, and only while at least one
@@ -2884,18 +2889,20 @@ function MiniMarkButton({ provider, onClick, title }: { provider: Provider; onCl
 // Additive UI: reuses the provider-tile shell + buildUsageCells for a consistent look,
 // but deliberately renders NO drop/particle effect (those are for slow monotonic usage).
 // Live values ease between reads via useSmoothedValue; color reflects load (green→red).
-const MONITOR_ORDER: MonitorKind[] = ["cpu", "ram", "gpu", "cputemp", "gputemp"];
+const MONITOR_ORDER: MonitorKind[] = ["cpu", "ram", "gpu", "igpu", "cputemp", "gputemp"];
 const MONITOR_LABELS: Record<MonitorKind, string> = {
   cpu: "CPU",
   ram: "RAM",
   gpu: "GPU",
+  igpu: "iGPU",
   cputemp: "CPU °C",
   gputemp: "GPU °C",
 };
 const MONITOR_FULL_LABELS: Record<MonitorKind, string> = {
   cpu: "CPU usage",
   ram: "RAM usage",
-  gpu: "GPU usage",
+  gpu: "GPU usage (NVIDIA)",
+  igpu: "iGPU usage (Intel)",
   cputemp: "CPU temperature",
   gputemp: "GPU temperature",
 };
@@ -2903,6 +2910,7 @@ const MONITOR_SHOW_KEY: Record<MonitorKind, keyof Settings> = {
   cpu: "showCpu",
   ram: "showRam",
   gpu: "showGpu",
+  igpu: "showIgpu",
   cputemp: "showCpuTemp",
   gputemp: "showGpuTemp",
 };
@@ -2926,6 +2934,7 @@ function emptyReading(kind: MonitorKind): MonitorReading {
 
 function shortGpuName(name: string | null): string | undefined {
   if (!name) return undefined;
+  if (/intel/i.test(name)) return "Intel Iris Xe";
   return name.replace(/^NVIDIA\s+GeForce\s+/i, "").replace(/^NVIDIA\s+/i, "");
 }
 
@@ -2948,6 +2957,11 @@ function buildMonitorReadings(m: SystemMetrics | null): Record<MonitorKind, Moni
         const pct = clampPercent(m.gpu_percent);
         return { kind, label: "GPU", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", sub: shortGpuName(m.gpu_name), available: true };
       }
+      case "igpu": {
+        if (m.igpu_percent == null) return emptyReading(kind);
+        const pct = clampPercent(m.igpu_percent);
+        return { kind, label: "iGPU", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", sub: shortGpuName(m.igpu_name), available: true };
+      }
       case "cputemp": {
         if (m.cpu_temp_c == null) return emptyReading(kind);
         return { kind, label: MONITOR_LABELS.cputemp, percent: clampPercent(m.cpu_temp_c), displayValue: `${Math.round(m.cpu_temp_c)}°C`, unit: "°C", available: true };
@@ -2958,7 +2972,7 @@ function buildMonitorReadings(m: SystemMetrics | null): Record<MonitorKind, Moni
       }
     }
   };
-  return { cpu: make("cpu"), ram: make("ram"), gpu: make("gpu"), cputemp: make("cputemp"), gputemp: make("gputemp") };
+  return { cpu: make("cpu"), ram: make("ram"), gpu: make("gpu"), igpu: make("igpu"), cputemp: make("cputemp"), gputemp: make("gputemp") };
 }
 
 // Load-based accent: low = calm green, mid = amber, high = red. Temps use their own thresholds.
@@ -3029,6 +3043,14 @@ function MonitorMark({ kind }: { kind: MonitorKind }) {
             <rect x="3" y="7" width="18" height="10" rx="1" />
             <circle cx="9" cy="12" r="2.2" />
             <circle cx="15" cy="12" r="2.2" />
+          </>
+        );
+      case "igpu":
+        return (
+          <>
+            <rect x="6" y="6" width="12" height="12" rx="1" />
+            <rect x="9.5" y="9.5" width="5" height="5" rx="0.5" />
+            <path d="M12 3v3M12 18v3M3 12h3M18 12h3" />
           </>
         );
       case "ram":

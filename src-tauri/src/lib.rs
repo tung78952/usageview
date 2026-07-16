@@ -11,6 +11,9 @@ use tauri::{
   Emitter, Listener, Manager, WebviewUrl, WebviewWindowBuilder,
 };
 
+#[cfg(windows)]
+mod gpu_perf;
+
 const PAYLOAD_PREFIX: &str = "__USAGEVIEW__";
 const EXTRACT_EVENT: &str = "usageview-extract-result";
 const TRAY_SHOW_WIDGET: &str = "show_widget";
@@ -39,6 +42,11 @@ struct WindowPositionStoreLock(Mutex<()>);
 struct SystemMonitorState {
   sys: Mutex<sysinfo::System>,
   nvml: Option<nvml_wrapper::Nvml>,
+  // Last good NVIDIA (dGPU) readings. On Optimus laptops the dGPU sleeps when idle and NVML
+  // queries then fail; reusing the last value keeps the tile from flickering to N/A.
+  dgpu_last: Mutex<(Option<f32>, Option<f32>)>, // (percent, temp)
+  #[cfg(windows)]
+  igpu: Mutex<gpu_perf::IgpuMonitor>,
 }
 
 #[derive(Clone, Serialize)]
@@ -51,6 +59,8 @@ struct SystemMetrics {
   gpu_percent: Option<f32>,
   gpu_temp_c: Option<f32>,
   gpu_name: Option<String>,
+  igpu_percent: Option<f32>,
+  igpu_name: Option<String>,
 }
 
 #[tauri::command]
@@ -643,6 +653,7 @@ fn read_system_metrics(state: tauri::State<SystemMonitorState>) -> SystemMetrics
   let mut gpu_percent = None;
   let mut gpu_temp_c = None;
   let mut gpu_name = None;
+  let have_nvidia = state.nvml.is_some();
   if let Some(nvml) = state.nvml.as_ref() {
     if let Ok(device) = nvml.device_by_index(0) {
       if let Ok(util) = device.utilization_rates() {
@@ -656,6 +667,23 @@ fn read_system_metrics(state: tauri::State<SystemMonitorState>) -> SystemMetrics
       }
     }
   }
+  // The NVIDIA dGPU exists but is asleep: NVML failed this tick. Reuse the last good value so the
+  // tile stays "live" at its last reading instead of flashing N/A. On success, record the value.
+  if have_nvidia {
+    if let Ok(mut last) = state.dgpu_last.lock() {
+      match gpu_percent {
+        Some(v) => last.0 = Some(v),
+        None => gpu_percent = last.0,
+      }
+      match gpu_temp_c {
+        Some(v) => last.1 = Some(v),
+        None => gpu_temp_c = last.1,
+      }
+    }
+  }
+
+  // Integrated GPU (Intel) via Windows perf counters — see gpu_perf.rs.
+  let (igpu_percent, igpu_name) = read_igpu(&state);
 
   SystemMetrics {
     ram_percent,
@@ -666,7 +694,22 @@ fn read_system_metrics(state: tauri::State<SystemMonitorState>) -> SystemMetrics
     gpu_percent,
     gpu_temp_c,
     gpu_name,
+    igpu_percent,
+    igpu_name,
   }
+}
+
+#[cfg(windows)]
+fn read_igpu(state: &SystemMonitorState) -> (Option<f32>, Option<String>) {
+  match state.igpu.lock() {
+    Ok(monitor) => monitor.read(),
+    Err(_) => (None, None),
+  }
+}
+
+#[cfg(not(windows))]
+fn read_igpu(_state: &SystemMonitorState) -> (Option<f32>, Option<String>) {
+  (None, None)
 }
 
 pub fn run() {
@@ -686,6 +729,9 @@ pub fn run() {
       SystemMonitorState {
         sys: Mutex::new(sys),
         nvml,
+        dgpu_last: Mutex::new((None, None)),
+        #[cfg(windows)]
+        igpu: Mutex::new(gpu_perf::IgpuMonitor::init()),
       }
     })
     .setup(|app| {

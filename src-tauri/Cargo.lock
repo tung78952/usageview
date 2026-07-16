@@ -4148,6 +4148,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
  "url",
+ "windows 0.61.3",
 ]
 
 [[package]]
