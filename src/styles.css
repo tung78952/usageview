@@ -120,6 +120,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 .feature-switch-end.off { left: 6px; }
 .feature-switch-end.on { right: 6px; }
 .feature-mode-switch.is-on .feature-switch-knob { transform: translateX(28px); }
+.feature-switch-end,
 .feature-switch-knob { font: 800 8px/1 var(--font-mono); letter-spacing: -0.03em; }
 
 /* ── Custom themed dropdown (Zoom picker) ── */
