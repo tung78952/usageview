@@ -84,6 +84,7 @@ type Settings = {
   uiScale: number;
   alwaysOnTop: boolean;
   refreshIntervalSec: number;
+  aiUsageEnabled: boolean;
   effectsEnabled: boolean;
   effectDropCell: boolean;
   corner: "top-left" | "top-right" | "bottom-left" | "bottom-right";
@@ -172,6 +173,7 @@ const defaultSettings: Settings = {
   uiScale: 1,
   alwaysOnTop: true,
   refreshIntervalSec: 60,
+  aiUsageEnabled: true,
   effectsEnabled: true,
   effectDropCell: true,
   corner: "top-right",
@@ -295,6 +297,7 @@ function loadSettings(): Settings {
       ...loaded,
       uiScale: clampNumber(loaded.uiScale, 0.25, 2, 1),
       theme: normalizeTheme(loaded.theme),
+      aiUsageEnabled: typeof parsed.aiUsageEnabled === "boolean" ? parsed.aiUsageEnabled : [loaded.showClaude, loaded.showCodex, loaded.showCodex1].some(Boolean),
       effectsEnabled: loaded.effectsEnabled ?? true,
       effectDropCell: loaded.effectDropCell ?? true,
       showClaude: loaded.showClaude ?? true,
@@ -685,6 +688,13 @@ function providerUrl(provider: Provider, settings: Settings): string {
   if (provider === "claude") return settings.claudeUrl;
   if (provider === "codex-1") return settings.codex1Url;
   return settings.codexUrl;
+}
+
+function providerEnabled(provider: Provider, settings: Settings): boolean {
+  if (!settings.aiUsageEnabled) return false;
+  if (provider === "claude") return settings.showClaude;
+  if (provider === "codex-1") return settings.showCodex1;
+  return settings.showCodex;
 }
 
 function resetCountdownLabel(snapshot: UsageSnapshot): string | undefined {
@@ -1234,8 +1244,8 @@ function SettingsWindowApp() {
               discovery={discovery[provider]}
               onExtract={() => void refresh(provider)}
               onUrlChange={(url) => handleChange({ ...settings, [urlKey]: url })}
-              shownInWidget={settings[showKey] as boolean}
-              onToggleShown={() => handleChange({ ...settings, [showKey]: !(settings[showKey] as boolean) })}
+              shownInWidget={settings.aiUsageEnabled && (settings[showKey] as boolean)}
+              onToggleShown={() => handleChange({ ...settings, aiUsageEnabled: true, [showKey]: settings.aiUsageEnabled ? !(settings[showKey] as boolean) : true })}
             />
           ))}
         </section>
@@ -1630,6 +1640,21 @@ function WidgetApp() {
   }, [settings.effectsEnabled]);
 
   useEffect(() => {
+    if (settings.aiUsageEnabled) return;
+    for (const timer of Object.values(flashTimersRef.current)) {
+      if (timer !== undefined) window.clearTimeout(timer);
+    }
+    for (const timer of Object.values(effectTimersRef.current)) {
+      if (timer !== undefined) window.clearTimeout(timer);
+    }
+    flashTimersRef.current = {};
+    effectTimersRef.current = {};
+    setFlashSet(new Set());
+    setActiveEffects({});
+    void invoke("suspend_provider_windows").catch(() => undefined);
+  }, [settings.aiUsageEnabled]);
+
+  useEffect(() => {
     const effectPayloads: Partial<Record<Provider, UsageEffect>> = {};
     for (const provider of ["claude", "codex", "codex-1"] as Provider[]) {
       const percent = snapshotPercent(snapshotsRef.current[provider]);
@@ -1678,7 +1703,7 @@ function WidgetApp() {
     async function refreshOpenProviders(force = false) {
       const now = Date.now();
       const currentSnapshots = snapshotsRef.current;
-      const providers: Provider[] = (["claude", "codex", "codex-1"] as Provider[]).filter((provider) =>
+      const providers: Provider[] = (["claude", "codex", "codex-1"] as Provider[]).filter((provider) => providerEnabled(provider, settings)).filter((provider) =>
         force || shouldAutoRefreshProvider(provider, currentSnapshots[provider], now, lastLimitedAutoRefreshRef.current)
       );
       if (!providers.length) return;
@@ -1706,13 +1731,11 @@ function WidgetApp() {
       window.clearTimeout(initial);
       window.clearInterval(interval);
     };
-  }, [settings.refreshIntervalSec, settings.claudeUrl, settings.codexUrl, settings.codex1Url]);
+  }, [settings.aiUsageEnabled, settings.showClaude, settings.showCodex, settings.showCodex1, settings.refreshIntervalSec, settings.claudeUrl, settings.codexUrl, settings.codex1Url]);
 
   const shown = useMemo(() => {
-    return (["claude", "codex", "codex-1"] as Provider[]).filter((provider) =>
-      provider === "claude" ? settings.showClaude : provider === "codex-1" ? settings.showCodex1 : settings.showCodex
-    );
-  }, [settings.showClaude, settings.showCodex, settings.showCodex1]);
+    return (["claude", "codex", "codex-1"] as Provider[]).filter((provider) => providerEnabled(provider, settings));
+  }, [settings.aiUsageEnabled, settings.showClaude, settings.showCodex, settings.showCodex1]);
 
   const shownMonitors = useMemo(
     () => settings.systemMonitorsEnabled ? MONITOR_ORDER.filter((kind) => settings[MONITOR_SHOW_KEY[kind]] as boolean) : [],
@@ -1869,9 +1892,11 @@ async function refresh(provider: Provider, requestNonce: string) {
   }, [settings]);
 
   async function refreshAll() {
-    setBusy("claude");
+    const providers = (["claude", "codex", "codex-1"] as Provider[]).filter((provider) => providerEnabled(provider, settings));
+    if (!providers.length) return;
+    setBusy(providers[0]);
     const results = await Promise.all(
-      (["claude", "codex", "codex-1"] as Provider[]).map((provider) => guardedRefresh(provider, providerUrl(provider, settings), false)),
+      providers.map((provider) => guardedRefresh(provider, providerUrl(provider, settings), false)),
     );
     results.forEach((snapshot) => triggerManualReplay(snapshot.provider, snapshot));
     setSnapshots((currentSnapshots) => results.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), currentSnapshots));
@@ -1960,7 +1985,7 @@ async function refresh(provider: Provider, requestNonce: string) {
           <span>updated {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
         </div>
         <div className="header-actions">
-          <button className={`window-control refresh${busy !== null ? " spinning" : ""}`} type="button" title="Refresh now" aria-label="Refresh now" onClick={() => void refreshAll()} disabled={busy !== null}><RefreshIcon /></button>
+          <button className={`window-control refresh${busy !== null ? " spinning" : ""}`} type="button" title="Refresh now" aria-label="Refresh now" onClick={() => void refreshAll()} disabled={busy !== null || !shown.length}><RefreshIcon /></button>
           <button className="window-control gear" type="button" title="Settings" aria-label="Settings" onClick={() => void invoke("toggle_settings_window")}><GearIcon /></button>
           <button className="window-control mini" type="button" title="Mini mode" aria-label="Mini mode" onClick={() => setMode("mini")}><MiniIcon /></button>
           <WindowControls pinned={settings.alwaysOnTop} onTogglePin={togglePinned} onClose={() => void closeWindow()} />
@@ -2657,6 +2682,11 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
   const [testTo, setTestTo] = useState(37);
   const [driveBar, setDriveBar] = useState(false);
   const testable = settings.effectsEnabled;
+  const aiProviderToggles: [Provider, string, keyof Settings][] = [
+    ["claude", "Claude usage", "showClaude"],
+    ["codex", "Codex 1 usage", "showCodex"],
+    ["codex-1", "Codex 2 usage", "showCodex1"],
+  ];
   const presets: [string, number, number][] = [["36→37", 36, 37], ["80→81", 80, 81], ["0→63", 0, 63], ["99→100", 99, 100], ["0→100", 0, 100]];
 
   function play(from: number, to: number) {
@@ -2749,20 +2779,6 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
             onChange={(value) => patch({ uiScale: value })}
           />
         </div>
-        <div className="seg-field">
-          <span className="seg-label">Refresh (all AIs)</span>
-          <div className="num-field">
-            <input
-              type="number"
-              min="10"
-              value={secondsDraft}
-              onChange={(event) => setSecondsDraft(event.target.value)}
-              onBlur={commitSeconds}
-              onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commitSeconds(); } }}
-            />
-            <span className="num-unit">sec</span>
-          </div>
-        </div>
       </div>
       <div className="settings-row">
         <div className="seg-field">
@@ -2785,6 +2801,37 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
           </div>
         </div>
       )}
+      <div className="effect-settings ai-usage-settings">
+        <FeatureSwitch label="AI usage" checked={settings.aiUsageEnabled} onChange={(aiUsageEnabled) => patch({ aiUsageEnabled })} />
+        {settings.aiUsageEnabled && <div className="feature-settings-body">
+          {aiProviderToggles.map(([provider, label, showKey]) => (
+            <label className="toggle-row" key={provider}>
+              <span>{label}</span>
+              <input
+                className="switch-control"
+                type="checkbox"
+                role="switch"
+                checked={settings[showKey] as boolean}
+                onChange={(event) => patch({ [showKey]: event.target.checked } as Partial<Settings>)}
+              />
+            </label>
+          ))}
+          <div className="seg-field ai-refresh-field">
+            <span className="seg-label">Refresh (enabled AIs)</span>
+            <div className="num-field">
+              <input
+                type="number"
+                min="10"
+                value={secondsDraft}
+                onChange={(event) => setSecondsDraft(event.target.value)}
+                onBlur={commitSeconds}
+                onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commitSeconds(); } }}
+              />
+              <span className="num-unit">sec</span>
+            </div>
+          </div>
+        </div>}
+      </div>
       <div className="effect-settings">
         <FeatureSwitch label="Usage effect" checked={settings.effectsEnabled} onChange={(effectsEnabled) => patch({ effectsEnabled })} />
         {settings.effectsEnabled && <div className="feature-settings-body">

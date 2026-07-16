@@ -138,6 +138,16 @@ fn close_provider_window(app: tauri::AppHandle, provider: String) -> Result<(), 
 }
 
 #[tauri::command]
+fn suspend_provider_windows(app: tauri::AppHandle) -> Result<(), String> {
+  for label in ["provider_claude", "provider_codex", "provider_codex_1"] {
+    if let Some(window) = app.get_webview_window(label) {
+      window.destroy().map_err(|error| error.to_string())?;
+    }
+  }
+  Ok(())
+}
+
+#[tauri::command]
 fn refresh_provider_page(app: tauri::AppHandle, provider: String, url: String, background: bool) -> Result<(), String> {
   let label = provider_label(&provider)?;
   let window = app.get_webview_window(&label).ok_or_else(|| format!("{} WebView is not open", provider))?;
@@ -1042,6 +1052,7 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       open_provider_window,
       close_provider_window,
+      suspend_provider_windows,
       refresh_provider_page,
       open_widget_window,
       load_window_geometry,
@@ -1097,15 +1108,20 @@ fn get_or_create_provider_window(app: &tauri::AppHandle, label: &str) -> Result<
     .join("profiles")
     .join(label);
   let title = label.strip_prefix("provider_").unwrap_or(label).replace('_', " ");
-  WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
+  let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
     .title(format!("{} \u{2014} UsageView", title))
     .inner_size(980.0, 760.0)
     .min_inner_size(720.0, 520.0)
     .resizable(false)
     .zoom_hotkeys_enabled(false)
     .center()
-    .visible(false)
-    .data_directory(data_dir)
+    .visible(false);
+  let builder = if label == "provider_claude" || label == "provider_codex" {
+    builder
+  } else {
+    builder.data_directory(data_dir)
+  };
+  builder
     .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows")
     .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
     .build()
