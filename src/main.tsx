@@ -85,9 +85,6 @@ type Settings = {
   alwaysOnTop: boolean;
   refreshIntervalSec: number;
   effectsEnabled: boolean;
-  effectDurationMs: number;
-  effectBarBrightness: number;
-  effectDeltaBrightness: number;
   effectDropCell: boolean;
   corner: "top-left" | "top-right" | "bottom-left" | "bottom-right";
   showClaude: boolean;
@@ -114,6 +111,9 @@ type ColorScope = { text: boolean; bar: boolean; border: boolean; bgTint: boolea
 type BaseOverride = { preset?: string; bg?: string; surface?: string; text?: string };
 
 const DEFAULT_MONITOR_PALETTE: MonitorPalette = { low: "#4faa62", medium: "#e0913d", high: "#e5484d" };
+const EFFECT_DURATION_MS = 4000;
+const EFFECT_IMPACT_BRIGHTNESS = 1.25;
+const EFFECT_DELTA_BRIGHTNESS = 2;
 
 function makeDefaultMonitorColors(): MonitorColors {
   return {
@@ -173,9 +173,6 @@ const defaultSettings: Settings = {
   alwaysOnTop: true,
   refreshIntervalSec: 60,
   effectsEnabled: true,
-  effectDurationMs: 4000,
-  effectBarBrightness: 1.25,
-  effectDeltaBrightness: 2,
   effectDropCell: true,
   corner: "top-right",
   showClaude: true,
@@ -284,17 +281,21 @@ const emptySnapshot = (provider: Provider): UsageSnapshot => ({
 function loadSettings(): Settings {
   try {
     const saved = localStorage.getItem("usageview.settings");
-    const parsed = saved ? JSON.parse(saved) : {};
+    const parsedValue = saved ? JSON.parse(saved) : {};
+    const parsed = (parsedValue && typeof parsedValue === "object" && !Array.isArray(parsedValue) ? { ...parsedValue } : {}) as Record<string, unknown>;
+    const legacyEffectKeys = ["effectDurationMs", "effectBarBrightness", "effectDeltaBrightness"];
+    const hadLegacyEffectTuning = legacyEffectKeys.some((key) => Object.prototype.hasOwnProperty.call(parsed, key));
+    for (const key of legacyEffectKeys) delete parsed[key];
+    if (hadLegacyEffectTuning) localStorage.setItem("usageview.settings", JSON.stringify(parsed));
     const loaded = { ...defaultSettings, ...parsed };
+    const savedProviderColors = (parsed.providerColors ?? {}) as Partial<ProviderColors>;
+    const savedColorScope = (parsed.colorScope ?? {}) as Partial<ColorScope>;
     const hadShownMonitor = [loaded.showCpu, loaded.showRam, loaded.showGpu, loaded.showIgpu, loaded.showCpuTemp, loaded.showGpuTemp].some(Boolean);
     return {
       ...loaded,
       uiScale: clampNumber(loaded.uiScale, 0.25, 2, 1),
       theme: normalizeTheme(loaded.theme),
       effectsEnabled: loaded.effectsEnabled ?? true,
-      effectDurationMs: clampNumber(loaded.effectDurationMs, 800, 8000, 4000),
-      effectBarBrightness: clampNumber(loaded.effectBarBrightness, 0.45, 1.8, 1.25),
-      effectDeltaBrightness: clampNumber(loaded.effectDeltaBrightness, 0.45, 2.2, 2),
       effectDropCell: loaded.effectDropCell ?? true,
       showClaude: loaded.showClaude ?? true,
       showCodex: loaded.showCodex ?? true,
@@ -309,8 +310,8 @@ function loadSettings(): Settings {
       monitorIntervalSec: clampNumber(loaded.monitorIntervalSec, 1, 10, 2),
       colorsEnabled: loaded.colorsEnabled ?? true,
       monitorColors: normalizeMonitorColors(loaded.monitorColors),
-      providerColors: { claude: null, codex: null, "codex-1": null, ...(loaded.providerColors ?? {}) },
-      colorScope: { text: true, bar: true, border: true, bgTint: false, ...(loaded.colorScope ?? {}) },
+      providerColors: { claude: null, codex: null, "codex-1": null, ...savedProviderColors },
+      colorScope: { text: true, bar: true, border: true, bgTint: false, ...savedColorScope },
       baseOverrides: loaded.baseOverrides ?? {},
     };
   } catch {
@@ -386,14 +387,14 @@ function resolveBaseTokens(theme: ThemeKey, base: BaseOverride | undefined) {
 }
 
 function panelStyle(settings: Settings): React.CSSProperties {
-  const impactDurationMs = Math.min(900, settings.effectDurationMs * 0.46);
+  const impactDurationMs = Math.min(900, EFFECT_DURATION_MS * 0.46);
   const style: Record<string, string | number> = {
     "--panel-opacity-pct": `${Math.round(settings.opacity * 100)}%`,
-    "--effect-duration": `${settings.effectDurationMs}ms`,
+    "--effect-duration": `${EFFECT_DURATION_MS}ms`,
     "--effect-impact-duration": `${impactDurationMs}ms`,
     "--effect-impact-delay": `${impactDurationMs * 0.58}ms`,
-    "--effect-bar-brightness": settings.effectBarBrightness,
-    "--effect-delta-brightness": settings.effectDeltaBrightness,
+    "--effect-bar-brightness": EFFECT_IMPACT_BRIGHTNESS,
+    "--effect-delta-brightness": EFFECT_DELTA_BRIGHTNESS,
   };
   if (settings.colorsEnabled) {
     const pc = settings.providerColors;
@@ -1319,7 +1320,7 @@ function WidgetApp() {
     }
 
     setActiveEffects((prev) => ({ ...prev, ...effectPayloads }));
-    const duration = clampNumber(settingsRef.current.effectDurationMs, 800, 8000, 4000) + 900;
+    const duration = EFFECT_DURATION_MS + 900;
     for (const provider of effectProviders) {
       effectTimersRef.current[provider] = window.setTimeout(() => {
         setActiveEffects((prev) => {
@@ -2779,30 +2780,6 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
       <div className="effect-settings">
         <FeatureSwitch label="Usage effect" checked={settings.effectsEnabled} onChange={(effectsEnabled) => patch({ effectsEnabled })} />
         {settings.effectsEnabled && <div className="feature-settings-body">
-        <label>Effect duration <span>{(settings.effectDurationMs / 1000).toFixed(1)}s</span><input
-          type="range"
-          min="800"
-          max="8000"
-          step="100"
-          value={settings.effectDurationMs}
-          onChange={(event) => patch({ effectDurationMs: Number(event.target.value) })}
-        /></label>
-        <label>Impact brightness <span>{settings.effectBarBrightness.toFixed(2)}x</span><input
-          type="range"
-          min="0.45"
-          max="1.8"
-          step="0.05"
-          value={settings.effectBarBrightness}
-          onChange={(event) => patch({ effectBarBrightness: Number(event.target.value) })}
-        /></label>
-        <label>Delta brightness <span>{settings.effectDeltaBrightness.toFixed(2)}x</span><input
-          type="range"
-          min="0.45"
-          max="2.2"
-          step="0.05"
-          value={settings.effectDeltaBrightness}
-          onChange={(event) => patch({ effectDeltaBrightness: Number(event.target.value) })}
-        /></label>
         <label className="toggle-row">
           <span>Drop cell effect</span>
           <input className="switch-control" type="checkbox" role="switch" checked={settings.effectDropCell} onChange={(event) => patch({ effectDropCell: event.target.checked })} />
