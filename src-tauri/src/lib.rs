@@ -59,6 +59,8 @@ struct SystemMetrics {
   swap_total_mb: u64,
   cpu_percent: f32,
   cpu_temp_c: Option<f32>,
+  cpu_temp_cores: Vec<f32>,
+  cpu_fan_rpm: Option<u32>,
   cpu_name: String,
   cpu_physical_cores: Option<u32>,
   cpu_logical_cores: u32,
@@ -71,8 +73,41 @@ struct SystemMetrics {
   gpu_power_w: Option<f32>,
   gpu_clock_mhz: Option<u32>,
   gpu_fan_percent: Option<u32>,
+  gpu_fan_rpm: Option<u32>,
   igpu_percent: Option<f32>,
   igpu_name: Option<String>,
+}
+
+/// Sensor readings written by the elevated `uvsensord` sidecar (LibreHardwareMonitor) to
+/// `%LOCALAPPDATA%\UsageView\sensors.json`. Absent/stale file → all None (tile shows N/A).
+#[derive(Deserialize)]
+struct SidecarSensors {
+  ts: i64,
+  cpu_temp_c: Option<f32>,
+  #[serde(default)]
+  cpu_temp_cores: Vec<f32>,
+  cpu_fan_rpm: Option<f32>,
+  gpu_fan_rpm: Option<f32>,
+}
+
+fn sidecar_json_path() -> Option<PathBuf> {
+  let base = std::env::var_os("LOCALAPPDATA")?;
+  Some(PathBuf::from(base).join("UsageView").join("sensors.json"))
+}
+
+/// Read the sidecar sensor file if it exists and is fresh (written within the last ~8s).
+fn read_sidecar_sensors() -> Option<SidecarSensors> {
+  let path = sidecar_json_path()?;
+  let text = fs::read_to_string(&path).ok()?;
+  let data: SidecarSensors = serde_json::from_str(&text).ok()?;
+  let now = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .map(|d| d.as_secs() as i64)
+    .unwrap_or(0);
+  if now.saturating_sub(data.ts) > 8 {
+    return None; // stale — the sidecar isn't running
+  }
+  Some(data)
 }
 
 #[tauri::command]
@@ -727,6 +762,18 @@ fn read_system_metrics(state: tauri::State<SystemMonitorState>) -> SystemMetrics
   // Integrated GPU (Intel) via Windows perf counters — see gpu_perf.rs.
   let (igpu_percent, igpu_name) = read_igpu(&state);
 
+  // CPU temperature + fan RPM from the optional elevated sidecar (Phase 2). Absent → None → N/A.
+  let mut cpu_temp_c = None;
+  let mut cpu_temp_cores = Vec::new();
+  let mut cpu_fan_rpm = None;
+  let mut gpu_fan_rpm = None;
+  if let Some(sensors) = read_sidecar_sensors() {
+    cpu_temp_c = sensors.cpu_temp_c;
+    cpu_temp_cores = sensors.cpu_temp_cores;
+    cpu_fan_rpm = sensors.cpu_fan_rpm.map(|v| v.round() as u32);
+    gpu_fan_rpm = sensors.gpu_fan_rpm.map(|v| v.round() as u32);
+  }
+
   SystemMetrics {
     ram_percent,
     ram_used_mb,
@@ -735,7 +782,9 @@ fn read_system_metrics(state: tauri::State<SystemMonitorState>) -> SystemMetrics
     swap_used_mb,
     swap_total_mb,
     cpu_percent,
-    cpu_temp_c: None,
+    cpu_temp_c,
+    cpu_temp_cores,
+    cpu_fan_rpm,
     cpu_name,
     cpu_physical_cores,
     cpu_logical_cores,
@@ -748,6 +797,7 @@ fn read_system_metrics(state: tauri::State<SystemMonitorState>) -> SystemMetrics
     gpu_power_w,
     gpu_clock_mhz,
     gpu_fan_percent,
+    gpu_fan_rpm,
     igpu_percent,
     igpu_name,
   }
@@ -764,6 +814,88 @@ fn read_igpu(state: &SystemMonitorState) -> (Option<f32>, Option<String>) {
 #[cfg(not(windows))]
 fn read_igpu(_state: &SystemMonitorState) -> (Option<f32>, Option<String>) {
   (None, None)
+}
+
+const SENSOR_TASK_NAME: &str = "UsageViewSensors";
+
+/// Run a PowerShell script elevated (one UAC prompt). The script is written to a temp `.ps1` and
+/// launched via `Start-Process -Verb RunAs`. Err if the launcher fails / UAC is declined.
+fn run_elevated_ps(script: &str) -> Result<(), String> {
+  let mut path = std::env::temp_dir();
+  path.push(format!("usageview_sensors_{}.ps1", std::process::id()));
+  fs::write(&path, script).map_err(|e| e.to_string())?;
+  let launcher = format!(
+    "Start-Process -Verb RunAs -WindowStyle Hidden -Wait -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',\"{}\"",
+    path.to_string_lossy()
+  );
+  let status = std::process::Command::new("powershell")
+    .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &launcher])
+    .status()
+    .map_err(|e| e.to_string())?;
+  let _ = fs::remove_file(&path);
+  if status.success() {
+    Ok(())
+  } else {
+    Err("Elevation was cancelled.".to_string())
+  }
+}
+
+/// Install the elevated sensor helper as a scheduled task that runs at logon with highest
+/// privileges (one UAC), then start it now. Enables CPU temperature (+ fan where available).
+#[tauri::command]
+fn install_sensor_service(app: tauri::AppHandle) -> Result<(), String> {
+  let exe = app
+    .path()
+    .resolve("resources/sensors/uvsensord.exe", tauri::path::BaseDirectory::Resource)
+    .map_err(|error| format!("Cannot locate sensor helper: {error}"))?;
+  let exe_str = exe.to_string_lossy().replace('\'', "''"); // escape for a PS single-quoted string
+  let script = format!(
+    "$exe = '{exe}'\n\
+     $action = New-ScheduledTaskAction -Execute $exe\n\
+     $trigger = New-ScheduledTaskTrigger -AtLogOn\n\
+     $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name\n\
+     $principal = New-ScheduledTaskPrincipal -UserId $me -LogonType Interactive -RunLevel Highest\n\
+     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)\n\
+     Register-ScheduledTask -TaskName '{task}' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null\n\
+     Start-ScheduledTask -TaskName '{task}'\n",
+    exe = exe_str,
+    task = SENSOR_TASK_NAME
+  );
+  run_elevated_ps(&script)
+}
+
+/// Remove the sensor scheduled task and stop the helper (one UAC).
+#[tauri::command]
+fn uninstall_sensor_service() -> Result<(), String> {
+  let script = format!(
+    "Stop-ScheduledTask -TaskName '{task}' -ErrorAction SilentlyContinue\n\
+     Unregister-ScheduledTask -TaskName '{task}' -Confirm:$false -ErrorAction SilentlyContinue\n\
+     Get-Process -Name uvsensord -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue\n",
+    task = SENSOR_TASK_NAME
+  );
+  run_elevated_ps(&script)
+}
+
+fn sensor_task_exists() -> bool {
+  std::process::Command::new("schtasks")
+    .args(["/query", "/tn", SENSOR_TASK_NAME])
+    .stdout(std::process::Stdio::null())
+    .stderr(std::process::Stdio::null())
+    .status()
+    .map(|s| s.success())
+    .unwrap_or(false)
+}
+
+/// "running" = fresh sensor data; "installed" = task exists but no fresh data yet; "missing" = not set up.
+#[tauri::command]
+fn sensor_service_status() -> String {
+  if read_sidecar_sensors().is_some() {
+    "running".to_string()
+  } else if sensor_task_exists() {
+    "installed".to_string()
+  } else {
+    "missing".to_string()
+  }
 }
 
 pub fn run() {
@@ -840,7 +972,10 @@ pub fn run() {
       logout_provider,
       extract_provider,
       discover_provider_api,
-      read_system_metrics
+      read_system_metrics,
+      install_sensor_service,
+      uninstall_sensor_service,
+      sensor_service_status
     ])
     .run(tauri::generate_context!())
     .expect("error while running UsageView");

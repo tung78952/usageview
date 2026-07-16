@@ -41,6 +41,8 @@ type SystemMetrics = {
   swap_total_mb: number;
   cpu_percent: number;
   cpu_temp_c: number | null;
+  cpu_temp_cores: number[];
+  cpu_fan_rpm: number | null;
   cpu_name: string;
   cpu_physical_cores: number | null;
   cpu_logical_cores: number;
@@ -53,6 +55,7 @@ type SystemMetrics = {
   gpu_power_w: number | null;
   gpu_clock_mhz: number | null;
   gpu_fan_percent: number | null;
+  gpu_fan_rpm: number | null;
   igpu_percent: number | null;
   igpu_name: string | null;
 };
@@ -2402,6 +2405,66 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
   );
 }
 
+// Phase 2: install/remove the elevated LibreHardwareMonitor sidecar that supplies CPU temperature.
+function SensorServiceSettings() {
+  const [status, setStatus] = useState<string>("checking");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try { setStatus(await invoke<string>("sensor_service_status")); } catch { setStatus("missing"); }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    const id = window.setInterval(refresh, 3000);
+    return () => window.clearInterval(id);
+  }, [refresh]);
+
+  async function run(command: "install_sensor_service" | "uninstall_sensor_service") {
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke(command);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+      await refresh();
+    }
+  }
+
+  const running = status === "running";
+  const installed = running || status === "installed";
+  const label = running ? "running" : installed ? "installed" : status === "checking" ? "…" : "not installed";
+
+  return (
+    <div className="sensor-service">
+      <div className="sensor-service-head">
+        <span>CPU temperature source</span>
+        <strong className={running ? "ok" : installed ? "warn" : ""}>{label}</strong>
+      </div>
+      <p className="monitor-note">
+        Reads CPU temperature via a bundled LibreHardwareMonitor helper that runs at logon with admin
+        (one UAC prompt). Some antivirus may warn about its low-level driver. Fan RPM appears only if your
+        hardware exposes it (many laptops don't).
+      </p>
+      <div className="sensor-service-actions">
+        {!installed ? (
+          <button type="button" className="primary" disabled={busy} onClick={() => void run("install_sensor_service")}>
+            {busy ? "Working…" : "Install (needs admin)"}
+          </button>
+        ) : (
+          <button type="button" disabled={busy} onClick={() => void run("uninstall_sensor_service")}>
+            {busy ? "Working…" : "Remove"}
+          </button>
+        )}
+      </div>
+      {error && <p className="settings-warn">{error}</p>}
+    </div>
+  );
+}
+
 function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRestore, onResetWindow, providerPercents }: {
   settings: Settings;
   savedAt: Date | null;
@@ -2646,8 +2709,9 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
           value={settings.monitorIntervalSec}
           onChange={(event) => patch({ monitorIntervalSec: Number(event.target.value) })}
         /></label>
+        <SensorServiceSettings />
         {settings.showCpuTemp && (
-          <p className="monitor-note">CPU temperature needs elevated hardware access on Windows — the tile shows N/A until that source is added.</p>
+          <p className="monitor-note">Enable the CPU temperature source below to fill the CPU °C tile.</p>
         )}
       </details>
       <ColorsSection settings={settings} patch={patch} />
@@ -2968,6 +3032,9 @@ function gb(mb: number): string {
 function optNum(value: number | null, suffix: string): string {
   return value == null ? NA : `${Math.round(value)}${suffix}`;
 }
+function rpm(value: number | null): string {
+  return value == null || value <= 0 ? NA : `${Math.round(value)} RPM`;
+}
 // Drop rows whose value isn't available yet, so the details panel never shows bare "—" dashes.
 function keepAvailable(details: MonitorDetail[]): MonitorDetail[] {
   return details.filter((d) => d.value !== NA);
@@ -3027,20 +3094,21 @@ function buildMonitorReadings(m: SystemMetrics | null): Record<MonitorKind, Moni
       }
       case "cputemp": {
         if (m.cpu_temp_c == null) return emptyReading(kind);
+        const hottest = m.cpu_temp_cores.length > 0 ? Math.max(...m.cpu_temp_cores) : null;
         const details: MonitorDetail[] = [
-          { label: "Sensor", value: "CPU package" },
-          { label: "Temp", value: `${Math.round(m.cpu_temp_c)}°C` },
+          { label: "Package", value: `${Math.round(m.cpu_temp_c)}°C` },
+          { label: "Hottest core", value: hottest == null ? NA : `${Math.round(hottest)}°C` },
+          { label: "Fan", value: rpm(m.cpu_fan_rpm) },
         ];
-        return { kind, label: MONITOR_LABELS.cputemp, percent: clampPercent(m.cpu_temp_c), displayValue: `${Math.round(m.cpu_temp_c)}°C`, unit: "°C", details: keepAvailable(details), available: true };
+        return { kind, label: MONITOR_LABELS.cputemp, percent: clampPercent(m.cpu_temp_c), displayValue: `${Math.round(m.cpu_temp_c)}°C`, unit: "°C", sub: "CPU package", details: keepAvailable(details), available: true };
       }
       case "gputemp": {
         if (m.gpu_temp_c == null) return emptyReading(kind);
         const name = shortGpuName(m.gpu_name);
-        // Fan lives here (temperature tile); NVIDIA can't read laptop fan RPM yet (EC-controlled) → hidden until Phase 2.
         const details: MonitorDetail[] = [
           { label: "Sensor", value: name ?? "GPU" },
           { label: "Temp", value: `${Math.round(m.gpu_temp_c)}°C` },
-          { label: "Fan", value: optNum(m.gpu_fan_percent, "%") },
+          { label: "Fan", value: rpm(m.gpu_fan_rpm) },
         ];
         return { kind, label: MONITOR_LABELS.gputemp, percent: clampPercent(m.gpu_temp_c), displayValue: `${Math.round(m.gpu_temp_c)}°C`, unit: "°C", sub: name, details: keepAvailable(details), available: true };
       }

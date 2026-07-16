@@ -410,6 +410,12 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 .provider-tile.monitor.monitor-unavailable { opacity: 0.72; }
 .provider-tile.monitor.monitor-unavailable .percent { color: var(--muted); text-shadow: none; }
 .monitor-note { margin: 8px 2px 2px; font-size: 10.5px; line-height: 1.45; color: var(--muted); }
+.sensor-service { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+.sensor-service-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font: 750 11px/1 var(--font-mono); letter-spacing: 0.04em; text-transform: uppercase; }
+.sensor-service-head > strong { font-size: 10px; }
+.sensor-service-head > strong.ok { color: var(--tone, #4faa62); }
+.sensor-service-head > strong.warn { color: var(--warn); }
+.sensor-service-actions { margin-top: 8px; }
 .color-hint { font-style: normal; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.5; }
 .provider-tile.monitor.flippable { cursor: pointer; }
 /* Flipped "details" face of a monitor tile: label/value rows in place of the metric + bar. */
