@@ -1168,10 +1168,35 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 
 /* ── Colors panel (Settings) ─────────────────────────────────────────── */
 .color-row { display: grid; gap: 7px; margin: 11px 0; }
-.monitor-palette { display: grid; gap: 8px; }
-.monitor-palette-level { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 7px; align-items: center; }
-.monitor-palette-label { color: var(--muted); font: 700 10px/1 var(--font-mono); letter-spacing: 0.04em; text-transform: uppercase; }
-.monitor-palette-level > .color-picker { grid-column: 1 / -1; }
+.color-target-group { display: grid; gap: 8px; margin: 12px 0; }
+.color-group-label { color: var(--muted); font: 800 10px/1 var(--font-mono); letter-spacing: 0.12em; text-transform: uppercase; }
+.color-target-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.color-target {
+  display: grid; grid-template-columns: 23px minmax(0, 1fr) auto; align-items: center; gap: 8px;
+  width: 100%; min-width: 0; min-height: 40px; padding: 6px 8px; text-align: left;
+  border: 1px solid var(--border); border-radius: 7px; background: color-mix(in oklch, var(--surface-2) 58%, transparent);
+  color: var(--fg); font: 800 11px/1 var(--font-mono); letter-spacing: 0.04em; text-transform: uppercase;
+}
+.color-target .mark { width: 22px; height: 22px; }
+.color-target .mark svg { width: 15px; height: 15px; }
+.color-target-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.color-target-preview { display: inline-flex; align-items: center; gap: 3px; }
+.color-target-preview i { width: 9px; height: 9px; border-radius: 999px; border: 1px solid color-mix(in srgb, #000 24%, transparent); }
+.color-target.is-selected { border-color: color-mix(in oklch, var(--tone) 72%, var(--fg)); background: color-mix(in oklch, var(--tone) 13%, var(--surface-2)); box-shadow: 0 0 0 1px color-mix(in oklch, var(--tone) 28%, transparent); }
+.color-target:hover { transform: none; box-shadow: 0 0 0 1px color-mix(in oklch, var(--tone) 32%, transparent); }
+.color-editor { display: grid; gap: 10px; margin: 12px 0; padding: 11px; border: 1px solid color-mix(in oklch, var(--accent) 42%, var(--border)); border-radius: 8px; background: color-mix(in oklch, var(--surface-2) 78%, transparent); }
+.color-editor-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font: 700 10px/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.color-editor-head strong { color: var(--fg); }
+.color-editor-close { min-height: 25px; padding: 0 8px; color: var(--muted); font-size: 10px; text-transform: uppercase; }
+.color-editor-body { display: grid; gap: 8px; }
+.color-editor-caption { color: var(--muted); font: 700 10px/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.monitor-level-tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.monitor-level-tab { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; padding: 0 7px; color: var(--muted); font: 750 10px/1 var(--font-mono); text-transform: uppercase; }
+.monitor-level-tab i { width: 9px; height: 9px; border-radius: 999px; }
+.monitor-level-tab.is-active { color: var(--fg); border-color: color-mix(in oklch, var(--accent) 55%, var(--border)); background: color-mix(in oklch, var(--accent) 12%, transparent); }
+.colors-advanced { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 9px; }
+.colors-advanced > summary { color: var(--muted); font: 750 10px/1 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer; }
+.colors-advanced[open] > summary { color: var(--fg); }
 .swatch-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .swatch {
   width: 22px; height: 22px; min-height: 0; padding: 0; border-radius: 999px;
@@ -1226,8 +1251,8 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 .theme-glass.scope-bgtint .provider-tile { background-color: color-mix(in srgb, var(--provider-color) 12%, color-mix(in srgb, var(--paper-panel) 18%, transparent)); }
 
 /* Colors UI under Glass: drop the generic button glow/hover-scale on the small controls. */
-.theme-glass .swatch::before, .theme-glass .base-chip::before, .theme-glass .fine-swatch::before, .theme-glass .cp-done::before, .theme-glass .base-reset::before { display: none; }
-.theme-glass .swatch:hover, .theme-glass .base-chip:hover, .theme-glass .fine-swatch:hover { transform: none; }
+.theme-glass .swatch::before, .theme-glass .base-chip::before, .theme-glass .fine-swatch::before, .theme-glass .cp-done::before, .theme-glass .base-reset::before, .theme-glass .color-target::before, .theme-glass .color-editor-close::before, .theme-glass .monitor-level-tab::before { display: none; }
+.theme-glass .swatch:hover, .theme-glass .base-chip:hover, .theme-glass .fine-swatch:hover, .theme-glass .color-target:hover, .theme-glass .color-editor-close:hover, .theme-glass .monitor-level-tab:hover { transform: none; }
 /* Keep the scope checkbox a perfect circle in Glass (the ✓ must fit the fixed 16px box, not stretch it). */
 .theme-glass .scope-check input:checked::after { font-size: 11px; }
 
@@ -1242,6 +1267,7 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 
   .settings-section.mini-card { margin-inline: 14px; max-width: calc(100% - 28px); }
   .settings-row { grid-template-columns: 1fr; gap: 4px; }
+  .color-target-grid { grid-template-columns: 1fr; }
 }
 
 /* Full view auto-sizes from its content, so viewport height must not change the content it measures.

@@ -2350,17 +2350,17 @@ function ColorPicker({ value, onChange, onClose }: { value: string; onChange: (h
 }
 
 function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: Partial<Settings>) => void }) {
+  type ColorTarget = { kind: "accent"; provider: keyof ProviderColors } | { kind: "monitor"; monitor: MonitorKind };
   type PickerTarget = { kind: "accent"; provider: keyof ProviderColors } | { kind: "monitor"; monitor: MonitorKind; level: MonitorLevel } | { kind: "base"; field: "bg" | "surface" | "text" };
+  const [selectedTarget, setSelectedTarget] = useState<ColorTarget | null>(null);
   const [picker, setPicker] = useState<PickerTarget | null>(null);
+  const [monitorLevel, setMonitorLevel] = useState<MonitorLevel>("low");
   const themeKey = settings.theme;
   const mode = baseModeOf(themeKey);
   const base = settings.baseOverrides[themeKey] ?? {};
   const resolvedBase = resolveBaseTokens(themeKey, base) ?? DEFAULT_BASE[themeKey];
   const providers: [keyof ProviderColors, string, string][] = [["claude", "Claude", "#c46f42"], ["codex", "Codex", "#7b8cff"], ["codex-1", "Codex 2", "#7b8cff"]];
   const monitorLevels: [MonitorLevel, string][] = [["low", "Low"], ["medium", "Medium"], ["high", "High"]];
-  const monitorColorsCustom = (Object.keys(settings.monitorColors) as MonitorKind[]).some((kind) =>
-    monitorLevels.some(([level]) => settings.monitorColors[kind][level].toLowerCase() !== DEFAULT_MONITOR_PALETTE[level].toLowerCase()),
-  );
   const baseFieldValue = (field: "bg" | "surface" | "text") => field === "text" ? resolvedBase.fg : resolvedBase[field];
 
   const setProviderColor = (p: keyof ProviderColors, color: string | null) => patch({ providerColors: { ...settings.providerColors, [p]: color } });
@@ -2368,7 +2368,37 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
   const setScope = (key: keyof ColorScope, val: boolean) => patch({ colorScope: { ...settings.colorScope, [key]: val } });
   const setBase = (next: Partial<BaseOverride>) => patch({ baseOverrides: { ...settings.baseOverrides, [themeKey]: { ...base, ...next } } });
   const resetBase = () => { const nb = { ...settings.baseOverrides }; delete nb[themeKey]; patch({ baseOverrides: nb }); };
-  const samePicker = (t: PickerTarget) => picker && picker.kind === t.kind && (t.kind === "accent" ? (picker as any).provider === t.provider : t.kind === "monitor" ? (picker as any).monitor === t.monitor && (picker as any).level === t.level : (picker as any).field === (t as any).field);
+  const targetIsSelected = (target: ColorTarget) => {
+    if (!selectedTarget || selectedTarget.kind !== target.kind) return false;
+    return target.kind === "accent"
+      ? selectedTarget.kind === "accent" && selectedTarget.provider === target.provider
+      : selectedTarget.kind === "monitor" && selectedTarget.monitor === target.monitor;
+  };
+  const pickerMatches = (target: PickerTarget) => {
+    if (!picker || picker.kind !== target.kind) return false;
+    if (target.kind === "accent") return picker.kind === "accent" && picker.provider === target.provider;
+    if (target.kind === "monitor") return picker.kind === "monitor" && picker.monitor === target.monitor && picker.level === target.level;
+    return picker.kind === "base" && picker.field === target.field;
+  };
+  const chooseTarget = (target: ColorTarget) => {
+    if (targetIsSelected(target)) {
+      setSelectedTarget(null);
+      setPicker(null);
+      return;
+    }
+    setSelectedTarget(target);
+    setPicker(null);
+    if (target.kind === "monitor") setMonitorLevel("low");
+  };
+  const openPicker = (target: ColorTarget) => {
+    setSelectedTarget(target);
+    const pickerTarget: PickerTarget = target.kind === "monitor" ? { ...target, level: monitorLevel } : target;
+    setPicker(pickerMatches(pickerTarget) ? null : pickerTarget);
+  };
+  const selectedLabel = selectedTarget?.kind === "accent"
+    ? providers.find(([provider]) => provider === selectedTarget.provider)?.[1]
+    : selectedTarget ? MONITOR_LABELS[selectedTarget.monitor] : undefined;
+  const selectedMonitorPalette = selectedTarget?.kind === "monitor" ? settings.monitorColors[selectedTarget.monitor] : null;
 
   return (
     <details className="effect-settings colors-settings">
@@ -2377,86 +2407,124 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
           <svg className="disclosure-chevron" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
           <span>Colors</span>
         </span>
-        <strong>{settings.providerColors.claude || settings.providerColors.codex || settings.providerColors["codex-1"] || monitorColorsCustom || Object.keys(settings.baseOverrides).length ? "custom" : "default"}</strong>
+        <strong>{selectedLabel ?? "pick a target"}</strong>
       </summary>
 
-      {providers.map(([p, label]) => (
-        <div className="color-row" key={p}>
-          <span className="seg-label">{label}</span>
-          <div className="swatch-row">
-            {ACCENT_PRESETS.map((c) => (
-              <button type="button" key={c} className={`swatch${(settings.providerColors[p] ?? "").toLowerCase() === c.toLowerCase() ? " is-active" : ""}`} style={{ background: c }} title={c} onClick={() => setProviderColor(p, c)} />
-            ))}
-            <button type="button" className={`swatch swatch-custom${samePicker({ kind: "accent", provider: p }) ? " is-active" : ""}`} title="Custom color" onClick={() => setPicker(samePicker({ kind: "accent", provider: p }) ? null : { kind: "accent", provider: p })}>+</button>
-            <button type="button" className="swatch swatch-reset" title="Reset to brand" onClick={() => { setProviderColor(p, null); if (samePicker({ kind: "accent", provider: p })) setPicker(null); }}>⟲</button>
-          </div>
-          {samePicker({ kind: "accent", provider: p }) && (
-            <ColorPicker value={settings.providerColors[p] ?? (p === "claude" ? "#c46f42" : "#7b8cff")} onChange={(hex) => setProviderColor(p, hex)} onClose={() => setPicker(null)} />
-          )}
+      <div className="color-target-group">
+        <span className="color-group-label">Providers</span>
+        <div className="color-target-grid">
+          {providers.map(([provider, label, brand]) => {
+            const target: ColorTarget = { kind: "accent", provider };
+            return (
+              <button type="button" className={`color-target${targetIsSelected(target) ? " is-selected" : ""}`} style={{ "--tone": settings.providerColors[provider] ?? brand } as React.CSSProperties} key={provider} onClick={() => chooseTarget(target)} aria-expanded={targetIsSelected(target)}>
+                <ProviderMark provider={provider === "codex-1" ? "codex-1" : provider} />
+                <span className="color-target-name">{label}</span>
+                <span className="color-target-preview"><i style={{ background: settings.providerColors[provider] ?? brand }} /></span>
+              </button>
+            );
+          })}
         </div>
-      ))}
+      </div>
 
-      {MONITOR_ORDER.some((k) => settings[MONITOR_SHOW_KEY[k]]) && MONITOR_ORDER.filter((k) => settings[MONITOR_SHOW_KEY[k]]).map((k) => (
-        <div className="color-row" key={`mon-${k}`}>
-          <span className="seg-label">{MONITOR_LABELS[k]} <em className="color-hint">load</em></span>
-          <div className="monitor-palette">
-            {monitorLevels.map(([level, label]) => {
-              const target = { kind: "monitor" as const, monitor: k, level };
-              const palette = settings.monitorColors[k];
+      {MONITOR_ORDER.some((kind) => settings[MONITOR_SHOW_KEY[kind]]) && (
+        <div className="color-target-group">
+          <span className="color-group-label">System monitors</span>
+          <div className="color-target-grid">
+            {MONITOR_ORDER.filter((kind) => settings[MONITOR_SHOW_KEY[kind]]).map((kind) => {
+              const target: ColorTarget = { kind: "monitor", monitor: kind };
+              const palette = settings.monitorColors[kind];
               return (
-                <div className="monitor-palette-level" key={level}>
-                  <span className="monitor-palette-label">{label}</span>
-                  <div className="swatch-row">
-                    {MONITOR_ACCENT_PRESETS.map((c) => (
-                      <button type="button" key={c} className={`swatch${palette[level].toLowerCase() === c.toLowerCase() ? " is-active" : ""}`} style={{ background: c }} title={c} onClick={() => setMonitorColor(k, level, c)} />
-                    ))}
-                    <button type="button" className={`swatch swatch-custom${samePicker(target) ? " is-active" : ""}`} title={`Custom ${label.toLowerCase()} color`} onClick={() => setPicker(samePicker(target) ? null : target)}>+</button>
-                    <button type="button" className="swatch swatch-reset" title={`Reset ${label.toLowerCase()} color`} onClick={() => { setMonitorColor(k, level, DEFAULT_MONITOR_PALETTE[level]); if (samePicker(target)) setPicker(null); }}>⟲</button>
-                  </div>
-                  {samePicker(target) && (
-                    <ColorPicker value={palette[level]} onChange={(hex) => setMonitorColor(k, level, hex)} onClose={() => setPicker(null)} />
-                  )}
-                </div>
+                <button type="button" className={`color-target${targetIsSelected(target) ? " is-selected" : ""}`} style={{ "--tone": palette.low } as React.CSSProperties} key={kind} onClick={() => chooseTarget(target)} aria-expanded={targetIsSelected(target)}>
+                  <MonitorMark kind={kind} />
+                  <span className="color-target-name">{MONITOR_LABELS[kind]}</span>
+                  <span className="color-target-preview monitor-preview">
+                    <i style={{ background: palette.low }} /><i style={{ background: palette.medium }} /><i style={{ background: palette.high }} />
+                  </span>
+                </button>
               );
             })}
           </div>
         </div>
-      ))}
+      )}
 
-      <div className="color-row">
-        <span className="seg-label">Apply accent to</span>
-        <div className="scope-checks">
-          {([["text", "Text"], ["bar", "Bar"], ["border", "Border"], ["bgTint", "Tint"]] as [keyof ColorScope, string][]).map(([k, l]) => (
-            <label className="scope-check" key={k}><input type="checkbox" checked={settings.colorScope[k]} onChange={(e) => setScope(k, e.target.checked)} /><span>{l}</span></label>
-          ))}
+      {selectedTarget && (
+        <div className="color-editor">
+          <div className="color-editor-head">
+            <span>Editing <strong>{selectedLabel}</strong></span>
+            <button type="button" className="color-editor-close" onClick={() => { setSelectedTarget(null); setPicker(null); }}>Close</button>
+          </div>
+          {selectedTarget.kind === "accent" && (() => {
+            const provider = selectedTarget.provider;
+            const brand = providers.find(([p]) => p === provider)?.[2] ?? "#7b8cff";
+            const target: ColorTarget = { kind: "accent", provider };
+            const pickerTarget: PickerTarget = target;
+            const current = settings.providerColors[provider] ?? brand;
+            return (
+              <div className="color-editor-body">
+                <span className="color-editor-caption">Accent</span>
+                <div className="swatch-row">
+                  {ACCENT_PRESETS.map((color) => <button type="button" key={color} className={`swatch${current.toLowerCase() === color.toLowerCase() ? " is-active" : ""}`} style={{ background: color }} title={color} onClick={() => setProviderColor(provider, color)} />)}
+                  <button type="button" className={`swatch swatch-custom${pickerMatches(pickerTarget) ? " is-active" : ""}`} title="Custom color" onClick={() => openPicker(target)}>+</button>
+                  <button type="button" className="swatch swatch-reset" title="Reset to brand" onClick={() => { setProviderColor(provider, null); setPicker(null); }}>⟲</button>
+                </div>
+                {pickerMatches(pickerTarget) && <ColorPicker value={current} onChange={(color) => setProviderColor(provider, color)} onClose={() => setPicker(null)} />}
+              </div>
+            );
+          })()}
+          {selectedTarget.kind === "monitor" && selectedMonitorPalette && (() => {
+            const target: ColorTarget = selectedTarget;
+            const current = selectedMonitorPalette[monitorLevel];
+            const levelLabel = monitorLevels.find(([level]) => level === monitorLevel)?.[1] ?? "Low";
+            const pickerTarget: PickerTarget = { ...target, level: monitorLevel };
+            return (
+              <div className="color-editor-body">
+                <div className="monitor-level-tabs">
+                  {monitorLevels.map(([level, label]) => <button type="button" key={level} className={`monitor-level-tab${monitorLevel === level ? " is-active" : ""}`} onClick={() => { setMonitorLevel(level); setPicker(null); }}><i style={{ background: selectedMonitorPalette[level] }} />{label}</button>)}
+                </div>
+                <span className="color-editor-caption">{levelLabel} color</span>
+                <div className="swatch-row">
+                  {MONITOR_ACCENT_PRESETS.map((color) => <button type="button" key={color} className={`swatch${current.toLowerCase() === color.toLowerCase() ? " is-active" : ""}`} style={{ background: color }} title={color} onClick={() => setMonitorColor(selectedTarget.monitor, monitorLevel, color)} />)}
+                  <button type="button" className={`swatch swatch-custom${pickerMatches(pickerTarget) ? " is-active" : ""}`} title={`Custom ${levelLabel.toLowerCase()} color`} onClick={() => openPicker(target)}>+</button>
+                  <button type="button" className="swatch swatch-reset" title={`Reset ${levelLabel.toLowerCase()} color`} onClick={() => { setMonitorColor(selectedTarget.monitor, monitorLevel, DEFAULT_MONITOR_PALETTE[monitorLevel]); setPicker(null); }}>⟲</button>
+                </div>
+                {pickerMatches(pickerTarget) && <ColorPicker value={current} onChange={(color) => setMonitorColor(selectedTarget.monitor, monitorLevel, color)} onClose={() => setPicker(null)} />}
+              </div>
+            );
+          })()}
         </div>
-      </div>
+      )}
 
-      <div className="color-row">
-        <span className="seg-label">Base — {mode} theme</span>
-        <div className="base-presets">
-          {BASE_PRESETS[mode].map((preset) => (
-            <button type="button" key={preset.id} className={`base-chip${base.preset === preset.id ? " is-active" : ""}`} onClick={() => setBase({ preset: preset.id })}>
-              <span className="base-chip-swatch" style={{ background: preset.bg, borderColor: preset.border }}><i style={{ background: preset.fg }} /><em style={{ background: preset.surface2 }} /></span>
-              {preset.name}
-            </button>
-          ))}
+      <details className="colors-advanced">
+        <summary>Advanced styling</summary>
+        <div className="color-row">
+          <span className="seg-label">Apply accent to</span>
+          <div className="scope-checks">
+            {([["text", "Text"], ["bar", "Bar"], ["border", "Border"], ["bgTint", "Tint"]] as [keyof ColorScope, string][]).map(([key, label]) => (
+              <label className="scope-check" key={key}><input type="checkbox" checked={settings.colorScope[key]} onChange={(event) => setScope(key, event.target.checked)} /><span>{label}</span></label>
+            ))}
+          </div>
         </div>
-        <div className="base-fine">
-          {([["bg", "Background"], ["surface", "Surface"], ["text", "Text"]] as ["bg" | "surface" | "text", string][]).map(([field, l]) => (
-            <button type="button" key={field} className={`fine-swatch${samePicker({ kind: "base", field }) ? " is-active" : ""}`} onClick={() => setPicker(samePicker({ kind: "base", field }) ? null : { kind: "base", field })}>
-              {field === "bg" && <span className="fine-ic" style={{ background: baseFieldValue("bg") }} />}
-              {field === "surface" && <span className="fine-ic fine-ic-surface" style={{ background: baseFieldValue("bg") }}><i style={{ background: baseFieldValue("surface") }} /></span>}
-              {field === "text" && <span className="fine-ic fine-ic-text" style={{ background: baseFieldValue("surface"), color: baseFieldValue("text") }}>Aa</span>}
-              {l}
-            </button>
-          ))}
-          <button type="button" className="base-reset" onClick={() => { resetBase(); setPicker(null); }}>Reset base</button>
+
+        <div className="color-row">
+          <span className="seg-label">Base — {mode} theme</span>
+          <div className="base-presets">
+            {BASE_PRESETS[mode].map((preset) => (
+              <button type="button" key={preset.id} className={`base-chip${base.preset === preset.id ? " is-active" : ""}`} onClick={() => setBase({ preset: preset.id })}>
+                <span className="base-chip-swatch" style={{ background: preset.bg, borderColor: preset.border }}><i style={{ background: preset.fg }} /><em style={{ background: preset.surface2 }} /></span>
+                {preset.name}
+              </button>
+            ))}
+          </div>
+          <div className="base-fine">
+            {([["bg", "Background"], ["surface", "Surface"], ["text", "Text"]] as ["bg" | "surface" | "text", string][]).map(([field, label]) => {
+              const target: PickerTarget = { kind: "base", field };
+              return <button type="button" key={field} className={`fine-swatch${pickerMatches(target) ? " is-active" : ""}`} onClick={() => setPicker(pickerMatches(target) ? null : target)}>{field === "bg" && <span className="fine-ic" style={{ background: baseFieldValue("bg") }} />}{field === "surface" && <span className="fine-ic fine-ic-surface" style={{ background: baseFieldValue("bg") }}><i style={{ background: baseFieldValue("surface") }} /></span>}{field === "text" && <span className="fine-ic fine-ic-text" style={{ background: baseFieldValue("surface"), color: baseFieldValue("text") }}>Aa</span>}{label}</button>;
+            })}
+            <button type="button" className="base-reset" onClick={() => { resetBase(); setPicker(null); }}>Reset base</button>
+          </div>
+          {picker?.kind === "base" && <ColorPicker value={baseFieldValue(picker.field)} onChange={(color) => setBase({ [picker.field]: color })} onClose={() => setPicker(null)} />}
         </div>
-        {picker?.kind === "base" && (
-          <ColorPicker value={baseFieldValue(picker.field)} onChange={(hex) => setBase({ [picker.field]: hex })} onClose={() => setPicker(null)} />
-        )}
-      </div>
+      </details>
     </details>
   );
 }
