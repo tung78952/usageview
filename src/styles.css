@@ -114,6 +114,13 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   transition: transform 160ms ease;
 }
 .mode-switch.is-dark .mode-switch-knob { transform: translateX(28px); }
+.feature-mode-switch:hover { border-color: color-mix(in oklch, var(--fg) 42%, var(--border)); }
+.feature-mode-switch:not(.is-on) .feature-switch-end.off,
+.feature-mode-switch.is-on .feature-switch-end.on { visibility: hidden; }
+.feature-switch-end.off { left: 6px; }
+.feature-switch-end.on { right: 6px; }
+.feature-mode-switch.is-on .feature-switch-knob { transform: translateX(28px); }
+.feature-switch-knob { font: 800 8px/1 var(--font-mono); letter-spacing: -0.03em; }
 
 /* ── Custom themed dropdown (Zoom picker) ── */
 .themed-select { position: relative; min-width: 0; }
@@ -527,7 +534,8 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
    Hợp đồng biến/class mà JSX (effectStyle + EffectOverlays trong main.tsx) cam kết cung cấp:
    - vars trên .bar khi có effect:
        --delta-start --delta-width --delta-edge --drop-left --drop-width
-       --effect-duration --effect-bar-brightness --effect-delta-brightness
+       --effect-duration --effect-impact-duration --effect-impact-delay
+       --effect-bar-brightness --effect-delta-brightness
    - class overlay (con của .bar): .effect-delta-range .effect-edge-glow
        .effect-ripple .effect-drop-cell .effect-particle
        (.effect-particle nhận: --particle-x --particle-y --particle-size --particle-delay)
@@ -573,21 +581,17 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 .usage-effect-bar {
   overflow: visible;
   clip-path: inset(-90px -48px -48px -48px);
-  will-change: filter, transform;
-  filter: brightness(var(--effect-bar-brightness, 1));
+  will-change: transform, box-shadow;
   border-color: color-mix(in srgb, var(--tone) 62%, var(--border));
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--tone) 26%, transparent) inset,
     0 0 15px color-mix(in srgb, var(--tone) 18%, transparent);
   animation: usage-bar-glow var(--effect-duration, 4000ms) cubic-bezier(.16, 1, .3, 1) both;
 }
-.usage-effect-bar .cell.active {
-  animation: usage-cell-glow var(--effect-duration, 4000ms) cubic-bezier(.16, 1, .3, 1) both;
-}
 .bar.usage-effect-bar.drop-impact {
   animation:
     usage-bar-glow var(--effect-duration, 4000ms) cubic-bezier(.16, 1, .3, 1) both,
-    impact-shake 360ms steps(2, end) calc(var(--effect-duration, 4000ms) * 0.27) both;
+    impact-shake 360ms steps(2, end) var(--effect-impact-delay, 520ms) both;
 }
 .effect-delta-range,
 .effect-edge-glow,
@@ -666,9 +670,10 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
     inset 1px 1px 0 rgba(255, 255, 255, .28),
     inset -1px -1px 0 color-mix(in srgb, #000 18%, transparent);
   opacity: 0;
+  filter: brightness(var(--effect-bar-brightness, 1));
   image-rendering: pixelated;
   will-change: transform, opacity;
-  animation: usage-drop-cell calc(var(--effect-duration, 4000ms) * 0.46) cubic-bezier(0.22, 0.9, 0.22, 1) forwards;
+  animation: usage-drop-cell var(--effect-impact-duration, 900ms) cubic-bezier(0.22, 0.9, 0.22, 1) forwards;
 }
 .effect-particle {
   left: var(--particle-left, var(--delta-edge));
@@ -683,24 +688,18 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   animation-delay: var(--particle-delay);
 }
 @keyframes usage-bar-glow {
-  0%, 18% { filter: brightness(1); box-shadow: 0 0 0 1px color-mix(in srgb, var(--tone) 18%, transparent) inset; }
+  0%, 18% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--tone) 18%, transparent) inset; }
   34%, 58% {
-    filter: brightness(var(--effect-bar-brightness, 1));
     box-shadow:
       0 0 0 1px color-mix(in srgb, var(--tone) 42%, transparent) inset,
       0 0 18px color-mix(in srgb, var(--tone) 24%, transparent),
       0 0 34px color-mix(in srgb, var(--tone) 12%, transparent);
   }
-  100% { filter: brightness(1); box-shadow: 0 0 0 1px color-mix(in srgb, var(--tone) 12%, transparent) inset; }
-}
-@keyframes usage-cell-glow {
-  0%, 26% { filter: brightness(1); }
-  42%, 62% { filter: brightness(var(--effect-bar-brightness, 1)); }
-  100% { filter: brightness(1); }
+  100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--tone) 12%, transparent) inset; }
 }
 @keyframes usage-mini-cell-land {
   0%, 34% { opacity: .18; transform: translateY(-5px); filter: brightness(1); }
-  46%, 64% { opacity: 1; transform: translateY(0); filter: brightness(1.45); }
+  46%, 64% { opacity: 1; transform: translateY(0); filter: brightness(var(--effect-bar-brightness, 1.25)); }
   100% { opacity: 1; transform: translateY(0); filter: brightness(1); }
 }
 @keyframes usage-delta-range {
@@ -891,8 +890,14 @@ h2 {
   background: rgba(255, 255, 255, 0.03);
 }
 
+.mini-card:has(.provider-tile.claude), .mini-card.claude { --tone: var(--u-claude, var(--claude)); }
 .mini-card:has(.provider-tile.codex), .mini-card.codex { --tone: var(--u-codex, var(--codex)); }
 .mini-card:has(.provider-tile.codex-1), .mini-card.codex-1 { --tone: var(--u-codex-1, var(--u-codex, var(--codex))); }
+.mini-card:is(.claude, .codex, .codex-1) .daily-actions button.primary {
+  color: var(--tone);
+  border-color: color-mix(in oklch, var(--tone) 44%, transparent);
+  background: color-mix(in oklch, var(--tone) 14%, transparent);
+}
 .mini-head {
   display: flex;
   align-items: flex-start;
@@ -946,11 +951,9 @@ h2 {
   gap: 10px;
   margin: 0 !important;
   color: var(--muted);
-  cursor: pointer;
+  cursor: default;
 }
 .feature-settings-head > .summary-left { color: var(--muted); font: 750 11px/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; }
-.feature-settings-control { display: inline-flex; align-items: center; gap: 8px; flex: 0 0 auto; }
-.feature-settings-control strong { color: var(--accent); font: 750 10px/1 var(--font-mono); letter-spacing: 0.08em; }
 .feature-settings-body { display: grid; gap: 4px; margin-top: 10px; }
 .effect-settings summary {
   display: flex;
@@ -996,7 +999,7 @@ h2 {
   margin: 0;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 3px;
   background: var(--surface-2);
   box-shadow: inset 0 1px 2px color-mix(in srgb, #000 18%, transparent);
   cursor: pointer;
@@ -1011,7 +1014,7 @@ h2 {
   top: 2px;
   width: 14px;
   height: 14px;
-  border-radius: 999px;
+  border-radius: 2px;
   background: var(--muted);
   box-shadow: 0 1px 3px color-mix(in srgb, #000 32%, transparent);
   transform: translateX(0);
@@ -1036,25 +1039,21 @@ h2 {
   margin-top: 12px;
   padding-top: 10px;
   border-top: 1px dashed var(--border);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
 }
-.effect-tester-head {
+.effect-tester > summary {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  font-size: 12px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
   color: var(--muted);
+  font: 750 10px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  list-style: none;
 }
-.effect-tester-head em {
-  font-style: normal;
-  text-transform: none;
-  letter-spacing: 0;
-  color: var(--accent);
-}
+.effect-tester > summary::-webkit-details-marker { display: none; }
+.effect-tester[open] > summary .disclosure-chevron { transform: rotate(90deg); }
+.effect-tester-body { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .effect-tester-row {
   display: flex;
   gap: 8px;

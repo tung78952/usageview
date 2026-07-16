@@ -497,8 +497,7 @@
       }
 
 .theme-glass .effect-settings summary,
-.theme-glass .toggle-row,
-.theme-glass .effect-tester-head {
+.theme-glass .toggle-row {
         min-width: 0;
         max-width: 100%;
       }
@@ -509,26 +508,9 @@
       }
 
 .theme-glass .effect-settings summary span,
-.theme-glass .effect-tester-head strong,
-.theme-glass .effect-tester-head em,
 .theme-glass label,
 .theme-glass .toggle-row span {
         min-width: 0;
-        overflow-wrap: anywhere;
-      }
-
-.theme-glass .effect-tester-head {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        gap: 8px;
-        align-items: baseline;
-      }
-
-.theme-glass .effect-tester-head em {
-        justify-self: start;
-        max-width: 100%;
-        text-align: left;
-        white-space: normal;
         overflow-wrap: anywhere;
       }
 

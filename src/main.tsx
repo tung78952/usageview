@@ -268,6 +268,7 @@ type EffectParticle = {
 };
 
 type UsageEffect = {
+  id: number;
   from: number;
   to: number;
   particles: EffectParticle[];
@@ -385,9 +386,12 @@ function resolveBaseTokens(theme: ThemeKey, base: BaseOverride | undefined) {
 }
 
 function panelStyle(settings: Settings): React.CSSProperties {
+  const impactDurationMs = Math.min(900, settings.effectDurationMs * 0.46);
   const style: Record<string, string | number> = {
     "--panel-opacity-pct": `${Math.round(settings.opacity * 100)}%`,
     "--effect-duration": `${settings.effectDurationMs}ms`,
+    "--effect-impact-duration": `${impactDurationMs}ms`,
+    "--effect-impact-delay": `${impactDurationMs * 0.58}ms`,
     "--effect-bar-brightness": settings.effectBarBrightness,
     "--effect-delta-brightness": settings.effectDeltaBrightness,
   };
@@ -2099,7 +2103,7 @@ function ProviderPanel({
   onToggleShown: () => void;
 }) {
   return (
-    <section className="mini-card">
+    <section className={`mini-card ${provider}`}>
       <div className="mini-head">
         <div>
           <h2><ProviderMark provider={provider} />{providerLabel(provider)}</h2>
@@ -2181,10 +2185,21 @@ function ModeSwitch({ mode, onToggle }: { mode: ThemeMode; onToggle: () => void 
 
 function FeatureSwitch({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
   return (
-    <label className="feature-settings-head">
+    <div className="feature-settings-head">
       <span className="summary-left"><span>{label}</span></span>
-      <span className="feature-settings-control"><strong>{checked ? "ON" : "OFF"}</strong><input className="switch-control" type="checkbox" role="switch" checked={checked} onChange={(event) => onChange(event.target.checked)} /></span>
-    </label>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={`${label}: ${checked ? "on" : "off"}`}
+        className={`mode-switch feature-mode-switch${checked ? " is-on" : ""}`}
+        onClick={() => onChange(!checked)}
+      >
+        <span className="mode-switch-end feature-switch-end off" aria-hidden="true">OFF</span>
+        <span className="mode-switch-end feature-switch-end on" aria-hidden="true">ON</span>
+        <span className="mode-switch-knob feature-switch-knob" aria-hidden="true">{checked ? "ON" : "OFF"}</span>
+      </button>
+    </div>
   );
 }
 
@@ -2772,7 +2787,7 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
           value={settings.effectDurationMs}
           onChange={(event) => patch({ effectDurationMs: Number(event.target.value) })}
         /></label>
-        <label>Bar brightness <span>{settings.effectBarBrightness.toFixed(2)}x</span><input
+        <label>Impact brightness <span>{settings.effectBarBrightness.toFixed(2)}x</span><input
           type="range"
           min="0.45"
           max="1.8"
@@ -2792,10 +2807,9 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
           <span>Drop cell effect</span>
           <input className="switch-control" type="checkbox" role="switch" checked={settings.effectDropCell} onChange={(event) => patch({ effectDropCell: event.target.checked })} />
         </label>
-        <div className="effect-tester">
-            <div className="effect-tester-head">
-              <span>Test / replay</span>
-            </div>
+        <details className="effect-tester">
+          <summary><span className="summary-left"><svg className="disclosure-chevron" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg><span>Test / replay</span></span></summary>
+          <div className="effect-tester-body">
             <div className="effect-tester-row">
               <label>Account<select value={testProvider} onChange={(event) => setTestProvider(event.target.value as Provider)}>
                 <option value="claude">Claude</option>
@@ -2820,7 +2834,8 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
                 <button type="button" key={label} disabled={!testable} onClick={() => { setTestFrom(from); setTestTo(to); play(from, to); }}>{label}</button>
               ))}
             </div>
-        </div>
+          </div>
+        </details>
         </div>}
       </div>
       <div className="effect-settings monitor-settings">
@@ -2929,8 +2944,10 @@ function snapshotPercent(snapshot: UsageSnapshot): number | undefined {
   return typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
 }
 
+let usageEffectSequence = 0;
+
 function makeUsageEffect(from: number, to: number): UsageEffect {
-  return { from, to, particles: makeEffectParticles(from, to) };
+  return { id: ++usageEffectSequence, from, to, particles: makeEffectParticles(from, to) };
 }
 
 function makeEffectParticles(from: number, to: number): EffectParticle[] {
@@ -3466,7 +3483,7 @@ function UsageBlock({ snapshot, flash = false, paused = false, updatedAgo, effec
         <span className="percent">{percent !== undefined ? `${Math.round(percent)}%` : "--"}</span>
         <span className="message">{providerMessage(snapshot)}</span>
       </div>
-      <div className={`bar${effect ? " usage-effect-bar" : ""}${effect && dropCell ? " drop-impact" : ""}`} style={effectStyle(effect, percent)} aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
+      <div key={effect?.id ?? "idle"} className={`bar${effect ? " usage-effect-bar" : ""}${effect && dropCell ? " drop-impact" : ""}`} style={effectStyle(effect, percent)} aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
         {buildUsageCells(percent, 10, effect)}
         <EffectOverlays effect={effect} dropCell={dropCell} />
         <LiquidLayers />
