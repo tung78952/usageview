@@ -710,6 +710,14 @@ function providerMessage(snapshot: UsageSnapshot) {
   return snapshot.message;
 }
 
+function statusLineTone(message: string): "ok" | "warn" | "error" {
+  const normalized = message.toLowerCase();
+  if (normalized.includes("chrome not found")) return "warn";
+  if (/(failed|error|not found|unavailable|parser|denied)/.test(normalized)) return "error";
+  if (/(refreshing|opening|warning|rate.?limit|not logged|sign in)/.test(normalized)) return "warn";
+  return "ok";
+}
+
 function formatCompactDate(date: Date) {
   return date.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
@@ -1206,7 +1214,7 @@ function SettingsWindowApp() {
 
         <section className="settings-section">
           <h2>Status</h2>
-          <div className="status-line"><span />{message}<strong>{settings.alwaysOnTop ? "pinned" : "unpinned"}</strong></div>
+          <div className={`status-line ${statusLineTone(message)}`}><span />{message}<strong>{settings.alwaysOnTop ? "pinned" : "unpinned"}</strong></div>
         </section>
 
         <section className="settings-section">
@@ -2065,7 +2073,7 @@ function ProviderLoginApp({ provider }: { provider: Provider }) {
           <button onClick={() => void openInChrome(targetUrl).then((via) => setStatus(via === "chrome" ? "Opened in Chrome (view only)." : "Chrome not found — opened default browser."))}>Open Browser</button>
           <button onClick={() => void hideToWidget()}>Hide</button>
         </div>
-        <div className="status-line"><span />{status}</div>
+        <div className={`status-line ${statusLineTone(status)}`}><span />{status}</div>
         <p className="hint">Browser fallback is only for viewing. Extract mode needs login inside this app window.</p>
       </section>
     </main>
@@ -3445,6 +3453,7 @@ function MiniTimerRow({ snapshot, onBack, paused = false }: { snapshot: UsageSna
 function UsageBlock({ snapshot, flash = false, paused = false, updatedAgo, effect, dropCell = false, onFlip }: { snapshot: UsageSnapshot; flash?: boolean; paused?: boolean; updatedAgo?: string; effect?: UsageEffect; dropCell?: boolean; onFlip?: () => void }) {
   const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
   const stale = isStale(snapshot);
+  const sourceState = stale ? "stale" : snapshot.status !== "ok" ? snapshot.status : paused ? "paused" : "ok";
    const metaLeft = usageMetaLeft(snapshot);
   const metaRight = usageMetaRight(snapshot);
   return (
@@ -3453,7 +3462,7 @@ function UsageBlock({ snapshot, flash = false, paused = false, updatedAgo, effec
         <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
         <span className="tile-status">
           {updatedAgo && <span className="updated-ago">{updatedAgo}</span>}
-          <span className={`source-pill ${stale ? "stale" : snapshot.status !== "ok" ? "warn" : paused ? "paused" : "ok"}`}>{stale ? "cached" : snapshot.status !== "ok" ? readableStatus(snapshot.status) : paused ? "paused" : "live"}</span>
+          <span className={`source-pill ${sourceState}`}>{stale ? "cached" : snapshot.status !== "ok" ? readableStatus(snapshot.status) : paused ? "paused" : "live"}</span>
         </span>
       </div>
       <div className="metric">

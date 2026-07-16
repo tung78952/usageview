@@ -10,7 +10,7 @@
   --shadow: rgba(0, 0, 0, 0.55);
   --claude: #c46f42;
   --codex: #7b8cff;
-  --accent: #c46f42;
+  --accent: #9aa6b5;
   --ok: #62c67a;
   --warn: #d7b76a;
   --danger: #db6b58;
@@ -222,7 +222,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   --shadow: rgba(20, 24, 33, 0.14);
   --claude: #b85f2e;
   --codex: #3f66ad;
-  --accent: #b85f2e;
+  --accent: #5f6d80;
   --ok: #3f9d5a;
 }
 
@@ -485,9 +485,9 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   text-transform: uppercase;
   white-space: nowrap;
 }
-.source-pill.ok, .pill.ok { color: var(--tone, #86efac); background: color-mix(in oklch, var(--tone, #86efac) 16%, transparent); border: 1px solid color-mix(in oklch, var(--tone, #86efac) 34%, transparent); }
-.source-pill.warn, .pill.not_found, .pill.parser_failed, .pill.page_unavailable { color: var(--danger); border: 1px solid color-mix(in oklch, var(--danger) 46%, transparent); background: color-mix(in oklch, var(--danger) 14%, transparent); }
-.pill.not_open, .pill.not_logged_in { color: var(--warn); border: 1px solid color-mix(in oklch, var(--warn) 46%, transparent); background: color-mix(in oklch, var(--warn) 13%, transparent); }
+.source-pill.ok, .pill.ok { color: var(--ok); background: color-mix(in oklch, var(--ok) 16%, transparent); border: 1px solid color-mix(in oklch, var(--ok) 34%, transparent); }
+.source-pill.warn, .source-pill.not_open, .source-pill.not_logged_in, .pill.not_open, .pill.not_logged_in { color: var(--warn); border: 1px solid color-mix(in oklch, var(--warn) 46%, transparent); background: color-mix(in oklch, var(--warn) 13%, transparent); }
+.source-pill.not_found, .source-pill.parser_failed, .source-pill.page_unavailable, .pill.not_found, .pill.parser_failed, .pill.page_unavailable { color: var(--danger); border: 1px solid color-mix(in oklch, var(--danger) 46%, transparent); background: color-mix(in oklch, var(--danger) 14%, transparent); }
 .source-pill.stale { color: var(--warn); border: 1px solid color-mix(in oklch, var(--warn) 46%, transparent); background: color-mix(in oklch, var(--warn) 13%, transparent); }
 .source-pill.paused { color: var(--muted); border: 1px solid color-mix(in oklch, var(--muted) 38%, transparent); background: color-mix(in oklch, var(--muted) 12%, transparent); }
 .tile-status { display: inline-flex; align-items: center; gap: 6px; min-width: 0; flex: 0 0 auto; }
@@ -890,7 +890,12 @@ h2 {
   background: rgba(255, 255, 255, 0.04);
   font-size: 12px;
 }
-.status-line span { width: 9px; height: 9px; border: 1px solid var(--accent); background: var(--accent); }
+.status-line.ok { border-color: color-mix(in oklch, var(--ok) 34%, var(--border)); }
+.status-line.warn { border-color: color-mix(in oklch, var(--warn) 42%, var(--border)); }
+.status-line.error { border-color: color-mix(in oklch, var(--danger) 46%, var(--border)); }
+.status-line span { width: 9px; height: 9px; border: 1px solid var(--ok); background: var(--ok); }
+.status-line.warn span { border-color: var(--warn); background: var(--warn); }
+.status-line.error span { border-color: var(--danger); background: var(--danger); }
 
 .mini-card {
   --tone: var(--accent);
@@ -1108,6 +1113,7 @@ input, select {
   color: var(--fg);
   background: var(--surface-2);
 }
+input[type="range"] { accent-color: var(--accent); }
 input:focus, select:focus { outline: 1px solid var(--accent); }
 
 .settings-card {

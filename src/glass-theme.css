@@ -271,7 +271,6 @@
         background-color: color-mix(in srgb, var(--paper-panel) 4%, transparent) !important;
       }
 
-.theme-glass .provider-tile .source-pill,
 .theme-glass .provider-tile .updated-ago,
 .theme-glass .provider-tile .mark,
 .theme-glass .provider-tile .mark svg,
@@ -288,9 +287,39 @@
         fill: none !important;
       }
 
-.theme-glass .mini-card:has(.provider-tile) > .mini-head .pill,
 .theme-glass .mini-card:has(.provider-tile) .save-state {
-        color: var(--provider-color) !important;
+        color: var(--accent) !important;
+      }
+
+.theme-glass .source-pill.ok,
+.theme-glass .pill.ok {
+        color: var(--ok) !important;
+        border-color: color-mix(in srgb, var(--ok) 48%, var(--paper-glass-line)) !important;
+        background-color: color-mix(in srgb, var(--ok) 12%, transparent) !important;
+      }
+.theme-glass .source-pill.warn,
+.theme-glass .source-pill.stale,
+.theme-glass .source-pill.not_open,
+.theme-glass .source-pill.not_logged_in,
+.theme-glass .pill.not_open,
+.theme-glass .pill.not_logged_in {
+        color: var(--warn) !important;
+        border-color: color-mix(in srgb, var(--warn) 48%, var(--paper-glass-line)) !important;
+        background-color: color-mix(in srgb, var(--warn) 11%, transparent) !important;
+      }
+.theme-glass .source-pill.paused {
+        color: var(--paper-soft) !important;
+        border-color: color-mix(in srgb, var(--paper-soft) 42%, var(--paper-glass-line)) !important;
+      }
+.theme-glass .pill.not_found,
+.theme-glass .pill.parser_failed,
+.theme-glass .pill.page_unavailable,
+.theme-glass .source-pill.not_found,
+.theme-glass .source-pill.parser_failed,
+.theme-glass .source-pill.page_unavailable {
+        color: var(--danger) !important;
+        border-color: color-mix(in srgb, var(--danger) 52%, var(--paper-glass-line)) !important;
+        background-color: color-mix(in srgb, var(--danger) 12%, transparent) !important;
       }
 
 .theme-glass .provider-tile .pixel-claude-eye {
@@ -436,19 +465,27 @@
         height: 14px;
         border: 0 !important;
         border-radius: 4px;
-        background: #45825d;
+        background: var(--ok);
         box-shadow:
-          0 0 12px color-mix(in srgb, #45825d 72%, transparent),
-          0 0 24px color-mix(in srgb, #45825d 42%, transparent),
-          0 0 0 8px color-mix(in srgb, #45825d 12%, transparent);
+          0 0 12px color-mix(in srgb, var(--ok) 72%, transparent),
+          0 0 24px color-mix(in srgb, var(--ok) 42%, transparent),
+          0 0 0 8px color-mix(in srgb, var(--ok) 12%, transparent);
       }
 
-.theme-glass.theme-glass-dark .status-line span {
-        background: #7cc99b;
+.theme-glass .status-line.warn span {
+        background: var(--warn);
         box-shadow:
-          0 0 12px color-mix(in srgb, #7cc99b 76%, transparent),
-          0 0 28px color-mix(in srgb, #7cc99b 46%, transparent),
-          0 0 0 8px color-mix(in srgb, #7cc99b 12%, transparent);
+          0 0 12px color-mix(in srgb, var(--warn) 76%, transparent),
+          0 0 28px color-mix(in srgb, var(--warn) 46%, transparent),
+          0 0 0 8px color-mix(in srgb, var(--warn) 12%, transparent);
+      }
+
+.theme-glass .status-line.error span {
+        background: var(--danger);
+        box-shadow:
+          0 0 12px color-mix(in srgb, var(--danger) 76%, transparent),
+          0 0 28px color-mix(in srgb, var(--danger) 46%, transparent),
+          0 0 0 8px color-mix(in srgb, var(--danger) 12%, transparent);
       }
 
 .theme-glass select {
