@@ -857,6 +857,64 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   -webkit-backdrop-filter: blur(8px);
 }
 
+.settings-titlebar {
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+}
+.settings-header-label {
+  flex: 0 0 auto;
+  color: var(--muted) !important;
+  font: 750 9px/1 var(--font-mono) !important;
+  letter-spacing: 0.08em !important;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.settings-header-status {
+  min-width: 0;
+  min-height: 32px;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 9px;
+  border: 1px solid color-mix(in oklch, var(--ok) 34%, var(--border));
+  border-radius: 4px;
+  background: color-mix(in oklch, var(--surface-2) 52%, transparent);
+}
+.settings-health-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border: 1px solid var(--ok);
+  background: var(--ok);
+}
+.settings-header-status.warn { border-color: color-mix(in oklch, var(--warn) 44%, var(--border)); }
+.settings-header-status.warn .settings-health-dot { border-color: var(--warn); background: var(--warn); }
+.settings-header-status.error { border-color: color-mix(in oklch, var(--danger) 48%, var(--border)); }
+.settings-header-status.error .settings-health-dot { border-color: var(--danger); background: var(--danger); }
+.settings-header-message {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  color: var(--fg) !important;
+  font: 600 10px/1.2 var(--font-body) !important;
+  letter-spacing: 0.01em !important;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settings-header-saved {
+  flex: 0 0 auto;
+  padding-left: 8px;
+  border-left: 1px solid var(--border);
+  color: var(--muted) !important;
+  font: 650 8px/1 var(--font-mono) !important;
+  letter-spacing: 0.03em !important;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.settings-close { width: 32px; min-width: 32px; height: 32px; min-height: 32px; }
+
 .title-row { display: flex; align-items: center; gap: 10px; }
 .settings-section {
   position: relative;
@@ -1145,19 +1203,6 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 /* Consistent vertical rhythm: tight inside a field (6px), looser between rows (13px) — the previous
    0px between rows read as an uneven 6/0 cadence. */
 .settings-card .settings-row + .settings-row { margin-top: 13px; }
-.save-state {
-  flex: 0 0 auto;
-  padding: 4px 7px;
-  border: 1px solid color-mix(in oklch, var(--accent) 40%, transparent);
-  border-radius: 3px;
-  color: var(--accent);
-  background: color-mix(in oklch, var(--accent) 12%, transparent);
-  font: 750 10px/1 var(--font-mono);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  white-space: nowrap;
-}
-
 .provider-shell {
   min-height: 100vh;
   padding: 14px;

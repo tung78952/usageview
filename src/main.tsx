@@ -720,6 +720,52 @@ function providerMessage(snapshot: UsageSnapshot) {
   return snapshot.message;
 }
 
+type SettingsHeaderTone = "ok" | "warn" | "error";
+const SETTINGS_PROVIDER_ORDER: Provider[] = ["claude", "codex", "codex-1"];
+
+function isProviderError(status: UsageStatus) {
+  return status === "not_found" || status === "parser_failed" || status === "page_unavailable";
+}
+
+function settingsActivityMessage(previous: Settings, next: Settings): string {
+  if (previous.theme !== next.theme) {
+    if (themeStyle(previous.theme) !== themeStyle(next.theme)) {
+      return `${themeStyle(next.theme) === "glass" ? "Glass" : "Pixel"} style selected`;
+    }
+    return `${themeMode(next.theme) === "light" ? "Light" : "Dark"} mode enabled`;
+  }
+  if (previous.opacity !== next.opacity) return `Opacity ${Math.round(next.opacity * 100)}%`;
+  if (previous.uiScale !== next.uiScale) return `Widget zoom ${Math.round(next.uiScale * 100)}%`;
+  if (previous.refreshIntervalSec !== next.refreshIntervalSec) return `Refresh every ${next.refreshIntervalSec}s`;
+  if (previous.aiUsageEnabled !== next.aiUsageEnabled) return `AI usage turned ${next.aiUsageEnabled ? "on" : "off"}`;
+  if (previous.effectsEnabled !== next.effectsEnabled) return `Usage effect turned ${next.effectsEnabled ? "on" : "off"}`;
+  if (previous.effectDropCell !== next.effectDropCell) return `Drop cell effect turned ${next.effectDropCell ? "on" : "off"}`;
+  if (previous.systemMonitorsEnabled !== next.systemMonitorsEnabled) return `System monitors turned ${next.systemMonitorsEnabled ? "on" : "off"}`;
+  if (previous.monitorIntervalSec !== next.monitorIntervalSec) return `Monitor update every ${next.monitorIntervalSec}s`;
+  if (previous.colorsEnabled !== next.colorsEnabled) return `Colors turned ${next.colorsEnabled ? "on" : "off"}`;
+
+  const providerVisibility: [keyof Settings, string][] = [
+    ["showClaude", "Claude"], ["showCodex", "Codex 1"], ["showCodex1", "Codex 2"],
+  ];
+  for (const [key, label] of providerVisibility) {
+    if (previous[key] !== next[key]) return `${label} ${next[key] ? "shown" : "hidden"} on widget`;
+  }
+  const monitorVisibility: [keyof Settings, string][] = [
+    ["showCpu", "CPU"], ["showRam", "RAM"], ["showGpu", "GPU"], ["showIgpu", "iGPU"],
+    ["showCpuTemp", "CPU temperature"], ["showGpuTemp", "GPU temperature"],
+  ];
+  for (const [key, label] of monitorVisibility) {
+    if (previous[key] !== next[key]) return `${label} monitor ${next[key] ? "shown" : "hidden"}`;
+  }
+  if (previous.claudeUrl !== next.claudeUrl) return "Claude URL updated";
+  if (previous.codexUrl !== next.codexUrl) return "Codex 1 URL updated";
+  if (previous.codex1Url !== next.codex1Url) return "Codex 2 URL updated";
+  if (previous.corner !== next.corner) return "Widget corner updated";
+  if (previous.alwaysOnTop !== next.alwaysOnTop) return `Widget pin turned ${next.alwaysOnTop ? "on" : "off"}`;
+  if (previous.providerColors !== next.providerColors || previous.monitorColors !== next.monitorColors || previous.colorScope !== next.colorScope || previous.baseOverrides !== next.baseOverrides) return "Colors updated";
+  return "Settings updated";
+}
+
 function statusLineTone(message: string): "ok" | "warn" | "error" {
   const normalized = message.toLowerCase();
   if (normalized.includes("chrome not found")) return "warn";
@@ -1085,7 +1131,7 @@ function OverlayScrollbar({ targetRef }: { targetRef: React.RefObject<HTMLElemen
 }
 
 // Detached Settings window: same bundle, rendered when the window label is "settings". Hosts the full
-// settings screen (Status + Accounts + Widget config) reusing the same components. Settings persist to
+// settings screen (activity/health header + Accounts + Widget config) reusing the same components. Settings persist to
 // localStorage (widget mirrors them via its "storage" listener). Snapshots shown here come from
 // localStorage and update when the widget saves a fresh read. Tester + Refresh route through the bus.
 function SettingsWindowApp() {
@@ -1098,27 +1144,36 @@ function SettingsWindowApp() {
   });
   const [discovery, setDiscovery] = useState<Partial<Record<Provider, string>>>({});
   const [busy, setBusy] = useState<Provider | `${Provider}-open` | `${Provider}-close` | `${Provider}-reload` | `${Provider}-logout` | `${Provider}-discover` | null>(null);
-  const [message, setMessage] = useState("Settings");
-  const [pinned, setPinned] = useState(true);
+  const [activity, setActivity] = useState("Settings ready");
+  const [commandErrors, setCommandErrors] = useState<Partial<Record<Provider, string>>>({});
+  const [generalError, setGeneralError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const refreshNonceRef = useRef<Partial<Record<Provider, string>>>({});
 
   useEffect(() => {
-    void getCurrentWindow().setAlwaysOnTop(pinned);
-  }, [pinned]);
-
-  useEffect(() => {
-    function reload() {
+    function reloadSettings() {
       setSettings(loadSettings());
-      setSnapshots({ claude: loadSnapshot("claude"), codex: loadSnapshot("codex"), "codex-1": loadSnapshot("codex-1") });
     }
-    window.addEventListener("storage", reload);
-    window.addEventListener("usageview:settings", reload);
-    window.addEventListener("usageview:snapshot", reload);
+    function reloadSnapshots() {
+      const nextSnapshots = { claude: loadSnapshot("claude"), codex: loadSnapshot("codex"), "codex-1": loadSnapshot("codex-1") };
+      setSnapshots(nextSnapshots);
+      setCommandErrors((current) => {
+        const next = { ...current };
+        for (const provider of SETTINGS_PROVIDER_ORDER) if (nextSnapshots[provider].status === "ok") delete next[provider];
+        return next;
+      });
+    }
+    function reloadStorage(event: StorageEvent) {
+      if (event.key === "usageview.settings") reloadSettings();
+      else if (event.key?.startsWith("usageview.snapshot.")) reloadSnapshots();
+    }
+    window.addEventListener("storage", reloadStorage);
+    window.addEventListener("usageview:settings", reloadSettings);
+    window.addEventListener("usageview:snapshot", reloadSnapshots);
     return () => {
-      window.removeEventListener("storage", reload);
-      window.removeEventListener("usageview:settings", reload);
-      window.removeEventListener("usageview:snapshot", reload);
+      window.removeEventListener("storage", reloadStorage);
+      window.removeEventListener("usageview:settings", reloadSettings);
+      window.removeEventListener("usageview:snapshot", reloadSnapshots);
     };
   }, []);
 
@@ -1129,54 +1184,75 @@ function SettingsWindowApp() {
       setSnapshots({ claude: loadSnapshot("claude"), codex: loadSnapshot("codex"), "codex-1": loadSnapshot("codex-1") });
       setBusy((current) => current === payload.provider ? null : current);
       delete refreshNonceRef.current[payload.provider];
-      setMessage(payload.status === "ok"
-        ? `${providerLabel(payload.provider)}: usage refreshed.`
-        : `${providerLabel(payload.provider)}: ${readableStatus(payload.status)}. ${payload.message}`);
+      const text = payload.status === "ok"
+        ? `${providerLabel(payload.provider)} usage refreshed`
+        : `${providerLabel(payload.provider)}: ${readableStatus(payload.status)}. ${payload.message}`;
+      if (isProviderError(payload.status)) {
+        setCommandErrors((current) => ({ ...current, [payload.provider]: text }));
+      } else {
+        setCommandErrors((current) => { const next = { ...current }; delete next[payload.provider]; return next; });
+        setActivity(text);
+      }
     }).then((dispose) => { unlisten = dispose; });
     return () => unlisten?.();
   }, []);
 
   function handleChange(next: Settings) {
+    setActivity(settingsActivityMessage(settings, next));
     setSettings(next);
     saveSettings(next);
     setSavedAt(new Date());
   }
 
+  function providerSucceeded(provider: Provider, text: string) {
+    setCommandErrors((current) => { const next = { ...current }; delete next[provider]; return next; });
+    setActivity(text);
+  }
+
+  function providerFailed(provider: Provider, text: string) {
+    setCommandErrors((current) => ({ ...current, [provider]: text }));
+  }
+
   async function openInApp(provider: Provider) {
     setBusy(`${provider}-open`);
-    try { await openProvider(provider, settings); setMessage(`${providerLabel(provider)} login window opened.`); }
-    catch (error) { setMessage(`${providerLabel(provider)} open failed: ${String(error)}`); }
+    setActivity(`Opening ${providerLabel(provider)} login`);
+    try { await openProvider(provider, settings); providerSucceeded(provider, `${providerLabel(provider)} login window opened`); }
+    catch (error) { providerFailed(provider, `${providerLabel(provider)} open failed: ${String(error)}`); }
     setBusy(null);
   }
   async function closeInApp(provider: Provider) {
     setBusy(`${provider}-close`);
-    try { await closeProvider(provider); setMessage(`${providerLabel(provider)} window hidden.`); }
-    catch (error) { setMessage(`${providerLabel(provider)} close failed: ${String(error)}`); }
+    setActivity(`Hiding ${providerLabel(provider)} window`);
+    try { await closeProvider(provider); providerSucceeded(provider, `${providerLabel(provider)} window hidden`); }
+    catch (error) { providerFailed(provider, `${providerLabel(provider)} close failed: ${String(error)}`); }
     setBusy(null);
   }
   async function reloadInApp(provider: Provider) {
     setBusy(`${provider}-reload`);
-    try { await refreshProviderPage(provider, providerUrl(provider, settings)); setMessage(`${providerLabel(provider)} usage page opened.`); }
-    catch (error) { setMessage(`${providerLabel(provider)} reload failed: ${String(error)}`); }
+    setActivity(`Reloading ${providerLabel(provider)} page`);
+    try { await refreshProviderPage(provider, providerUrl(provider, settings)); providerSucceeded(provider, `${providerLabel(provider)} usage page opened`); }
+    catch (error) { providerFailed(provider, `${providerLabel(provider)} reload failed: ${String(error)}`); }
     setBusy(null);
   }
   async function findApi(provider: Provider) {
     setBusy(`${provider}-discover`);
+    setActivity(`Finding ${providerLabel(provider)} API`);
     try {
       const result = await discoverProviderApi(provider, providerUrl(provider, settings));
       setDiscovery((current) => ({ ...current, [provider]: result }));
-      setMessage(`${providerLabel(provider)}: API discovery done.`);
+      providerSucceeded(provider, `${providerLabel(provider)} API discovery done`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       setDiscovery((current) => ({ ...current, [provider]: `Error: ${msg}` }));
-      setMessage(`${providerLabel(provider)} discovery failed: ${msg}`);
+      providerFailed(provider, `${providerLabel(provider)} discovery failed: ${msg}`);
     }
     setBusy(null);
   }
   async function logoutInApp(provider: Provider) {
     setBusy(`${provider}-logout`);
-    try { await logoutProvider(provider, providerUrl(provider, settings)); setMessage(`${providerLabel(provider)} signed out.`); }
-    catch (error) { setMessage(`${providerLabel(provider)} logout failed: ${String(error)}`); }
+    setActivity(`Signing out ${providerLabel(provider)}`);
+    try { await logoutProvider(provider, providerUrl(provider, settings)); providerSucceeded(provider, `${providerLabel(provider)} signed out`); }
+    catch (error) { providerFailed(provider, `${providerLabel(provider)} logout failed: ${String(error)}`); }
     setBusy(null);
   }
   // Refresh runs on the widget (single engine owner). A targeted result event drives the busy/message
@@ -1185,12 +1261,23 @@ function SettingsWindowApp() {
     const nonce = newNonce();
     refreshNonceRef.current[provider] = nonce;
     setBusy(provider);
-    setMessage(`${providerLabel(provider)}: refreshing...`);
+    setActivity(`Refreshing ${providerLabel(provider)} usage`);
     try {
       await emitTo("widget", "usageview-refresh-request", { nonce, provider } satisfies RefreshRequest);
     } catch {
       // Keep the localStorage path as a fallback for older/race-prone WebView event startup.
       postAppCommand({ nonce, type: "refresh", provider });
+    }
+  }
+
+  async function resetWidgetPosition() {
+    try {
+      await invoke("reset_window_geometry");
+      postAppCommand({ nonce: newNonce(), type: "reset-window" });
+      setGeneralError(null);
+      setActivity("Widget position reset");
+    } catch (error) {
+      setGeneralError(`Reset position failed: ${String(error)}`);
     }
   }
 
@@ -1204,32 +1291,35 @@ function SettingsWindowApp() {
     ["codex", "codexUrl", "showCodex"],
     ["codex-1", "codex1Url", "showCodex1"],
   ];
+  const activeProviders = SETTINGS_PROVIDER_ORDER.filter((provider) => providerEnabled(provider, settings));
+  const commandErrorProviders = settings.aiUsageEnabled ? SETTINGS_PROVIDER_ORDER.filter((provider) => commandErrors[provider]) : [];
+  const snapshotErrorProviders = activeProviders.filter((provider) => isProviderError(snapshots[provider].status) && !commandErrors[provider]);
+  const errorProviders = [...commandErrorProviders, ...snapshotErrorProviders];
+  const errorCount = errorProviders.length + (generalError ? 1 : 0);
+  const firstErrorProvider = errorProviders[0];
+  const firstError = generalError ?? (firstErrorProvider
+    ? commandErrors[firstErrorProvider] ?? `${providerLabel(firstErrorProvider)}: ${providerMessage(snapshots[firstErrorProvider])}`
+    : null);
+  const hasProviderWarning = activeProviders.some((provider) => snapshots[provider].status !== "ok");
+  const headerTone: SettingsHeaderTone = firstError ? "error" : busy !== null || hasProviderWarning ? "warn" : "ok";
+  const headerMessage = firstError ? `${firstError}${errorCount > 1 ? ` (+${errorCount - 1})` : ""}` : activity;
+  const savedLabel = savedAt ? `Saved ${savedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Auto-save on";
 
   return (
     <main className={`control-shell ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag}>
       <div ref={scrollRef} className="scale-shell">
-        <header className="titlebar">
-          <div className="window-title">
-            <strong>UsageView.cfg</strong>
-            <span>{savedAt ? `Saved ${savedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Auto-save on"}</span>
+        <header className="titlebar settings-titlebar">
+          <span className="settings-header-label">Settings</span>
+          <div className={`settings-header-status ${headerTone}`} title={headerMessage}>
+            <span className="settings-health-dot" aria-hidden="true" />
+            <span className="settings-header-message">{headerMessage}</span>
+            <span className="settings-header-saved">{savedLabel}</span>
           </div>
-          <div className="title-actions">
-            <WindowControls
-              pinned={pinned}
-              onTogglePin={() => setPinned((prev) => !prev)}
-              onClose={() => void getCurrentWindow().hide()}
-            />
-          </div>
+          <button className="window-control close settings-close" type="button" title="Close" aria-label="Close" onClick={() => void getCurrentWindow().hide()}>x</button>
         </header>
-
-        <section className="settings-section">
-          <h2>Status</h2>
-          <div className={`status-line ${statusLineTone(message)}`}><span />{message}<strong>{settings.alwaysOnTop ? "pinned" : "unpinned"}</strong></div>
-        </section>
 
         <WidgetSettings
           settings={settings}
-          savedAt={savedAt}
           onChange={handleChange}
           accountPanels={providerFields.map(([provider, urlKey, showKey]) => (
             <ProviderPanel
@@ -1252,11 +1342,7 @@ function SettingsWindowApp() {
           ))}
           onEffectPlay={(provider, from, to, driveBar) => postAppCommand({ nonce: newNonce(), type: "play", provider, from, to, driveBar })}
           onEffectRestore={() => postAppCommand({ nonce: newNonce(), type: "restore" })}
-          onResetWindow={() => {
-            void invoke("reset_window_geometry").catch(() => undefined);
-            postAppCommand({ nonce: newNonce(), type: "reset-window" });
-            setMessage("Widget position reset.");
-          }}
+          onResetWindow={() => void resetWidgetPosition()}
           providerPercents={providerPercents}
         />
       </div>
@@ -2659,9 +2745,8 @@ function SensorServiceSettings() {
   );
 }
 
-function WidgetSettings({ settings, savedAt, onChange, accountPanels, onEffectPlay, onEffectRestore, onResetWindow, providerPercents }: {
+function WidgetSettings({ settings, onChange, accountPanels, onEffectPlay, onEffectRestore, onResetWindow, providerPercents }: {
   settings: Settings;
-  savedAt: Date | null;
   onChange: (settings: Settings) => void;
   accountPanels: ReactNode;
   onEffectPlay: (provider: Provider, from: number, to: number, driveBar: boolean) => void;
@@ -2743,7 +2828,6 @@ function WidgetSettings({ settings, savedAt, onChange, accountPanels, onEffectPl
           <h2>Widget</h2>
           <p>Auto-saves when changed.</p>
         </div>
-        <span className="save-state">{savedAt ? `Saved ${savedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Auto-save on"}</span>
       </div>
       <div className="settings-row">
         <div className="seg-field">
