@@ -1306,7 +1306,7 @@ function SettingsWindowApp() {
   const savedLabel = savedAt ? `Saved ${savedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Auto-save on";
 
   return (
-    <main className={`control-shell ${themeClass(settings.theme)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag}>
+    <main className={`control-shell ${themeClass(settings.theme)} ${panelScopeClasses(settings)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag}>
       <div ref={scrollRef} className="scale-shell">
         <header className="titlebar settings-titlebar">
           <span className="settings-header-label">Settings</span>
@@ -2951,14 +2951,23 @@ function WidgetSettings({ settings, onChange, accountPanels, onEffectPlay, onEff
             />
           </label>
         ))}
-        <label>Update every <span>{settings.monitorIntervalSec}s</span><input
-          type="range"
-          min="1"
-          max="10"
-          step="1"
-          value={settings.monitorIntervalSec}
-          onChange={(event) => patch({ monitorIntervalSec: Number(event.target.value) })}
-        /></label>
+        <div className="seg-field">
+          <span className="seg-label">Update every</span>
+          <div className="num-field">
+            <input
+              type="number"
+              min="1"
+              max="10"
+              step="1"
+              value={settings.monitorIntervalSec}
+              onChange={(event) => {
+                const next = Number(event.target.value);
+                if (Number.isInteger(next) && next >= 1 && next <= 10) patch({ monitorIntervalSec: next });
+              }}
+            />
+            <span className="num-unit">sec</span>
+          </div>
+        </div>
         <SensorServiceSettings />
         </div>}
       </div>
