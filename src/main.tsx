@@ -36,14 +36,28 @@ type SystemMetrics = {
   ram_percent: number;
   ram_used_mb: number;
   ram_total_mb: number;
+  ram_free_mb: number;
+  swap_used_mb: number;
+  swap_total_mb: number;
   cpu_percent: number;
   cpu_temp_c: number | null;
+  cpu_name: string;
+  cpu_physical_cores: number | null;
+  cpu_logical_cores: number;
+  cpu_freq_mhz: number;
   gpu_percent: number | null;
   gpu_temp_c: number | null;
   gpu_name: string | null;
+  gpu_vram_used_mb: number | null;
+  gpu_vram_total_mb: number | null;
+  gpu_power_w: number | null;
+  gpu_clock_mhz: number | null;
+  gpu_fan_percent: number | null;
   igpu_percent: number | null;
   igpu_name: string | null;
 };
+
+type MonitorDetail = { label: string; value: string };
 
 type MonitorReading = {
   kind: MonitorKind;
@@ -51,7 +65,8 @@ type MonitorReading = {
   percent?: number; // 0-100 used for the bar fill; for temps this mirrors the °C value
   displayValue: string; // big readout, e.g. "42%", "58°C", or "N/A"
   unit: "%" | "°C";
-  sub?: string; // small meta line (e.g. "12.3 / 31.9 GB")
+  sub?: string; // always-visible meta line (component name or "12.3 / 31.9 GB")
+  details?: MonitorDetail[]; // full stat rows shown on the flipped/hover face
   available: boolean;
 };
 
@@ -2938,37 +2953,90 @@ function shortGpuName(name: string | null): string | undefined {
   return name.replace(/^NVIDIA\s+GeForce\s+/i, "").replace(/^NVIDIA\s+/i, "");
 }
 
+// "13th Gen Intel(R) Core(TM) i9-13900H" -> "Intel Core i9-13900H"; drop (R)/(TM) noise.
+function shortCpuName(name: string): string {
+  const cleaned = name.replace(/\((?:R|TM)\)/gi, "").replace(/\s+/g, " ").trim();
+  const core = cleaned.match(/((?:Intel|AMD)\s+)?(?:Core|Ryzen|Xeon|Pentium|Celeron|Athlon)[^,]*/i);
+  return (core ? core[0] : cleaned).trim();
+}
+
+const GB = 1024;
+function gb(mb: number): string {
+  return (mb / GB).toFixed(1);
+}
+function optNum(value: number | null, suffix: string): string {
+  return value == null ? "—" : `${Math.round(value)}${suffix}`;
+}
+
 function buildMonitorReadings(m: SystemMetrics | null): Record<MonitorKind, MonitorReading> {
   const make = (kind: MonitorKind): MonitorReading => {
     if (!m) return emptyReading(kind);
     switch (kind) {
       case "cpu": {
         const pct = clampPercent(m.cpu_percent);
-        return { kind, label: "CPU", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", available: true };
+        const name = shortCpuName(m.cpu_name) || "CPU";
+        const cores = `${m.cpu_physical_cores ?? "?"} cores · ${m.cpu_logical_cores} threads`;
+        const clock = m.cpu_freq_mhz > 0 ? `${(m.cpu_freq_mhz / 1000).toFixed(2)} GHz` : "—";
+        const details: MonitorDetail[] = [
+          { label: "Model", value: name },
+          { label: "Cores", value: cores },
+          { label: "Clock", value: clock },
+          { label: "Load", value: `${Math.round(pct)}%` },
+        ];
+        return { kind, label: "CPU", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", sub: name, details, available: true };
       }
       case "ram": {
         const pct = clampPercent(m.ram_percent);
-        const used = (m.ram_used_mb / 1024).toFixed(1);
-        const total = (m.ram_total_mb / 1024).toFixed(1);
-        return { kind, label: "RAM", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", sub: `${used} / ${total} GB`, available: true };
+        const details: MonitorDetail[] = [
+          { label: "Used", value: `${gb(m.ram_used_mb)} GB` },
+          { label: "Free", value: `${gb(m.ram_free_mb)} GB` },
+          { label: "Total", value: `${gb(m.ram_total_mb)} GB` },
+          { label: "Swap", value: m.swap_total_mb > 0 ? `${gb(m.swap_used_mb)} / ${gb(m.swap_total_mb)} GB` : "—" },
+        ];
+        return { kind, label: "RAM", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", sub: `${gb(m.ram_used_mb)} / ${gb(m.ram_total_mb)} GB`, details, available: true };
       }
       case "gpu": {
         if (m.gpu_percent == null) return emptyReading(kind);
         const pct = clampPercent(m.gpu_percent);
-        return { kind, label: "GPU", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", sub: shortGpuName(m.gpu_name), available: true };
+        const name = shortGpuName(m.gpu_name) ?? "GPU";
+        const vram = m.gpu_vram_total_mb != null ? `${gb(m.gpu_vram_used_mb ?? 0)} / ${gb(m.gpu_vram_total_mb)} GB` : "—";
+        const details: MonitorDetail[] = [
+          { label: "Model", value: name },
+          { label: "Load", value: `${Math.round(pct)}%` },
+          { label: "Temp", value: optNum(m.gpu_temp_c, "°C") },
+          { label: "VRAM", value: vram },
+          { label: "Power", value: m.gpu_power_w == null ? "—" : `${m.gpu_power_w.toFixed(0)} W` },
+          { label: "Clock", value: optNum(m.gpu_clock_mhz, " MHz") },
+          { label: "Fan", value: optNum(m.gpu_fan_percent, "%") },
+        ];
+        return { kind, label: "GPU", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", sub: name, details, available: true };
       }
       case "igpu": {
         if (m.igpu_percent == null) return emptyReading(kind);
         const pct = clampPercent(m.igpu_percent);
-        return { kind, label: "iGPU", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", sub: shortGpuName(m.igpu_name), available: true };
+        const name = shortGpuName(m.igpu_name) ?? "iGPU";
+        const details: MonitorDetail[] = [
+          { label: "Model", value: name },
+          { label: "Load", value: `${Math.round(pct)}%` },
+        ];
+        return { kind, label: "iGPU", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", sub: name, details, available: true };
       }
       case "cputemp": {
         if (m.cpu_temp_c == null) return emptyReading(kind);
-        return { kind, label: MONITOR_LABELS.cputemp, percent: clampPercent(m.cpu_temp_c), displayValue: `${Math.round(m.cpu_temp_c)}°C`, unit: "°C", available: true };
+        const details: MonitorDetail[] = [
+          { label: "Sensor", value: "CPU package" },
+          { label: "Temp", value: `${Math.round(m.cpu_temp_c)}°C` },
+        ];
+        return { kind, label: MONITOR_LABELS.cputemp, percent: clampPercent(m.cpu_temp_c), displayValue: `${Math.round(m.cpu_temp_c)}°C`, unit: "°C", details, available: true };
       }
       case "gputemp": {
         if (m.gpu_temp_c == null) return emptyReading(kind);
-        return { kind, label: MONITOR_LABELS.gputemp, percent: clampPercent(m.gpu_temp_c), displayValue: `${Math.round(m.gpu_temp_c)}°C`, unit: "°C", sub: shortGpuName(m.gpu_name), available: true };
+        const name = shortGpuName(m.gpu_name);
+        const details: MonitorDetail[] = [
+          { label: "Sensor", value: name ?? "GPU" },
+          { label: "Temp", value: `${Math.round(m.gpu_temp_c)}°C` },
+        ];
+        return { kind, label: MONITOR_LABELS.gputemp, percent: clampPercent(m.gpu_temp_c), displayValue: `${Math.round(m.gpu_temp_c)}°C`, unit: "°C", sub: name, details, available: true };
       }
     }
   };
@@ -3077,22 +3145,44 @@ function MonitorMark({ kind }: { kind: MonitorKind }) {
 }
 
 function MonitorBlock({ reading, tone }: { reading: MonitorReading; tone: string }) {
+  const [flipped, setFlipped] = useState(false);
   const smoothed = useSmoothedValue(reading.available ? reading.percent ?? 0 : 0);
+  const details = reading.details ?? [];
+  const canFlip = reading.available && details.length > 0;
+  const showBack = flipped && canFlip;
   return (
-    <article className={`usage compact provider-tile monitor monitor-${reading.kind}${reading.available ? "" : " monitor-unavailable"}`} style={{ "--tone": tone } as React.CSSProperties}>
+    <article
+      className={`usage compact provider-tile monitor monitor-${reading.kind}${reading.available ? "" : " monitor-unavailable"}${canFlip ? " flippable" : ""}`}
+      style={{ "--tone": tone } as React.CSSProperties}
+      onClick={canFlip ? () => setFlipped((f) => !f) : undefined}
+      title={canFlip ? (showBack ? "Click to go back" : "Click for details") : undefined}
+    >
       <div className="usage-top">
         <strong><MonitorMark kind={reading.kind} /><span>{reading.label}</span></strong>
         <span className="tile-status">
           <span className={`source-pill ${reading.available ? "ok" : "warn"}`}>{reading.available ? "live" : "n/a"}</span>
         </span>
       </div>
-      <div className="metric">
-        <span className="percent">{reading.available ? reading.displayValue : "N/A"}</span>
-        {reading.sub && <span className="message">{reading.sub}</span>}
-      </div>
-      <div className="bar monitor-bar" aria-label={`${reading.label} ${reading.displayValue}`}>
-        {buildUsageCells(reading.available ? smoothed : 0, 10)}
-      </div>
+      {showBack ? (
+        <div className="monitor-details">
+          {details.map((d) => (
+            <div className="monitor-detail-row" key={d.label}>
+              <span>{d.label}</span>
+              <strong>{d.value}</strong>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <>
+          <div className="metric">
+            <span className="percent">{reading.available ? reading.displayValue : "N/A"}</span>
+            {reading.sub && <span className="message">{reading.sub}</span>}
+          </div>
+          <div className="bar monitor-bar" aria-label={`${reading.label} ${reading.displayValue}`}>
+            {buildUsageCells(reading.available ? smoothed : 0, 10)}
+          </div>
+        </>
+      )}
     </article>
   );
 }

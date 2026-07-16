@@ -54,11 +54,23 @@ struct SystemMetrics {
   ram_percent: f32,
   ram_used_mb: u64,
   ram_total_mb: u64,
+  ram_free_mb: u64,
+  swap_used_mb: u64,
+  swap_total_mb: u64,
   cpu_percent: f32,
   cpu_temp_c: Option<f32>,
+  cpu_name: String,
+  cpu_physical_cores: Option<u32>,
+  cpu_logical_cores: u32,
+  cpu_freq_mhz: u32,
   gpu_percent: Option<f32>,
   gpu_temp_c: Option<f32>,
   gpu_name: Option<String>,
+  gpu_vram_used_mb: Option<u64>,
+  gpu_vram_total_mb: Option<u64>,
+  gpu_power_w: Option<f32>,
+  gpu_clock_mhz: Option<u32>,
+  gpu_fan_percent: Option<u32>,
   igpu_percent: Option<f32>,
   igpu_name: Option<String>,
 }
@@ -626,33 +638,50 @@ async fn discover_provider_api(app: tauri::AppHandle, provider: String, url: Str
 /// rest of the app is unaffected. CPU temperature is intentionally `None` in Phase 1.
 #[tauri::command]
 fn read_system_metrics(state: tauri::State<SystemMonitorState>) -> SystemMetrics {
-  let (ram_percent, ram_used_mb, ram_total_mb, cpu_percent) = {
-    match state.sys.lock() {
-      Ok(mut sys) => {
-        sys.refresh_memory();
-        sys.refresh_cpu_usage();
-        let total = sys.total_memory();
-        let used = sys.used_memory();
-        let ram_percent = if total > 0 {
-          (used as f64 / total as f64 * 100.0) as f32
-        } else {
-          0.0
-        };
-        let cpu_percent = sys.global_cpu_usage();
-        (
-          ram_percent,
-          used / (1024 * 1024),
-          total / (1024 * 1024),
-          cpu_percent,
-        )
-      }
-      Err(_) => (0.0, 0, 0, 0.0),
+  let mut ram_percent = 0.0f32;
+  let mut ram_used_mb = 0u64;
+  let mut ram_total_mb = 0u64;
+  let mut ram_free_mb = 0u64;
+  let mut swap_used_mb = 0u64;
+  let mut swap_total_mb = 0u64;
+  let mut cpu_percent = 0.0f32;
+  let mut cpu_name = String::new();
+  let mut cpu_freq_mhz = 0u32;
+  let mut cpu_logical_cores = 0u32;
+  let mut cpu_physical_cores = None;
+  if let Ok(mut sys) = state.sys.lock() {
+    sys.refresh_memory();
+    sys.refresh_cpu_all();
+    cpu_physical_cores = sys.physical_core_count().map(|c| c as u32);
+    let total = sys.total_memory();
+    let used = sys.used_memory();
+    ram_percent = if total > 0 {
+      (used as f64 / total as f64 * 100.0) as f32
+    } else {
+      0.0
+    };
+    ram_used_mb = used / (1024 * 1024);
+    ram_total_mb = total / (1024 * 1024);
+    ram_free_mb = sys.available_memory() / (1024 * 1024);
+    swap_used_mb = sys.used_swap() / (1024 * 1024);
+    swap_total_mb = sys.total_swap() / (1024 * 1024);
+    cpu_percent = sys.global_cpu_usage();
+    let cpus = sys.cpus();
+    cpu_logical_cores = cpus.len() as u32;
+    if let Some(first) = cpus.first() {
+      cpu_name = first.brand().trim().to_string();
+      cpu_freq_mhz = first.frequency() as u32;
     }
-  };
+  }
 
   let mut gpu_percent = None;
   let mut gpu_temp_c = None;
   let mut gpu_name = None;
+  let mut gpu_vram_used_mb = None;
+  let mut gpu_vram_total_mb = None;
+  let mut gpu_power_w = None;
+  let mut gpu_clock_mhz = None;
+  let mut gpu_fan_percent = None;
   let have_nvidia = state.nvml.is_some();
   if let Some(nvml) = state.nvml.as_ref() {
     if let Ok(device) = nvml.device_by_index(0) {
@@ -664,6 +693,19 @@ fn read_system_metrics(state: tauri::State<SystemMonitorState>) -> SystemMetrics
       }
       if let Ok(name) = device.name() {
         gpu_name = Some(name);
+      }
+      if let Ok(mem) = device.memory_info() {
+        gpu_vram_used_mb = Some(mem.used / (1024 * 1024));
+        gpu_vram_total_mb = Some(mem.total / (1024 * 1024));
+      }
+      if let Ok(power_mw) = device.power_usage() {
+        gpu_power_w = Some(power_mw as f32 / 1000.0);
+      }
+      if let Ok(clock) = device.clock_info(nvml_wrapper::enum_wrappers::device::Clock::Graphics) {
+        gpu_clock_mhz = Some(clock);
+      }
+      if let Ok(fan) = device.fan_speed(0) {
+        gpu_fan_percent = Some(fan);
       }
     }
   }
@@ -689,11 +731,23 @@ fn read_system_metrics(state: tauri::State<SystemMonitorState>) -> SystemMetrics
     ram_percent,
     ram_used_mb,
     ram_total_mb,
+    ram_free_mb,
+    swap_used_mb,
+    swap_total_mb,
     cpu_percent,
     cpu_temp_c: None,
+    cpu_name,
+    cpu_physical_cores,
+    cpu_logical_cores,
+    cpu_freq_mhz,
     gpu_percent,
     gpu_temp_c,
     gpu_name,
+    gpu_vram_used_mb,
+    gpu_vram_total_mb,
+    gpu_power_w,
+    gpu_clock_mhz,
+    gpu_fan_percent,
     igpu_percent,
     igpu_name,
   }
