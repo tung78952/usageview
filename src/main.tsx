@@ -29,7 +29,9 @@ type UsageSnapshot = {
 // A fully parallel model to UsageSnapshot: these are live local-hardware readings, not
 // scraped provider usage. Nothing here touches the protected Provider/UsageSnapshot flow.
 type MonitorKind = "cpu" | "ram" | "gpu" | "igpu" | "cputemp" | "gputemp";
-type MonitorColors = Record<MonitorKind, string | null>;
+type MonitorLevel = "low" | "medium" | "high";
+type MonitorPalette = Record<MonitorLevel, string>;
+type MonitorColors = Record<MonitorKind, MonitorPalette>;
 
 // Shape returned by the Rust `read_system_metrics` command (snake_case matches serde).
 type SystemMetrics = {
@@ -109,6 +111,39 @@ type ProviderColors = { claude: string | null; codex: string | null; "codex-1": 
 type ColorScope = { text: boolean; bar: boolean; border: boolean; bgTint: boolean };
 type BaseOverride = { preset?: string; bg?: string; surface?: string; text?: string };
 
+const DEFAULT_MONITOR_PALETTE: MonitorPalette = { low: "#4faa62", medium: "#e0913d", high: "#e5484d" };
+
+function makeDefaultMonitorColors(): MonitorColors {
+  return {
+    cpu: { ...DEFAULT_MONITOR_PALETTE },
+    ram: { ...DEFAULT_MONITOR_PALETTE },
+    gpu: { ...DEFAULT_MONITOR_PALETTE },
+    igpu: { ...DEFAULT_MONITOR_PALETTE },
+    cputemp: { ...DEFAULT_MONITOR_PALETTE },
+    gputemp: { ...DEFAULT_MONITOR_PALETTE },
+  };
+}
+
+function normalizeMonitorColors(value: unknown): MonitorColors {
+  const result = makeDefaultMonitorColors();
+  if (!value || typeof value !== "object") return result;
+  const saved = value as Record<string, unknown>;
+  for (const kind of Object.keys(result) as MonitorKind[]) {
+    const entry = saved[kind];
+    if (typeof entry === "string") {
+      // Preserve the old single-color override by applying it to all levels.
+      result[kind] = { low: entry, medium: entry, high: entry };
+      continue;
+    }
+    if (!entry || typeof entry !== "object") continue;
+    const palette = entry as Record<string, unknown>;
+    for (const level of ["low", "medium", "high"] as MonitorLevel[]) {
+      if (typeof palette[level] === "string") result[kind][level] = palette[level] as string;
+    }
+  }
+  return result;
+}
+
 type AppMode = "widget" | "mini";
 
 type WindowGeometry = {
@@ -151,7 +186,7 @@ const defaultSettings: Settings = {
   showCpuTemp: false,
   showGpuTemp: false,
   monitorIntervalSec: 2,
-  monitorColors: { cpu: null, ram: null, gpu: null, igpu: null, cputemp: null, gputemp: null },
+  monitorColors: makeDefaultMonitorColors(),
   providerColors: { claude: null, codex: null, "codex-1": null },
   colorScope: { text: true, bar: true, border: true, bgTint: false },
   baseOverrides: {},
@@ -184,6 +219,12 @@ const BASE_PRESETS: Record<"light" | "dark", { id: string; name: string; bg: str
 
 // Curated accent swatches for the provider color rows (custom picker covers anything else).
 const ACCENT_PRESETS = ["#c46f42", "#e0913d", "#d8552f", "#d6486a", "#4faa62", "#2fa8a0", "#3aa3d4", "#5b8def", "#7b8cff", "#9b6be0", "#8a8f9c"];
+const MONITOR_ACCENT_PRESETS = Array.from(new Set([
+  DEFAULT_MONITOR_PALETTE.low,
+  DEFAULT_MONITOR_PALETTE.medium,
+  DEFAULT_MONITOR_PALETTE.high,
+  ...ACCENT_PRESETS,
+]));
 
 function baseModeOf(theme: ThemeKey): "light" | "dark" {
   return theme === "light" || theme === "glass-light" ? "light" : "dark";
@@ -257,8 +298,8 @@ function loadSettings(): Settings {
       showIgpu: loaded.showIgpu ?? false,
       showCpuTemp: loaded.showCpuTemp ?? false,
       showGpuTemp: loaded.showGpuTemp ?? false,
-      monitorIntervalSec: clampNumber(loaded.monitorIntervalSec, 1, 30, 2),
-      monitorColors: { cpu: null, ram: null, gpu: null, igpu: null, cputemp: null, gputemp: null, ...(loaded.monitorColors ?? {}) },
+      monitorIntervalSec: clampNumber(loaded.monitorIntervalSec, 1, 10, 2),
+      monitorColors: normalizeMonitorColors(loaded.monitorColors),
       providerColors: { claude: null, codex: null, "codex-1": null, ...(loaded.providerColors ?? {}) },
       colorScope: { text: true, bar: true, border: true, bgTint: false, ...(loaded.colorScope ?? {}) },
       baseOverrides: loaded.baseOverrides ?? {},
@@ -1656,7 +1697,7 @@ function WidgetApp() {
       if (!cancelled) setMonitorReadings(buildMonitorReadings(metrics));
     }
     void tick();
-    const interval = window.setInterval(tick, Math.max(1, settings.monitorIntervalSec) * 1000);
+    const interval = window.setInterval(tick, clampNumber(settings.monitorIntervalSec, 1, 10, 2) * 1000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
@@ -2309,21 +2350,25 @@ function ColorPicker({ value, onChange, onClose }: { value: string; onChange: (h
 }
 
 function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: Partial<Settings>) => void }) {
-  type PickerTarget = { kind: "accent"; provider: keyof ProviderColors } | { kind: "monitor"; monitor: MonitorKind } | { kind: "base"; field: "bg" | "surface" | "text" };
+  type PickerTarget = { kind: "accent"; provider: keyof ProviderColors } | { kind: "monitor"; monitor: MonitorKind; level: MonitorLevel } | { kind: "base"; field: "bg" | "surface" | "text" };
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const themeKey = settings.theme;
   const mode = baseModeOf(themeKey);
   const base = settings.baseOverrides[themeKey] ?? {};
   const resolvedBase = resolveBaseTokens(themeKey, base) ?? DEFAULT_BASE[themeKey];
   const providers: [keyof ProviderColors, string, string][] = [["claude", "Claude", "#c46f42"], ["codex", "Codex", "#7b8cff"], ["codex-1", "Codex 2", "#7b8cff"]];
+  const monitorLevels: [MonitorLevel, string][] = [["low", "Low"], ["medium", "Medium"], ["high", "High"]];
+  const monitorColorsCustom = (Object.keys(settings.monitorColors) as MonitorKind[]).some((kind) =>
+    monitorLevels.some(([level]) => settings.monitorColors[kind][level].toLowerCase() !== DEFAULT_MONITOR_PALETTE[level].toLowerCase()),
+  );
   const baseFieldValue = (field: "bg" | "surface" | "text") => field === "text" ? resolvedBase.fg : resolvedBase[field];
 
   const setProviderColor = (p: keyof ProviderColors, color: string | null) => patch({ providerColors: { ...settings.providerColors, [p]: color } });
-  const setMonitorColor = (m: MonitorKind, color: string | null) => patch({ monitorColors: { ...settings.monitorColors, [m]: color } });
+  const setMonitorColor = (m: MonitorKind, level: MonitorLevel, color: string) => patch({ monitorColors: { ...settings.monitorColors, [m]: { ...settings.monitorColors[m], [level]: color } } });
   const setScope = (key: keyof ColorScope, val: boolean) => patch({ colorScope: { ...settings.colorScope, [key]: val } });
   const setBase = (next: Partial<BaseOverride>) => patch({ baseOverrides: { ...settings.baseOverrides, [themeKey]: { ...base, ...next } } });
   const resetBase = () => { const nb = { ...settings.baseOverrides }; delete nb[themeKey]; patch({ baseOverrides: nb }); };
-  const samePicker = (t: PickerTarget) => picker && picker.kind === t.kind && (t.kind === "accent" ? (picker as any).provider === t.provider : t.kind === "monitor" ? (picker as any).monitor === t.monitor : (picker as any).field === (t as any).field);
+  const samePicker = (t: PickerTarget) => picker && picker.kind === t.kind && (t.kind === "accent" ? (picker as any).provider === t.provider : t.kind === "monitor" ? (picker as any).monitor === t.monitor && (picker as any).level === t.level : (picker as any).field === (t as any).field);
 
   return (
     <details className="effect-settings colors-settings">
@@ -2332,7 +2377,7 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
           <svg className="disclosure-chevron" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
           <span>Colors</span>
         </span>
-        <strong>{settings.providerColors.claude || settings.providerColors.codex || settings.providerColors["codex-1"] || MONITOR_ORDER.some((k) => settings.monitorColors[k]) || Object.keys(settings.baseOverrides).length ? "custom" : "default"}</strong>
+        <strong>{settings.providerColors.claude || settings.providerColors.codex || settings.providerColors["codex-1"] || monitorColorsCustom || Object.keys(settings.baseOverrides).length ? "custom" : "default"}</strong>
       </summary>
 
       {providers.map(([p, label]) => (
@@ -2354,16 +2399,27 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
       {MONITOR_ORDER.some((k) => settings[MONITOR_SHOW_KEY[k]]) && MONITOR_ORDER.filter((k) => settings[MONITOR_SHOW_KEY[k]]).map((k) => (
         <div className="color-row" key={`mon-${k}`}>
           <span className="seg-label">{MONITOR_LABELS[k]} <em className="color-hint">load</em></span>
-          <div className="swatch-row">
-            {ACCENT_PRESETS.map((c) => (
-              <button type="button" key={c} className={`swatch${(settings.monitorColors[k] ?? "").toLowerCase() === c.toLowerCase() ? " is-active" : ""}`} style={{ background: c }} title={c} onClick={() => setMonitorColor(k, c)} />
-            ))}
-            <button type="button" className={`swatch swatch-custom${samePicker({ kind: "monitor", monitor: k }) ? " is-active" : ""}`} title="Custom color" onClick={() => setPicker(samePicker({ kind: "monitor", monitor: k }) ? null : { kind: "monitor", monitor: k })}>+</button>
-            <button type="button" className="swatch swatch-reset" title="Reset to load color" onClick={() => { setMonitorColor(k, null); if (samePicker({ kind: "monitor", monitor: k })) setPicker(null); }}>⟲</button>
+          <div className="monitor-palette">
+            {monitorLevels.map(([level, label]) => {
+              const target = { kind: "monitor" as const, monitor: k, level };
+              const palette = settings.monitorColors[k];
+              return (
+                <div className="monitor-palette-level" key={level}>
+                  <span className="monitor-palette-label">{label}</span>
+                  <div className="swatch-row">
+                    {MONITOR_ACCENT_PRESETS.map((c) => (
+                      <button type="button" key={c} className={`swatch${palette[level].toLowerCase() === c.toLowerCase() ? " is-active" : ""}`} style={{ background: c }} title={c} onClick={() => setMonitorColor(k, level, c)} />
+                    ))}
+                    <button type="button" className={`swatch swatch-custom${samePicker(target) ? " is-active" : ""}`} title={`Custom ${label.toLowerCase()} color`} onClick={() => setPicker(samePicker(target) ? null : target)}>+</button>
+                    <button type="button" className="swatch swatch-reset" title={`Reset ${label.toLowerCase()} color`} onClick={() => { setMonitorColor(k, level, DEFAULT_MONITOR_PALETTE[level]); if (samePicker(target)) setPicker(null); }}>⟲</button>
+                  </div>
+                  {samePicker(target) && (
+                    <ColorPicker value={palette[level]} onChange={(hex) => setMonitorColor(k, level, hex)} onClose={() => setPicker(null)} />
+                  )}
+                </div>
+              );
+            })}
           </div>
-          {samePicker({ kind: "monitor", monitor: k }) && (
-            <ColorPicker value={settings.monitorColors[k] ?? "#4faa62"} onChange={(hex) => setMonitorColor(k, hex)} onClose={() => setPicker(null)} />
-          )}
         </div>
       ))}
 
@@ -3125,23 +3181,17 @@ function buildMonitorReadings(m: SystemMetrics | null): Record<MonitorKind, Moni
   return { cpu: make("cpu"), ram: make("ram"), gpu: make("gpu"), igpu: make("igpu"), cputemp: make("cputemp"), gputemp: make("gputemp") };
 }
 
-// Load-based accent: low = calm green, mid = amber, high = red. Temps use their own thresholds.
-function loadTone(kind: MonitorKind, value: number | undefined): string {
-  const v = value ?? 0;
+function monitorLevel(kind: MonitorKind, value: number | undefined): MonitorLevel {
+  const current = value ?? 0;
   if (kind === "cputemp" || kind === "gputemp") {
-    if (v >= 85) return "#e5484d";
-    if (v >= 70) return "#e0913d";
-    return "#4faa62";
+    return current >= 85 ? "high" : current >= 70 ? "medium" : "low";
   }
-  if (v >= 85) return "#e5484d";
-  if (v >= 60) return "#e0913d";
-  return "#4faa62";
+  return current >= 85 ? "high" : current >= 60 ? "medium" : "low";
 }
 
 function monitorTone(settings: Settings, reading: MonitorReading): string {
-  const override = settings.monitorColors[reading.kind];
-  if (override) return override;
-  return loadTone(reading.kind, reading.percent);
+  const level = monitorLevel(reading.kind, reading.percent);
+  return settings.monitorColors[reading.kind]?.[level] ?? DEFAULT_MONITOR_PALETTE[level];
 }
 
 // Ease a displayed number toward its target with requestAnimationFrame so fast-changing
