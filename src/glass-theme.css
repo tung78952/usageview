@@ -287,10 +287,6 @@
         fill: none !important;
       }
 
-.theme-glass .mini-card:has(.provider-tile) .save-state {
-        color: var(--accent) !important;
-      }
-
 .theme-glass .source-pill.ok,
 .theme-glass .pill.ok {
         color: var(--ok) !important;

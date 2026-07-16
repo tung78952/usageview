@@ -334,14 +334,6 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   flex: 1 1 auto;
   min-width: 0;
 }
-.title-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  flex: 0 0 auto;
-  min-width: 0;
-}
 .window-controls {
   display: flex;
   align-items: center;
@@ -434,7 +426,6 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 .sensor-service-head > strong.ok { color: var(--tone, #4faa62); }
 .sensor-service-head > strong.warn { color: var(--warn); }
 .sensor-service-actions { margin-top: 8px; }
-.color-hint { font-style: normal; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.5; }
 .provider-tile.monitor.flippable { cursor: pointer; }
 /* Flipped "details" face of a monitor tile: label/value rows in place of the metric + bar. */
 .monitor-details { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; }
