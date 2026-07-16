@@ -3373,7 +3373,7 @@ function MonitorBlock({ reading, tone }: { reading: MonitorReading; tone: string
   return (
     <article
       className={`usage compact provider-tile monitor monitor-${reading.kind}${reading.available ? "" : " monitor-unavailable"}${canFlip ? " flippable" : ""}`}
-      style={{ "--tone": tone } as React.CSSProperties}
+      style={{ "--tone": tone, "--provider-color": tone } as React.CSSProperties}
       onClick={canFlip ? () => setFlipped((f) => !f) : undefined}
       title={canFlip ? (showBack ? "Click to go back" : "Click for details") : undefined}
     >
@@ -3398,7 +3398,7 @@ function MonitorBlock({ reading, tone }: { reading: MonitorReading; tone: string
             <span className="percent">{reading.available ? reading.displayValue : "N/A"}</span>
             {reading.sub && <span className="message">{reading.sub}</span>}
           </div>
-          <div className="bar monitor-bar" aria-label={`${reading.label} ${reading.displayValue}`}>
+          <div className="bar monitor-bar" style={{ "--bar-fill": `${reading.available ? smoothed : 0}%` } as React.CSSProperties} aria-label={`${reading.label} ${reading.displayValue}`}>
             {buildUsageCells(reading.available ? smoothed : 0, 10)}
           </div>
         </>
@@ -3411,7 +3411,7 @@ function MonitorMiniRow({ reading, tone }: { reading: MonitorReading; tone: stri
   const smoothed = useSmoothedValue(reading.available ? reading.percent ?? 0 : 0);
   const fill = reading.available ? smoothed : 0;
   return (
-    <article className={`mini-usage provider-tile monitor monitor-${reading.kind}${reading.available ? "" : " monitor-unavailable"}`} style={{ "--tone": tone } as React.CSSProperties}>
+    <article className={`mini-usage provider-tile monitor monitor-${reading.kind}${reading.available ? "" : " monitor-unavailable"}`} style={{ "--tone": tone, "--provider-color": tone } as React.CSSProperties}>
       <span className={`mini-status ${reading.available ? "ok" : "warn"}`} aria-label={reading.available ? "live" : "n/a"} />
       <span className="mini-mark-btn"><MonitorMark kind={reading.kind} /></span>
       <span className="mini-provider">{reading.label}</span>
