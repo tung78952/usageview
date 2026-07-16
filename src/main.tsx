@@ -2889,8 +2889,8 @@ const MONITOR_LABELS: Record<MonitorKind, string> = {
   cpu: "CPU",
   ram: "RAM",
   gpu: "GPU",
-  cputemp: "CPU TEMP",
-  gputemp: "GPU TEMP",
+  cputemp: "CPU °C",
+  gputemp: "GPU °C",
 };
 const MONITOR_FULL_LABELS: Record<MonitorKind, string> = {
   cpu: "CPU usage",
@@ -2950,11 +2950,11 @@ function buildMonitorReadings(m: SystemMetrics | null): Record<MonitorKind, Moni
       }
       case "cputemp": {
         if (m.cpu_temp_c == null) return emptyReading(kind);
-        return { kind, label: "CPU TEMP", percent: clampPercent(m.cpu_temp_c), displayValue: `${Math.round(m.cpu_temp_c)}°C`, unit: "°C", available: true };
+        return { kind, label: MONITOR_LABELS.cputemp, percent: clampPercent(m.cpu_temp_c), displayValue: `${Math.round(m.cpu_temp_c)}°C`, unit: "°C", available: true };
       }
       case "gputemp": {
         if (m.gpu_temp_c == null) return emptyReading(kind);
-        return { kind, label: "GPU TEMP", percent: clampPercent(m.gpu_temp_c), displayValue: `${Math.round(m.gpu_temp_c)}°C`, unit: "°C", sub: shortGpuName(m.gpu_name), available: true };
+        return { kind, label: MONITOR_LABELS.gputemp, percent: clampPercent(m.gpu_temp_c), displayValue: `${Math.round(m.gpu_temp_c)}°C`, unit: "°C", sub: shortGpuName(m.gpu_name), available: true };
       }
     }
   };
