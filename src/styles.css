@@ -76,7 +76,8 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   padding: 0;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: var(--surface-2);
+  border-color: color-mix(in oklch, var(--accent) 42%, var(--border));
+  background: color-mix(in oklch, var(--accent) 14%, var(--surface-2));
   cursor: pointer;
   flex: 0 0 auto;
   overflow: hidden;
@@ -106,15 +107,24 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   align-items: center;
   justify-content: center;
   border-radius: 3px;
-  /* Solid, self-inverting knob so it always contrasts the track in every theme. */
+  /* Accent knob keeps Mode and feature switches in the same active state language. */
   color: var(--bg);
-  background: var(--fg);
-  border: 1px solid color-mix(in oklch, var(--fg) 55%, var(--border));
+  background: var(--accent);
+  border: 1px solid color-mix(in oklch, var(--accent) 55%, var(--border));
   box-shadow: 0 1px 3px color-mix(in srgb, #000 38%, transparent);
   transition: transform 160ms ease;
 }
 .mode-switch.is-dark .mode-switch-knob { transform: translateX(28px); }
-.feature-mode-switch:hover { border-color: color-mix(in oklch, var(--fg) 42%, var(--border)); }
+.feature-mode-switch:not(.is-on) {
+  border-color: var(--border);
+  background: var(--surface-2);
+}
+.feature-mode-switch:not(.is-on) .feature-switch-knob {
+  color: var(--bg);
+  background: var(--fg);
+  border-color: color-mix(in oklch, var(--fg) 55%, var(--border));
+}
+.feature-mode-switch:hover { border-color: color-mix(in oklch, var(--accent) 52%, var(--border)); }
 .feature-mode-switch:not(.is-on) .feature-switch-end.off,
 .feature-mode-switch.is-on .feature-switch-end.on { visibility: hidden; }
 .feature-switch-end.off { left: 6px; }

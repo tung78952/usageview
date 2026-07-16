@@ -699,9 +699,17 @@
    .mode-switch, .themed-select-trigger and each .themed-select-option. These rules (loaded after
    styles.css) restyle them cleanly. */
 
-/* Mode switch: frosted PILL track (Pixel base is square), kill the glow/hover-scale, solid knob that
-   inverts with the theme (dark-ink knob on light glass, light knob on dark glass) so it's always clear. */
-.theme-glass .mode-switch { border-radius: 999px; }
+/* Mode switch: frosted PILL track (Pixel base is square), with the same accent active state as
+   the smaller switches. */
+.theme-glass .mode-switch {
+  border-radius: 999px;
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--paper-glass-line));
+  background: color-mix(in srgb, var(--accent) 14%, var(--paper-panel-2));
+}
+.theme-glass .feature-mode-switch:not(.is-on) {
+  border-color: var(--paper-glass-line);
+  background: color-mix(in srgb, var(--paper-panel-2) 30%, transparent);
+}
 /* CRITICAL: the generic `.theme-glass button > *` rule (position:relative) outranks the switch's own
    absolute positioning, collapsing the knob + end icons into normal flow — that is the garbled Glass
    switch. Re-assert absolute so the knob stacks on the track and slides. */
@@ -712,8 +720,8 @@
 .theme-glass .mode-switch-knob {
   border-radius: 999px;
   color: var(--paper-panel);
-  background: var(--paper-ink);
-  border: 1px solid color-mix(in srgb, var(--paper-ink) 30%, var(--paper-glass-line));
+  background: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--paper-glass-line));
   box-shadow: 0 2px 6px -2px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 40%), transparent);
 }
 
