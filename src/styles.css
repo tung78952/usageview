@@ -413,10 +413,10 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 .color-hint { font-style: normal; font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.5; }
 .provider-tile.monitor.flippable { cursor: pointer; }
 /* Flipped "details" face of a monitor tile: label/value rows in place of the metric + bar. */
-.monitor-details { display: flex; flex-direction: column; gap: 4px; margin-top: 12px; }
-.monitor-detail-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; font: 600 11px/1.3 var(--font-mono); }
-.monitor-detail-row > span { color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; font-size: 9.5px; flex: 0 0 auto; }
-.monitor-detail-row > strong { color: var(--fg); font-weight: 700; text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.monitor-details { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; }
+.monitor-detail-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
+.monitor-detail-row > span { color: color-mix(in oklch, var(--muted) 82%, var(--fg)); text-transform: uppercase; letter-spacing: 0.05em; font: 700 11px/1.35 var(--font-mono); flex: 0 0 auto; }
+.monitor-detail-row > strong { color: var(--fg); font: 700 13.5px/1.35 var(--font-mono); text-align: right; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .usage-top {
   display: flex;
   align-items: center;

@@ -2961,11 +2961,16 @@ function shortCpuName(name: string): string {
 }
 
 const GB = 1024;
+const NA = "—";
 function gb(mb: number): string {
   return (mb / GB).toFixed(1);
 }
 function optNum(value: number | null, suffix: string): string {
-  return value == null ? "—" : `${Math.round(value)}${suffix}`;
+  return value == null ? NA : `${Math.round(value)}${suffix}`;
+}
+// Drop rows whose value isn't available yet, so the details panel never shows bare "—" dashes.
+function keepAvailable(details: MonitorDetail[]): MonitorDetail[] {
+  return details.filter((d) => d.value !== NA);
 }
 
 function buildMonitorReadings(m: SystemMetrics | null): Record<MonitorKind, MonitorReading> {
@@ -2983,7 +2988,7 @@ function buildMonitorReadings(m: SystemMetrics | null): Record<MonitorKind, Moni
           { label: "Clock", value: clock },
           { label: "Load", value: `${Math.round(pct)}%` },
         ];
-        return { kind, label: "CPU", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", sub: name, details, available: true };
+        return { kind, label: "CPU", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", sub: name, details: keepAvailable(details), available: true };
       }
       case "ram": {
         const pct = clampPercent(m.ram_percent);
@@ -2991,25 +2996,24 @@ function buildMonitorReadings(m: SystemMetrics | null): Record<MonitorKind, Moni
           { label: "Used", value: `${gb(m.ram_used_mb)} GB` },
           { label: "Free", value: `${gb(m.ram_free_mb)} GB` },
           { label: "Total", value: `${gb(m.ram_total_mb)} GB` },
-          { label: "Swap", value: m.swap_total_mb > 0 ? `${gb(m.swap_used_mb)} / ${gb(m.swap_total_mb)} GB` : "—" },
+          { label: "Swap", value: m.swap_total_mb > 0 ? `${gb(m.swap_used_mb)} / ${gb(m.swap_total_mb)} GB` : NA },
         ];
-        return { kind, label: "RAM", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", sub: `${gb(m.ram_used_mb)} / ${gb(m.ram_total_mb)} GB`, details, available: true };
+        return { kind, label: "RAM", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", sub: `${gb(m.ram_used_mb)} / ${gb(m.ram_total_mb)} GB`, details: keepAvailable(details), available: true };
       }
       case "gpu": {
         if (m.gpu_percent == null) return emptyReading(kind);
         const pct = clampPercent(m.gpu_percent);
         const name = shortGpuName(m.gpu_name) ?? "GPU";
-        const vram = m.gpu_vram_total_mb != null ? `${gb(m.gpu_vram_used_mb ?? 0)} / ${gb(m.gpu_vram_total_mb)} GB` : "—";
+        const vram = m.gpu_vram_total_mb != null ? `${gb(m.gpu_vram_used_mb ?? 0)} / ${gb(m.gpu_vram_total_mb)} GB` : NA;
+        // Temp + Fan live on the GPU °C tile instead — keep this panel to load-related stats.
         const details: MonitorDetail[] = [
           { label: "Model", value: name },
           { label: "Load", value: `${Math.round(pct)}%` },
-          { label: "Temp", value: optNum(m.gpu_temp_c, "°C") },
           { label: "VRAM", value: vram },
-          { label: "Power", value: m.gpu_power_w == null ? "—" : `${m.gpu_power_w.toFixed(0)} W` },
+          { label: "Power", value: m.gpu_power_w == null ? NA : `${m.gpu_power_w.toFixed(0)} W` },
           { label: "Clock", value: optNum(m.gpu_clock_mhz, " MHz") },
-          { label: "Fan", value: optNum(m.gpu_fan_percent, "%") },
         ];
-        return { kind, label: "GPU", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", sub: name, details, available: true };
+        return { kind, label: "GPU", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", sub: name, details: keepAvailable(details), available: true };
       }
       case "igpu": {
         if (m.igpu_percent == null) return emptyReading(kind);
@@ -3019,7 +3023,7 @@ function buildMonitorReadings(m: SystemMetrics | null): Record<MonitorKind, Moni
           { label: "Model", value: name },
           { label: "Load", value: `${Math.round(pct)}%` },
         ];
-        return { kind, label: "iGPU", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", sub: name, details, available: true };
+        return { kind, label: "iGPU", percent: pct, displayValue: `${Math.round(pct)}%`, unit: "%", sub: name, details: keepAvailable(details), available: true };
       }
       case "cputemp": {
         if (m.cpu_temp_c == null) return emptyReading(kind);
@@ -3027,16 +3031,18 @@ function buildMonitorReadings(m: SystemMetrics | null): Record<MonitorKind, Moni
           { label: "Sensor", value: "CPU package" },
           { label: "Temp", value: `${Math.round(m.cpu_temp_c)}°C` },
         ];
-        return { kind, label: MONITOR_LABELS.cputemp, percent: clampPercent(m.cpu_temp_c), displayValue: `${Math.round(m.cpu_temp_c)}°C`, unit: "°C", details, available: true };
+        return { kind, label: MONITOR_LABELS.cputemp, percent: clampPercent(m.cpu_temp_c), displayValue: `${Math.round(m.cpu_temp_c)}°C`, unit: "°C", details: keepAvailable(details), available: true };
       }
       case "gputemp": {
         if (m.gpu_temp_c == null) return emptyReading(kind);
         const name = shortGpuName(m.gpu_name);
+        // Fan lives here (temperature tile); NVIDIA can't read laptop fan RPM yet (EC-controlled) → hidden until Phase 2.
         const details: MonitorDetail[] = [
           { label: "Sensor", value: name ?? "GPU" },
           { label: "Temp", value: `${Math.round(m.gpu_temp_c)}°C` },
+          { label: "Fan", value: optNum(m.gpu_fan_percent, "%") },
         ];
-        return { kind, label: MONITOR_LABELS.gputemp, percent: clampPercent(m.gpu_temp_c), displayValue: `${Math.round(m.gpu_temp_c)}°C`, unit: "°C", sub: name, details, available: true };
+        return { kind, label: MONITOR_LABELS.gputemp, percent: clampPercent(m.gpu_temp_c), displayValue: `${Math.round(m.gpu_temp_c)}°C`, unit: "°C", sub: name, details: keepAvailable(details), available: true };
       }
     }
   };
