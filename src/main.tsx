@@ -99,7 +99,9 @@ type Settings = {
   showIgpu: boolean;
   showCpuTemp: boolean;
   showGpuTemp: boolean;
+  systemMonitorsEnabled: boolean;
   monitorIntervalSec: number;
+  colorsEnabled: boolean;
   monitorColors: MonitorColors;
   providerColors: ProviderColors;
   colorScope: ColorScope;
@@ -185,7 +187,9 @@ const defaultSettings: Settings = {
   showIgpu: false,
   showCpuTemp: false,
   showGpuTemp: false,
+  systemMonitorsEnabled: false,
   monitorIntervalSec: 2,
+  colorsEnabled: true,
   monitorColors: makeDefaultMonitorColors(),
   providerColors: { claude: null, codex: null, "codex-1": null },
   colorScope: { text: true, bar: true, border: true, bgTint: false },
@@ -279,7 +283,9 @@ const emptySnapshot = (provider: Provider): UsageSnapshot => ({
 function loadSettings(): Settings {
   try {
     const saved = localStorage.getItem("usageview.settings");
-    const loaded = saved ? { ...defaultSettings, ...JSON.parse(saved) } : defaultSettings;
+    const parsed = saved ? JSON.parse(saved) : {};
+    const loaded = { ...defaultSettings, ...parsed };
+    const hadShownMonitor = [loaded.showCpu, loaded.showRam, loaded.showGpu, loaded.showIgpu, loaded.showCpuTemp, loaded.showGpuTemp].some(Boolean);
     return {
       ...loaded,
       uiScale: clampNumber(loaded.uiScale, 0.25, 2, 1),
@@ -298,7 +304,9 @@ function loadSettings(): Settings {
       showIgpu: loaded.showIgpu ?? false,
       showCpuTemp: loaded.showCpuTemp ?? false,
       showGpuTemp: loaded.showGpuTemp ?? false,
+      systemMonitorsEnabled: typeof parsed.systemMonitorsEnabled === "boolean" ? parsed.systemMonitorsEnabled : hadShownMonitor,
       monitorIntervalSec: clampNumber(loaded.monitorIntervalSec, 1, 10, 2),
+      colorsEnabled: loaded.colorsEnabled ?? true,
       monitorColors: normalizeMonitorColors(loaded.monitorColors),
       providerColors: { claude: null, codex: null, "codex-1": null, ...(loaded.providerColors ?? {}) },
       colorScope: { text: true, bar: true, border: true, bgTint: false, ...(loaded.colorScope ?? {}) },
@@ -383,17 +391,19 @@ function panelStyle(settings: Settings): React.CSSProperties {
     "--effect-bar-brightness": settings.effectBarBrightness,
     "--effect-delta-brightness": settings.effectDeltaBrightness,
   };
-  const pc = settings.providerColors;
-  if (pc.claude) style["--u-claude"] = pc.claude;
-  if (pc.codex) style["--u-codex"] = pc.codex;
-  if (pc["codex-1"]) style["--u-codex-1"] = pc["codex-1"];
-  const base = resolveBaseTokens(settings.theme, settings.baseOverrides[settings.theme]);
-  if (base) {
-    const glass = settings.theme === "glass-light" || settings.theme === "glass-dark";
-    const map = glass
-      ? { "--paper-bg": base.bg, "--paper-panel": base.surface, "--paper-panel-2": base.surface2, "--paper-ink": base.fg, "--paper-soft": base.muted, "--paper-faint": base.muted, "--paper-line": base.border }
-      : { "--bg": base.bg, "--surface": base.surface, "--surface-2": base.surface2, "--fg": base.fg, "--muted": base.muted, "--border": base.border };
-    Object.assign(style, map);
+  if (settings.colorsEnabled) {
+    const pc = settings.providerColors;
+    if (pc.claude) style["--u-claude"] = pc.claude;
+    if (pc.codex) style["--u-codex"] = pc.codex;
+    if (pc["codex-1"]) style["--u-codex-1"] = pc["codex-1"];
+    const base = resolveBaseTokens(settings.theme, settings.baseOverrides[settings.theme]);
+    if (base) {
+      const glass = settings.theme === "glass-light" || settings.theme === "glass-dark";
+      const map = glass
+        ? { "--paper-bg": base.bg, "--paper-panel": base.surface, "--paper-panel-2": base.surface2, "--paper-ink": base.fg, "--paper-soft": base.muted, "--paper-faint": base.muted, "--paper-line": base.border }
+        : { "--bg": base.bg, "--surface": base.surface, "--surface-2": base.surface2, "--fg": base.fg, "--muted": base.muted, "--border": base.border };
+      Object.assign(style, map);
+    }
   }
   return style as React.CSSProperties;
 }
@@ -401,6 +411,7 @@ function panelStyle(settings: Settings): React.CSSProperties {
 // Scope classes toggle where a provider's accent lands (text/bar/border/bg). Default-on scopes keep the
 // current look; the CSS only overrides the OFF states + adds the bg tint.
 function panelScopeClasses(settings: Settings): string {
+  if (!settings.colorsEnabled) return "scope-text scope-bar scope-border";
   const s = settings.colorScope;
   return [s.text && "scope-text", s.bar && "scope-bar", s.border && "scope-border", s.bgTint && "scope-bgtint"]
     .filter(Boolean)
@@ -1597,6 +1608,15 @@ function WidgetApp() {
   }, []);
 
   useEffect(() => {
+    if (settings.effectsEnabled) return;
+    for (const timer of Object.values(effectTimersRef.current)) {
+      if (timer !== undefined) window.clearTimeout(timer);
+    }
+    effectTimersRef.current = {};
+    setActiveEffects({});
+  }, [settings.effectsEnabled]);
+
+  useEffect(() => {
     const effectPayloads: Partial<Record<Provider, UsageEffect>> = {};
     for (const provider of ["claude", "codex", "codex-1"] as Provider[]) {
       const percent = snapshotPercent(snapshotsRef.current[provider]);
@@ -1682,8 +1702,8 @@ function WidgetApp() {
   }, [settings.showClaude, settings.showCodex, settings.showCodex1]);
 
   const shownMonitors = useMemo(
-    () => MONITOR_ORDER.filter((kind) => settings[MONITOR_SHOW_KEY[kind]] as boolean),
-    [settings.showCpu, settings.showRam, settings.showGpu, settings.showIgpu, settings.showCpuTemp, settings.showGpuTemp],
+    () => settings.systemMonitorsEnabled ? MONITOR_ORDER.filter((kind) => settings[MONITOR_SHOW_KEY[kind]] as boolean) : [],
+    [settings.systemMonitorsEnabled, settings.showCpu, settings.showRam, settings.showGpu, settings.showIgpu, settings.showCpuTemp, settings.showGpuTemp],
   );
 
   // Live hardware polling — independent of the 60s usage refresh, and only while at least one
@@ -2159,6 +2179,15 @@ function ModeSwitch({ mode, onToggle }: { mode: ThemeMode; onToggle: () => void 
   );
 }
 
+function FeatureSwitch({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
+  return (
+    <label className="feature-settings-head">
+      <span className="summary-left"><span>{label}</span></span>
+      <span className="feature-settings-control"><strong>{checked ? "ON" : "OFF"}</strong><input className="switch-control" type="checkbox" role="switch" checked={checked} onChange={(event) => onChange(event.target.checked)} /></span>
+    </label>
+  );
+}
+
 // Custom dropdown so the menu can be themed per style (Pixel = square/mono, Glass = frosted). Closes on
 // outside pointerdown + Escape. Generic over the option value so it can be reused beyond the zoom picker.
 function ThemedSelect<T extends string | number>({ value, options, onChange, ariaLabel }: {
@@ -2401,15 +2430,9 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
   const selectedMonitorPalette = selectedTarget?.kind === "monitor" ? settings.monitorColors[selectedTarget.monitor] : null;
 
   return (
-    <details className="effect-settings colors-settings">
-      <summary>
-        <span className="summary-left">
-          <svg className="disclosure-chevron" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
-          <span>Colors</span>
-        </span>
-        <strong>{selectedLabel ?? "pick a target"}</strong>
-      </summary>
-
+    <div className="effect-settings colors-settings">
+      <FeatureSwitch label="Colors" checked={settings.colorsEnabled} onChange={(colorsEnabled) => patch({ colorsEnabled })} />
+      {settings.colorsEnabled && <div className="feature-settings-body">
       <div className="color-target-group">
         <span className="color-group-label">Providers</span>
         <div className="color-target-grid">
@@ -2500,7 +2523,7 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
           <span className="seg-label">Apply accent to</span>
           <div className="scope-checks">
             {([["text", "Text"], ["bar", "Bar"], ["border", "Border"], ["bgTint", "Tint"]] as [keyof ColorScope, string][]).map(([key, label]) => (
-              <label className="scope-check" key={key}><input type="checkbox" checked={settings.colorScope[key]} onChange={(event) => setScope(key, event.target.checked)} /><span>{label}</span></label>
+              <label className="scope-check" key={key}><input className="switch-control" type="checkbox" role="switch" checked={settings.colorScope[key]} onChange={(event) => setScope(key, event.target.checked)} /><span>{label}</span></label>
             ))}
           </div>
         </div>
@@ -2525,7 +2548,8 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
           {picker?.kind === "base" && <ColorPicker value={baseFieldValue(picker.field)} onChange={(color) => setBase({ [picker.field]: color })} onClose={() => setPicker(null)} />}
         </div>
       </details>
-    </details>
+      </div>}
+    </div>
   );
 }
 
@@ -2540,10 +2564,11 @@ function SensorServiceSettings() {
   }, []);
 
   useEffect(() => {
+    if (status === "asus" || status === "asus_installed") return;
     void refresh();
     const id = window.setInterval(refresh, 6000);
     return () => window.clearInterval(id);
-  }, [refresh]);
+  }, [refresh, status]);
 
   async function run(command: "install_sensor_service" | "uninstall_sensor_service") {
     setBusy(true);
@@ -2559,30 +2584,22 @@ function SensorServiceSettings() {
   }
 
   const asus = status === "asus" || status === "asus_installed";
-  const legacyInstalled = status === "asus_installed";
+  if (asus || status === "checking") return null;
   const running = status === "running";
   const installed = running || status === "installed";
-  const label = asus ? "ASUS built-in" : running ? "running" : installed ? "installed" : status === "checking" ? "…" : "not installed";
+  const label = running ? "running" : installed ? "installed" : "not installed";
 
   return (
     <div className="sensor-service">
       <div className="sensor-service-head">
-        <span>CPU temperature source</span>
-        <strong className={asus || running ? "ok" : installed ? "warn" : ""}>{label}</strong>
+        <span>CPU temperature fallback</span>
+        <strong className={running ? "ok" : installed ? "warn" : ""}>{label}</strong>
       </div>
       <p className="monitor-note">
-        {asus
-          ? "Reads CPU temperature and CPU/GPU fan RPM directly from ASUS System Control Interface. No admin helper is needed."
-          : "CPU temperature fallback via LibreHardwareMonitor. It runs at logon with admin (one UAC prompt) and some antivirus may warn about its low-level driver."}
+        LibreHardwareMonitor fallback for machines without a built-in sensor source. It needs admin once and may trigger an antivirus warning.
       </p>
       <div className="sensor-service-actions">
-        {asus ? (
-          legacyInstalled && (
-            <button type="button" disabled={busy} onClick={() => void run("uninstall_sensor_service")}>
-              {busy ? "Working…" : "Remove old LHM helper"}
-            </button>
-          )
-        ) : !installed ? (
+        {!installed ? (
           <button type="button" className="primary" disabled={busy} onClick={() => void run("install_sensor_service")}>
             {busy ? "Working…" : "Install (needs admin)"}
           </button>
@@ -2744,18 +2761,9 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
           </div>
         </div>
       )}
-      <details className="effect-settings">
-        <summary>
-          <span className="summary-left">
-            <svg className="disclosure-chevron" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
-            <span>Usage effect</span>
-          </span>
-          <strong>{settings.effectsEnabled ? "on" : "off"}</strong>
-        </summary>
-        <label className="toggle-row">
-          <span>Enable effect</span>
-          <input type="checkbox" checked={settings.effectsEnabled} onChange={(event) => patch({ effectsEnabled: event.target.checked })} />
-        </label>
+      <div className="effect-settings">
+        <FeatureSwitch label="Usage effect" checked={settings.effectsEnabled} onChange={(effectsEnabled) => patch({ effectsEnabled })} />
+        {settings.effectsEnabled && <div className="feature-settings-body">
         <label>Effect duration <span>{(settings.effectDurationMs / 1000).toFixed(1)}s</span><input
           type="range"
           min="800"
@@ -2782,12 +2790,11 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
         /></label>
         <label className="toggle-row">
           <span>Drop cell effect</span>
-          <input type="checkbox" checked={settings.effectDropCell} onChange={(event) => patch({ effectDropCell: event.target.checked })} />
+          <input className="switch-control" type="checkbox" role="switch" checked={settings.effectDropCell} onChange={(event) => patch({ effectDropCell: event.target.checked })} />
         </label>
         <div className="effect-tester">
             <div className="effect-tester-head">
               <span>Test / replay</span>
-              {!settings.effectsEnabled && <em>enable effect to test</em>}
             </div>
             <div className="effect-tester-row">
               <label>Account<select value={testProvider} onChange={(event) => setTestProvider(event.target.value as Provider)}>
@@ -2801,7 +2808,7 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
             </div>
             <label className="toggle-row">
               <span>Drive bar too (fake %, restores on next read)</span>
-              <input type="checkbox" checked={driveBar} onChange={(event) => setDriveBar(event.target.checked)} />
+              <input className="switch-control" type="checkbox" role="switch" checked={driveBar} onChange={(event) => setDriveBar(event.target.checked)} />
             </label>
             <div className="effect-tester-actions">
               <button type="button" className="primary" disabled={!testable} onClick={() => play(testFrom, testTo)}>Play</button>
@@ -2814,20 +2821,18 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
               ))}
             </div>
         </div>
-      </details>
-      <details className="effect-settings monitor-settings">
-        <summary>
-          <span className="summary-left">
-            <svg className="disclosure-chevron" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
-            <span>System monitors</span>
-          </span>
-          <strong>{MONITOR_ORDER.some((k) => settings[MONITOR_SHOW_KEY[k]]) ? "on" : "off"}</strong>
-        </summary>
+        </div>}
+      </div>
+      <div className="effect-settings monitor-settings">
+        <FeatureSwitch label="System monitors" checked={settings.systemMonitorsEnabled} onChange={(systemMonitorsEnabled) => patch({ systemMonitorsEnabled })} />
+        {settings.systemMonitorsEnabled && <div className="feature-settings-body">
         {MONITOR_ORDER.map((k) => (
           <label className="toggle-row" key={k}>
             <span>{MONITOR_FULL_LABELS[k]}</span>
             <input
+              className="switch-control"
               type="checkbox"
+              role="switch"
               checked={settings[MONITOR_SHOW_KEY[k]] as boolean}
               onChange={(event) => patch({ [MONITOR_SHOW_KEY[k]]: event.target.checked } as Partial<Settings>)}
             />
@@ -2842,10 +2847,8 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
           onChange={(event) => patch({ monitorIntervalSec: Number(event.target.value) })}
         /></label>
         <SensorServiceSettings />
-        {settings.showCpuTemp && (
-          <p className="monitor-note">ASUS machines use the built-in source; other machines can enable the fallback above.</p>
-        )}
-      </details>
+        </div>}
+      </div>
       <ColorsSection settings={settings} patch={patch} />
     </section>
   );
@@ -3259,7 +3262,7 @@ function monitorLevel(kind: MonitorKind, value: number | undefined): MonitorLeve
 
 function monitorTone(settings: Settings, reading: MonitorReading): string {
   const level = monitorLevel(reading.kind, reading.percent);
-  return settings.monitorColors[reading.kind]?.[level] ?? DEFAULT_MONITOR_PALETTE[level];
+  return settings.colorsEnabled ? settings.monitorColors[reading.kind]?.[level] ?? DEFAULT_MONITOR_PALETTE[level] : DEFAULT_MONITOR_PALETTE[level];
 }
 
 // Ease a displayed number toward its target with requestAnimationFrame so fast-changing

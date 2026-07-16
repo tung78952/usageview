@@ -581,6 +581,58 @@
         flex: 0 0 auto;
       }
 
+.theme-glass input.switch-control[type="checkbox"] {
+        appearance: none;
+        -webkit-appearance: none;
+        position: relative;
+        display: inline-block;
+        width: 36px;
+        min-width: 36px;
+        height: 20px;
+        min-height: 20px;
+        padding: 0;
+        border: 1px solid var(--paper-glass-line);
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--paper-panel-2) 30%, transparent) !important;
+        box-shadow: inset 0 1px 3px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 22%), transparent) !important;
+        backdrop-filter: blur(8px) saturate(145%);
+        -webkit-backdrop-filter: blur(8px) saturate(145%);
+      }
+
+.theme-glass input.switch-control[type="checkbox"]::after,
+.theme-glass input.switch-control[type="checkbox"]:checked::after {
+        content: "";
+        position: absolute;
+        left: 2px;
+        top: 2px;
+        width: 14px;
+        height: 14px;
+        border-radius: 999px;
+        background: var(--paper-soft);
+        box-shadow: 0 2px 5px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 34%), transparent);
+        transform: translateX(0);
+        transition: transform 150ms ease, background-color 150ms ease;
+      }
+
+.theme-glass input.switch-control[type="checkbox"]:checked {
+        border-color: color-mix(in srgb, var(--accent) 58%, var(--paper-glass-line));
+        background: color-mix(in srgb, var(--accent) 32%, var(--paper-panel)) !important;
+        box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 14%, transparent), inset 0 1px 3px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 18%), transparent) !important;
+      }
+
+.theme-glass input.switch-control[type="checkbox"]:checked::after {
+        content: "";
+        color: transparent;
+        background: color-mix(in srgb, var(--accent) 78%, #fff);
+        transform: translateX(16px);
+      }
+
+.theme-glass .feature-settings-head {
+        min-width: 0;
+        max-width: 100%;
+        padding: 2px 2px 0;
+      }
+
 /* Segmented Style/Mode control — glass active state (pill highlight). */
 .theme-glass .seg-btn.active {
   color: var(--paper-ink);
