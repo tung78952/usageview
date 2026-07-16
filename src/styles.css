@@ -979,6 +979,18 @@ h2 {
   text-transform: uppercase;
 }
 .ai-accounts-body .mini-card { margin-top: 0; }
+.ai-effect-subsection {
+  margin-top: 2px;
+  padding: 10px;
+  border: 1px solid color-mix(in oklch, var(--accent) 24%, var(--border));
+  border-radius: 4px;
+  background: color-mix(in oklch, var(--surface-2) 36%, transparent);
+}
+.ai-effect-subsection .feature-settings-head > .summary-left { font-size: 10px; letter-spacing: 0.06em; }
+.ai-effect-subsection .feature-mode-switch { width: 52px; height: 28px; min-height: 28px; }
+.ai-effect-subsection .feature-switch-knob { width: 22px; height: 22px; }
+.ai-effect-subsection .feature-mode-switch.is-on .feature-switch-knob { transform: translateX(24px); }
+.ai-effect-subsection > .feature-settings-body { gap: 6px; margin-top: 8px; }
 .effect-settings summary {
   display: flex;
   align-items: center;

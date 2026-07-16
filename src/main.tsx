@@ -2812,44 +2812,44 @@ function WidgetSettings({ settings, savedAt, onChange, accountPanels, onEffectPl
         {settings.aiUsageEnabled && <div className="feature-settings-body ai-accounts-body">
           <span className="ai-accounts-label">Accounts</span>
           {accountPanels}
-        </div>}
-      </div>
-      <div className="effect-settings">
-        <FeatureSwitch label="Usage effect" checked={settings.effectsEnabled} onChange={(effectsEnabled) => patch({ effectsEnabled })} />
-        {settings.effectsEnabled && <div className="feature-settings-body">
-        <label className="toggle-row">
-          <span>Drop cell effect</span>
-          <input className="switch-control" type="checkbox" role="switch" checked={settings.effectDropCell} onChange={(event) => patch({ effectDropCell: event.target.checked })} />
-        </label>
-        <details className="effect-tester">
-          <summary><span className="summary-left"><svg className="disclosure-chevron" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg><span>Test / replay</span></span></summary>
-          <div className="effect-tester-body">
-            <div className="effect-tester-row">
-              <label>Account<select value={testProvider} onChange={(event) => setTestProvider(event.target.value as Provider)}>
-                <option value="claude">Claude</option>
-                <option value="codex">Codex</option>
-                <option value="codex-1">Codex 2</option>
-              </select></label>
-              <label>From<input type="number" min="0" max="100" value={testFrom} onChange={(event) => setTestFrom(Number(event.target.value))} /></label>
-              <label>To<input type="number" min="0" max="100" value={testTo} onChange={(event) => setTestTo(Number(event.target.value))} /></label>
-              <button type="button" onClick={loadCurrent} title="Load this account's current %">current</button>
-            </div>
+          <div className="ai-effect-subsection">
+            <FeatureSwitch label="Usage effect" checked={settings.effectsEnabled} onChange={(effectsEnabled) => patch({ effectsEnabled })} />
+            {settings.effectsEnabled && <div className="feature-settings-body">
             <label className="toggle-row">
-              <span>Drive bar too (fake %, restores on next read)</span>
-              <input className="switch-control" type="checkbox" role="switch" checked={driveBar} onChange={(event) => setDriveBar(event.target.checked)} />
+              <span>Drop cell effect</span>
+              <input className="switch-control" type="checkbox" role="switch" checked={settings.effectDropCell} onChange={(event) => patch({ effectDropCell: event.target.checked })} />
             </label>
-            <div className="effect-tester-actions">
-              <button type="button" className="primary" disabled={!testable} onClick={() => play(testFrom, testTo)}>Play</button>
-              <button type="button" disabled={!testable} onClick={stepUp}>Step +1%</button>
-              <button type="button" onClick={onEffectRestore}>Restore</button>
-            </div>
-            <div className="effect-tester-presets">
-              {presets.map(([label, from, to]) => (
-                <button type="button" key={label} disabled={!testable} onClick={() => { setTestFrom(from); setTestTo(to); play(from, to); }}>{label}</button>
-              ))}
-            </div>
+            <details className="effect-tester">
+              <summary><span className="summary-left"><svg className="disclosure-chevron" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg><span>Test / replay</span></span></summary>
+              <div className="effect-tester-body">
+                <div className="effect-tester-row">
+                  <label>Account<select value={testProvider} onChange={(event) => setTestProvider(event.target.value as Provider)}>
+                    <option value="claude">Claude</option>
+                    <option value="codex">Codex</option>
+                    <option value="codex-1">Codex 2</option>
+                  </select></label>
+                  <label>From<input type="number" min="0" max="100" value={testFrom} onChange={(event) => setTestFrom(Number(event.target.value))} /></label>
+                  <label>To<input type="number" min="0" max="100" value={testTo} onChange={(event) => setTestTo(Number(event.target.value))} /></label>
+                  <button type="button" onClick={loadCurrent} title="Load this account's current %">current</button>
+                </div>
+                <label className="toggle-row">
+                  <span>Drive bar too (fake %, restores on next read)</span>
+                  <input className="switch-control" type="checkbox" role="switch" checked={driveBar} onChange={(event) => setDriveBar(event.target.checked)} />
+                </label>
+                <div className="effect-tester-actions">
+                  <button type="button" className="primary" disabled={!testable} onClick={() => play(testFrom, testTo)}>Play</button>
+                  <button type="button" disabled={!testable} onClick={stepUp}>Step +1%</button>
+                  <button type="button" onClick={onEffectRestore}>Restore</button>
+                </div>
+                <div className="effect-tester-presets">
+                  {presets.map(([label, from, to]) => (
+                    <button type="button" key={label} disabled={!testable} onClick={() => { setTestFrom(from); setTestTo(to); play(from, to); }}>{label}</button>
+                  ))}
+                </div>
+              </div>
+            </details>
+            </div>}
           </div>
-        </details>
         </div>}
       </div>
       <div className="effect-settings monitor-settings">
