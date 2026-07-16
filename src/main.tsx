@@ -2417,7 +2417,7 @@ function SensorServiceSettings() {
 
   useEffect(() => {
     void refresh();
-    const id = window.setInterval(refresh, 3000);
+    const id = window.setInterval(refresh, 6000);
     return () => window.clearInterval(id);
   }, [refresh]);
 
@@ -2434,23 +2434,31 @@ function SensorServiceSettings() {
     }
   }
 
+  const asus = status === "asus" || status === "asus_installed";
+  const legacyInstalled = status === "asus_installed";
   const running = status === "running";
   const installed = running || status === "installed";
-  const label = running ? "running" : installed ? "installed" : status === "checking" ? "…" : "not installed";
+  const label = asus ? "ASUS built-in" : running ? "running" : installed ? "installed" : status === "checking" ? "…" : "not installed";
 
   return (
     <div className="sensor-service">
       <div className="sensor-service-head">
         <span>CPU temperature source</span>
-        <strong className={running ? "ok" : installed ? "warn" : ""}>{label}</strong>
+        <strong className={asus || running ? "ok" : installed ? "warn" : ""}>{label}</strong>
       </div>
       <p className="monitor-note">
-        Reads CPU temperature via a bundled LibreHardwareMonitor helper that runs at logon with admin
-        (one UAC prompt). Some antivirus may warn about its low-level driver. Fan RPM appears only if your
-        hardware exposes it (many laptops don't).
+        {asus
+          ? "Reads CPU temperature and CPU/GPU fan RPM directly from ASUS System Control Interface. No admin helper is needed."
+          : "CPU temperature fallback via LibreHardwareMonitor. It runs at logon with admin (one UAC prompt) and some antivirus may warn about its low-level driver."}
       </p>
       <div className="sensor-service-actions">
-        {!installed ? (
+        {asus ? (
+          legacyInstalled && (
+            <button type="button" disabled={busy} onClick={() => void run("uninstall_sensor_service")}>
+              {busy ? "Working…" : "Remove old LHM helper"}
+            </button>
+          )
+        ) : !installed ? (
           <button type="button" className="primary" disabled={busy} onClick={() => void run("install_sensor_service")}>
             {busy ? "Working…" : "Install (needs admin)"}
           </button>
@@ -2711,7 +2719,7 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
         /></label>
         <SensorServiceSettings />
         {settings.showCpuTemp && (
-          <p className="monitor-note">Enable the CPU temperature source below to fill the CPU °C tile.</p>
+          <p className="monitor-note">ASUS machines use the built-in source; other machines can enable the fallback above.</p>
         )}
       </details>
       <ColorsSection settings={settings} patch={patch} />

@@ -1,13 +1,12 @@
 // uvsensord — UsageView sensor helper.
 //
-// Reads CPU temperature (+ per-core) and CPU/GPU fan RPM via LibreHardwareMonitorLib and writes
-// them to %LOCALAPPDATA%\UsageView\sensors.json every ~2s. Must run elevated (the library loads a
-// ring-0 driver to read hardware). The main UsageView app (non-admin) just reads that JSON file.
+// Generic fallback for CPU temperature (+ per-core) via LibreHardwareMonitorLib. ASUS laptops use
+// the lighter built-in ATKACPI source in UsageView instead, including their CPU/GPU fan RPM.
 //
 // Build (from this folder, with the two bundled DLLs alongside):
-//   csc /target:exe /platform:x64 /out:uvsensord.exe /r:LibreHardwareMonitorLib.dll /r:HidSharp.dll /r:System.Management.dll uvsensord.cs
+//   csc /target:winexe /platform:x64 /out:uvsensord.exe /r:LibreHardwareMonitorLib.dll /r:HidSharp.dll /r:System.Management.dll uvsensord.cs
 //
-// Run "uvsensord.exe --dump" once (elevated) to print every hardware/sensor for diagnostics.
+// Run "uvsensord.exe --dump" once (elevated) for a one-shot diagnostic run.
 
 using System;
 using System.Collections.Generic;
@@ -37,8 +36,6 @@ internal static class Program
         var computer = new Computer
         {
             IsCpuEnabled = true,
-            IsMotherboardEnabled = true,
-            IsGpuEnabled = true,
         };
         try { computer.Open(); }
         catch (Exception ex) { Console.Error.WriteLine("open failed: " + ex.Message); return 1; }

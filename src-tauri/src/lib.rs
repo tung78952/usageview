@@ -12,6 +12,9 @@ use tauri::{
 };
 
 #[cfg(windows)]
+mod asus_acpi;
+
+#[cfg(windows)]
 mod gpu_perf;
 
 const PAYLOAD_PREFIX: &str = "__USAGEVIEW__";
@@ -47,6 +50,9 @@ struct SystemMonitorState {
   dgpu_last: Mutex<(Option<f32>, Option<f32>)>, // (percent, temp)
   #[cfg(windows)]
   igpu: Mutex<gpu_perf::IgpuMonitor>,
+  #[cfg(windows)]
+  asus_acpi: Mutex<asus_acpi::AsusAcpiMonitor>,
+  sensor_task_cache: Mutex<Option<(bool, std::time::Instant)>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -774,6 +780,22 @@ fn read_system_metrics(state: tauri::State<SystemMonitorState>) -> SystemMetrics
     gpu_fan_rpm = sensors.gpu_fan_rpm.map(|v| v.round() as u32);
   }
 
+  // ASUS exposes its laptop tachometers through ATKACPI rather than standard SuperIO sensors.
+  // Prefer that built-in, non-admin source and retain the LHM sidecar only as a generic fallback.
+  #[cfg(windows)]
+  if let Ok(mut monitor) = state.asus_acpi.lock() {
+    let readings = monitor.read();
+    if readings.cpu_temp_c.is_some() {
+      cpu_temp_c = readings.cpu_temp_c;
+    }
+    if readings.cpu_fan_rpm.is_some() {
+      cpu_fan_rpm = readings.cpu_fan_rpm;
+    }
+    if readings.gpu_fan_rpm.is_some() {
+      gpu_fan_rpm = readings.gpu_fan_rpm;
+    }
+  }
+
   SystemMetrics {
     ram_percent,
     ram_used_mb,
@@ -818,6 +840,20 @@ fn read_igpu(_state: &SystemMonitorState) -> (Option<f32>, Option<String>) {
 
 const SENSOR_TASK_NAME: &str = "UsageViewSensors";
 
+#[cfg(windows)]
+fn hidden_command(program: &str) -> std::process::Command {
+  use std::os::windows::process::CommandExt;
+
+  let mut command = std::process::Command::new(program);
+  command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+  command
+}
+
+#[cfg(not(windows))]
+fn hidden_command(program: &str) -> std::process::Command {
+  std::process::Command::new(program)
+}
+
 /// Run a PowerShell script elevated (one UAC prompt). The script is written to a temp `.ps1` and
 /// launched via `Start-Process -Verb RunAs`. Err if the launcher fails / UAC is declined.
 fn run_elevated_ps(script: &str) -> Result<(), String> {
@@ -828,7 +864,7 @@ fn run_elevated_ps(script: &str) -> Result<(), String> {
     "Start-Process -Verb RunAs -WindowStyle Hidden -Wait -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',\"{}\"",
     path.to_string_lossy()
   );
-  let status = std::process::Command::new("powershell")
+  let status = hidden_command("powershell")
     .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &launcher])
     .status()
     .map_err(|e| e.to_string())?;
@@ -843,7 +879,10 @@ fn run_elevated_ps(script: &str) -> Result<(), String> {
 /// Install the elevated sensor helper as a scheduled task that runs at logon with highest
 /// privileges (one UAC), then start it now. Enables CPU temperature (+ fan where available).
 #[tauri::command]
-fn install_sensor_service(app: tauri::AppHandle) -> Result<(), String> {
+fn install_sensor_service(
+  app: tauri::AppHandle,
+  state: tauri::State<SystemMonitorState>,
+) -> Result<(), String> {
   let exe = app
     .path()
     .resolve("resources/sensors/uvsensord.exe", tauri::path::BaseDirectory::Resource)
@@ -855,29 +894,37 @@ fn install_sensor_service(app: tauri::AppHandle) -> Result<(), String> {
      $trigger = New-ScheduledTaskTrigger -AtLogOn\n\
      $me = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name\n\
      $principal = New-ScheduledTaskPrincipal -UserId $me -LogonType Interactive -RunLevel Highest\n\
-     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)\n\
+     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)\n\
      Register-ScheduledTask -TaskName '{task}' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null\n\
      Start-ScheduledTask -TaskName '{task}'\n",
     exe = exe_str,
     task = SENSOR_TASK_NAME
   );
-  run_elevated_ps(&script)
+  let result = run_elevated_ps(&script);
+  if let Ok(mut cache) = state.sensor_task_cache.lock() {
+    *cache = None;
+  }
+  result
 }
 
 /// Remove the sensor scheduled task and stop the helper (one UAC).
 #[tauri::command]
-fn uninstall_sensor_service() -> Result<(), String> {
+fn uninstall_sensor_service(state: tauri::State<SystemMonitorState>) -> Result<(), String> {
   let script = format!(
     "Stop-ScheduledTask -TaskName '{task}' -ErrorAction SilentlyContinue\n\
      Unregister-ScheduledTask -TaskName '{task}' -Confirm:$false -ErrorAction SilentlyContinue\n\
      Get-Process -Name uvsensord -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue\n",
     task = SENSOR_TASK_NAME
   );
-  run_elevated_ps(&script)
+  let result = run_elevated_ps(&script);
+  if let Ok(mut cache) = state.sensor_task_cache.lock() {
+    *cache = None;
+  }
+  result
 }
 
 fn sensor_task_exists() -> bool {
-  std::process::Command::new("schtasks")
+  hidden_command("schtasks")
     .args(["/query", "/tn", SENSOR_TASK_NAME])
     .stdout(std::process::Stdio::null())
     .stderr(std::process::Stdio::null())
@@ -886,12 +933,45 @@ fn sensor_task_exists() -> bool {
     .unwrap_or(false)
 }
 
-/// "running" = fresh sensor data; "installed" = task exists but no fresh data yet; "missing" = not set up.
+fn sensor_task_exists_cached(state: &SystemMonitorState) -> bool {
+  if let Ok(mut cache) = state.sensor_task_cache.lock() {
+    if let Some((exists, checked_at)) = *cache {
+      if checked_at.elapsed() < Duration::from_secs(30) {
+        return exists;
+      }
+    }
+    let exists = sensor_task_exists();
+    *cache = Some((exists, std::time::Instant::now()));
+    exists
+  } else {
+    sensor_task_exists()
+  }
+}
+
+#[cfg(windows)]
+fn asus_acpi_available(state: &SystemMonitorState) -> bool {
+  state
+    .asus_acpi
+    .lock()
+    .map(|monitor| monitor.is_available())
+    .unwrap_or(false)
+}
+
+/// ASUS uses its built-in ACPI source. Other machines can opt into the elevated LHM fallback.
 #[tauri::command]
-fn sensor_service_status() -> String {
+fn sensor_service_status(state: tauri::State<SystemMonitorState>) -> String {
+  #[cfg(windows)]
+  if asus_acpi_available(&state) {
+    return if sensor_task_exists_cached(&state) {
+      "asus_installed".to_string()
+    } else {
+      "asus".to_string()
+    };
+  }
+
   if read_sidecar_sensors().is_some() {
     "running".to_string()
-  } else if sensor_task_exists() {
+  } else if sensor_task_exists_cached(&state) {
     "installed".to_string()
   } else {
     "missing".to_string()
@@ -918,6 +998,9 @@ pub fn run() {
         dgpu_last: Mutex::new((None, None)),
         #[cfg(windows)]
         igpu: Mutex::new(gpu_perf::IgpuMonitor::init()),
+        #[cfg(windows)]
+        asus_acpi: Mutex::new(asus_acpi::AsusAcpiMonitor::init()),
+        sensor_task_cache: Mutex::new(None),
       }
     })
     .setup(|app| {
