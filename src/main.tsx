@@ -1227,13 +1227,11 @@ function SettingsWindowApp() {
           <div className={`status-line ${statusLineTone(message)}`}><span />{message}<strong>{settings.alwaysOnTop ? "pinned" : "unpinned"}</strong></div>
         </section>
 
-        <section className="settings-section ai-usage-master">
-          <FeatureSwitch label="AI usage" checked={settings.aiUsageEnabled} onChange={(aiUsageEnabled) => handleChange({ ...settings, aiUsageEnabled })} />
-        </section>
-
-        {settings.aiUsageEnabled && <section className="settings-section">
-          <h2>Accounts</h2>
-          {providerFields.map(([provider, urlKey, showKey]) => (
+        <WidgetSettings
+          settings={settings}
+          savedAt={savedAt}
+          onChange={handleChange}
+          accountPanels={providerFields.map(([provider, urlKey, showKey]) => (
             <ProviderPanel
               key={provider}
               provider={provider}
@@ -1252,12 +1250,6 @@ function SettingsWindowApp() {
               onToggleShown={() => handleChange({ ...settings, [showKey]: !(settings[showKey] as boolean) })}
             />
           ))}
-        </section>}
-
-        <WidgetSettings
-          settings={settings}
-          savedAt={savedAt}
-          onChange={handleChange}
           onEffectPlay={(provider, from, to, driveBar) => postAppCommand({ nonce: newNonce(), type: "play", provider, from, to, driveBar })}
           onEffectRestore={() => postAppCommand({ nonce: newNonce(), type: "restore" })}
           onResetWindow={() => {
@@ -2667,10 +2659,11 @@ function SensorServiceSettings() {
   );
 }
 
-function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRestore, onResetWindow, providerPercents }: {
+function WidgetSettings({ settings, savedAt, onChange, accountPanels, onEffectPlay, onEffectRestore, onResetWindow, providerPercents }: {
   settings: Settings;
   savedAt: Date | null;
   onChange: (settings: Settings) => void;
+  accountPanels: ReactNode;
   onEffectPlay: (provider: Provider, from: number, to: number, driveBar: boolean) => void;
   onEffectRestore: () => void;
   onResetWindow: () => void;
@@ -2814,6 +2807,13 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
           </div>
         </div>
       )}
+      <div className="effect-settings ai-usage-settings">
+        <FeatureSwitch label="AI usage" checked={settings.aiUsageEnabled} onChange={(aiUsageEnabled) => patch({ aiUsageEnabled })} />
+        {settings.aiUsageEnabled && <div className="feature-settings-body ai-accounts-body">
+          <span className="ai-accounts-label">Accounts</span>
+          {accountPanels}
+        </div>}
+      </div>
       <div className="effect-settings">
         <FeatureSwitch label="Usage effect" checked={settings.effectsEnabled} onChange={(effectsEnabled) => patch({ effectsEnabled })} />
         {settings.effectsEnabled && <div className="feature-settings-body">

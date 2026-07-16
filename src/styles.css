@@ -971,6 +971,14 @@ h2 {
 }
 .feature-settings-head > .summary-left { color: var(--muted); font: 750 11px/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; }
 .feature-settings-body { display: grid; gap: 4px; margin-top: 10px; }
+.ai-accounts-body { gap: 10px; }
+.ai-accounts-label {
+  color: var(--muted);
+  font: 750 10px/1 var(--font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.ai-accounts-body .mini-card { margin-top: 0; }
 .effect-settings summary {
   display: flex;
   align-items: center;
