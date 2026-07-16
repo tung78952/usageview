@@ -239,8 +239,81 @@ const WIDGET_BASE_WIDTH = 392;
 const MINI_LOCK_WIDTH = 240;
 const MINI_MIN_HEIGHT_FALLBACK = 48;
 const MODE_KEY = "usageview.mode";
+const TILE_LAYOUT_KEY = "usageview.tileLayout.v1";
+const TILE_LAYOUT_EVENT = "usageview:tile-layout";
+const ALL_TILE_IDS = [
+  "provider:claude", "provider:codex", "provider:codex-1",
+  "monitor:cpu", "monitor:ram", "monitor:gpu", "monitor:igpu", "monitor:cputemp", "monitor:gputemp",
+] as const;
+type TileId = typeof ALL_TILE_IDS[number];
+// Must match the size and scale clamp `open_detached_tile` builds the window with in lib.rs.
+const DETACHED_TILE_WIDTH = 392;
+const DETACHED_TILE_HEIGHT = 220;
+const clampTileScale = (scale: number) => Math.min(1.5, Math.max(0.5, scale));
+type TileLayout = { version: 1; order: TileId[]; detached: Partial<Record<TileId, WindowPosition>> };
+type DetachedTileEvent = { tileId: TileId; x: number; y: number; screenY: number };
+type DetachedRuntimeState = {
+  snapshots: Record<Provider, UsageSnapshot>;
+  monitorReadings: Record<MonitorKind, MonitorReading>;
+  activeEffects: Partial<Record<Provider, UsageEffect>>;
+  flashProviders: Provider[];
+  pausedProviders: Provider[];
+  freshAt: Partial<Record<Provider, string>>;
+};
 let windowGeometryCache: Partial<Record<AppMode, WindowPosition>> | undefined;
 let windowGeometryResetGeneration = 0;
+
+function isTileId(value: unknown): value is TileId {
+  return typeof value === "string" && (ALL_TILE_IDS as readonly string[]).includes(value);
+}
+
+function normalizeTileLayout(value: unknown): TileLayout {
+  const parsed = value && typeof value === "object" ? value as Partial<TileLayout> : {};
+  const savedOrder = Array.isArray(parsed.order) ? parsed.order.filter(isTileId) : [];
+  const order = [...new Set([...savedOrder, ...ALL_TILE_IDS])] as TileId[];
+  const detached: Partial<Record<TileId, WindowPosition>> = {};
+  if (parsed.detached && typeof parsed.detached === "object") {
+    for (const [id, position] of Object.entries(parsed.detached)) {
+      if (!isTileId(id) || !position || typeof position !== "object") continue;
+      const candidate = position as Partial<WindowPosition>;
+      if (Number.isFinite(candidate.x) && Number.isFinite(candidate.y)) {
+        detached[id] = { x: Math.round(candidate.x!), y: Math.round(candidate.y!) };
+      }
+    }
+  }
+  return { version: 1, order, detached };
+}
+
+function loadTileLayout(): TileLayout {
+  try {
+    const saved = localStorage.getItem(TILE_LAYOUT_KEY);
+    return normalizeTileLayout(saved ? JSON.parse(saved) : undefined);
+  } catch {
+    return normalizeTileLayout(undefined);
+  }
+}
+
+function saveTileLayout(layout: TileLayout) {
+  localStorage.setItem(TILE_LAYOUT_KEY, JSON.stringify(normalizeTileLayout(layout)));
+  window.dispatchEvent(new Event(TILE_LAYOUT_EVENT));
+}
+
+function tileWindowLabel(tileId: TileId) {
+  return `tile_${tileId.replace(':', '_').replace(/-/g, '_')}`;
+}
+
+function tileIdForWindowLabel(label: string): TileId | null {
+  return ALL_TILE_IDS.find((tileId) => tileWindowLabel(tileId) === label) ?? null;
+}
+
+function providerFromTile(tileId: TileId): Provider | null {
+  return tileId.startsWith("provider:") ? tileId.slice("provider:".length) as Provider : null;
+}
+
+function monitorFromTile(tileId: TileId): MonitorKind | null {
+  return tileId.startsWith("monitor:") ? tileId.slice("monitor:".length) as MonitorKind : null;
+}
+
 
 function loadMode(): AppMode {
   try {
@@ -634,7 +707,7 @@ async function readCurrentPosition(): Promise<WindowPosition> {
 function shouldStartWindowDrag(target: EventTarget | null) {
   if (!(target instanceof HTMLElement)) return false;
   return !target.closest(
-    "button, input, select, textarea, a, label, summary, details, [role='button'], .window-controls, .advanced-tools, .debug-text, .provider-tile",
+    "button, input, select, textarea, a, label, summary, details, [role='button'], .window-controls, .advanced-tools, .debug-text, .provider-tile, .tile-shell, .detached-tile",
   );
 }
 
@@ -688,6 +761,20 @@ function providerUrl(provider: Provider, settings: Settings): string {
   if (provider === "claude") return settings.claudeUrl;
   if (provider === "codex-1") return settings.codex1Url;
   return settings.codexUrl;
+}
+
+// Pre-pass only: Rust clamps the real window to the monitor work area once it exists and reports
+// back over `usageview-detached-position`. Keep the probe the same size Rust builds the window at,
+// or the two clamps disagree about what fits.
+async function normalizeDetachedTilePosition(position: WindowPosition, uiScale: number): Promise<WindowPosition> {
+  const screens = await monitorScreenRects();
+  const rects = screens.length ? screens : browserScreenRects();
+  const tileScale = clampTileScale(uiScale);
+  const probe = { x: position.x, y: position.y, width: DETACHED_TILE_WIDTH * tileScale, height: DETACHED_TILE_HEIGHT * tileScale };
+  const target = nearestScreenRect(probe, position, rects);
+  const scale = target?.scale ?? (window.devicePixelRatio || 1);
+  const clamped = clampPositionToScreen({ ...probe, width: probe.width * scale, height: probe.height * scale }, position, rects);
+  return { x: Math.round(clamped.x), y: Math.round(clamped.y) };
 }
 
 function providerEnabled(provider: Provider, settings: Settings): boolean {
@@ -1011,7 +1098,133 @@ function App() {
   const provider = providerForLabel(label);
   if (provider) return <ProviderLoginApp provider={provider} />;
   if (label === "settings") return <SettingsWindowApp />;
+  const queryTileId = new URLSearchParams(window.location.search).get("tile");
+  const tileId = isTileId(queryTileId) ? queryTileId : tileIdForWindowLabel(label);
+  if (tileId) return <DetachedTileApp tileId={tileId} />;
   return <WidgetApp />;
+}
+
+function DetachedTileApp({ tileId }: { tileId: TileId }) {
+  const [settings, setSettings] = useState(loadSettings);
+  const [runtime, setRuntime] = useState<DetachedRuntimeState>(() => ({
+    snapshots: { claude: loadSnapshot("claude"), codex: loadSnapshot("codex"), "codex-1": loadSnapshot("codex-1") },
+    monitorReadings: buildMonitorReadings(null),
+    activeEffects: {},
+    flashProviders: [],
+    pausedProviders: [],
+    freshAt: {},
+  }));
+  const [timer, setTimer] = useState(false);
+  const rootRef = useRef<HTMLElement | null>(null);
+  const pointerRef = useRef<{ x: number; y: number; dragging: boolean } | null>(null);
+  const suppressClickRef = useRef(false);
+  const nativeDragActiveRef = useRef(false);
+  const dragFinishTimerRef = useRef(0);
+
+  useEffect(() => {
+    function reloadSettings() { setSettings(loadSettings()); }
+    function onStorage(event: StorageEvent) { if (event.key === "usageview.settings") reloadSettings(); }
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("usageview:settings", reloadSettings);
+    let unlisten: (() => void) | undefined;
+    void listen<DetachedRuntimeState>("usageview-runtime-state", ({ payload }) => setRuntime(payload))
+      .then((dispose) => { unlisten = dispose; });
+    void emitTo("widget", "usageview-runtime-request", { label: getCurrentWindow().label });
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("usageview:settings", reloadSettings);
+      unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    void getCurrentWindow().setAlwaysOnTop(settings.alwaysOnTop).catch(() => undefined);
+    void getCurrentWebview().setZoom(settings.uiScale).catch(() => undefined);
+    document.documentElement.classList.add("detached-surface");
+    return () => {
+      document.documentElement.classList.remove("detached-surface");
+    };
+  }, [settings.alwaysOnTop, settings.uiScale]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    const appWindow = getCurrentWindow();
+    function scheduleFinish() {
+      if (!nativeDragActiveRef.current) return;
+      window.clearTimeout(dragFinishTimerRef.current);
+      dragFinishTimerRef.current = window.setTimeout(async function finish() {
+        if (!nativeDragActiveRef.current) return;
+        const result = await invoke<boolean | null>("finish_detached_tile_drag", { tileId }).catch(() => false);
+        if (result === null) {
+          dragFinishTimerRef.current = window.setTimeout(finish, 120);
+        } else {
+          nativeDragActiveRef.current = false;
+          pointerRef.current = null;
+        }
+      }, 180);
+    }
+    void appWindow.onMoved(scheduleFinish).then((dispose) => { unlisten = dispose; });
+    return () => { window.clearTimeout(dragFinishTimerRef.current); unlisten?.(); };
+  }, [tileId]);
+
+  function onMouseDown(event: React.MouseEvent<HTMLElement>) {
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button, input, a, [role='button']")) return;
+    pointerRef.current = { x: event.clientX, y: event.clientY, dragging: false };
+  }
+
+  function onMouseMove(event: React.MouseEvent<HTMLElement>) {
+    const pointer = pointerRef.current;
+    if (!pointer || pointer.dragging || (event.buttons & 1) !== 1) return;
+    if (Math.abs(event.clientX - pointer.x) < 6 && Math.abs(event.clientY - pointer.y) < 6) return;
+    pointer.dragging = true;
+    suppressClickRef.current = true;
+    nativeDragActiveRef.current = true;
+    void getCurrentWindow().startDragging().catch(() => {
+      nativeDragActiveRef.current = false;
+      pointerRef.current = null;
+    });
+  }
+
+  const provider = providerFromTile(tileId);
+  const monitor = monitorFromTile(tileId);
+  const paused = provider ? runtime.pausedProviders.includes(provider) : false;
+  const content = provider
+    ? timer
+      ? <TimerView snapshot={runtime.snapshots[provider]} onBack={() => setTimer(false)} paused={paused} />
+      : <UsageBlock
+          snapshot={runtime.snapshots[provider]}
+          flash={runtime.flashProviders.includes(provider)}
+          paused={paused}
+          updatedAgo={formatAgo(runtime.freshAt[provider])}
+          effect={settings.effectsEnabled ? runtime.activeEffects[provider] : undefined}
+          dropCell={settings.effectDropCell}
+          onFlip={() => setTimer(true)}
+        />
+    : monitor
+      ? <MonitorBlock reading={runtime.monitorReadings[monitor]} tone={monitorTone(settings, runtime.monitorReadings[monitor])} />
+      : null;
+
+  return (
+    <main
+      ref={rootRef}
+      className={`detached-tile widget ${themeClass(settings.theme)} ${panelScopeClasses(settings)}`}
+      style={panelStyle(settings)}
+      onMouseDown={onMouseDown}
+      onMouseMove={onMouseMove}
+      onClickCapture={(event) => {
+        if (!suppressClickRef.current) return;
+        suppressClickRef.current = false;
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        void invoke("show_detached_tile_context_menu", { tileId, x: event.clientX, y: event.clientY }).catch(() => undefined);
+      }}
+    >
+      {content}
+    </main>
+  );
 }
 
 // Cross-window command bus: the detached Settings window can't touch the widget's tile/engine directly.
@@ -1361,6 +1574,12 @@ function WidgetApp() {
   const [mode, setMode] = useState<AppMode>(loadMode);
   const [timerSet, setTimerSet] = useState<Set<Provider>>(new Set());
   const [settings, setSettings] = useState(loadSettings);
+  const [tileLayout, setTileLayout] = useState(loadTileLayout);
+  const tileLayoutRef = useRef(tileLayout);
+  const tileElementsRef = useRef<Partial<Record<TileId, HTMLDivElement | null>>>({});
+  const tileDragRef = useRef<{ tileId: TileId; x: number; y: number; dragged: boolean } | null>(null);
+  const suppressTileClickRef = useRef<TileId | null>(null);
+  const [draggingTile, setDraggingTile] = useState<TileId | null>(null);
   const settingsRef = useRef(settings);
   const modeRef = useRef(mode);
   const webviewZoomRef = useRef<number | null>(null);
@@ -1394,6 +1613,7 @@ function WidgetApp() {
   const prevEffectPercentRef = useRef<Partial<Record<Provider, number>>>({});
   const runtimeValidReadRef = useRef<Partial<Record<Provider, boolean>>>({});
   const lastFreshAtRef = useRef<Partial<Record<Provider, string>>>({});
+  const runtimePayloadRef = useRef<DetachedRuntimeState | null>(null);
   const flashTimersRef = useRef<Partial<Record<Provider, number>>>({});
   const effectTimersRef = useRef<Partial<Record<Provider, number>>>({});
   const lastCmdNonceRef = useRef<string | null>(null);
@@ -1407,6 +1627,15 @@ function WidgetApp() {
   function updateSettings(next: Settings) {
     setSettings(next);
     saveSettings(next);
+  }
+
+  function commitTileLayout(next: TileLayout | ((current: TileLayout) => TileLayout)) {
+    setTileLayout((current) => {
+      const resolved = normalizeTileLayout(typeof next === "function" ? next(current) : next);
+      tileLayoutRef.current = resolved;
+      saveTileLayout(resolved);
+      return resolved;
+    });
   }
 
   function activateUsageEffects(effectPayloads: Partial<Record<Provider, UsageEffect>>) {
@@ -1479,6 +1708,11 @@ function WidgetApp() {
     localStorage.removeItem(GEOMETRY_KEY);
     localStorage.removeItem(LEGACY_GEOMETRY_KEY);
     windowGeometryCache = {};
+    const resetLayout = normalizeTileLayout(undefined);
+    tileLayoutRef.current = resetLayout;
+    setTileLayout(resetLayout);
+    saveTileLayout(resetLayout);
+    await invoke("close_all_detached_tiles").catch(() => undefined);
     await invoke("reset_window_geometry").catch(() => undefined);
     await recoverVisibleWindow(modeRef.current, settingsRef.current.corner, settingsRef.current.uiScale);
   }
@@ -1494,6 +1728,10 @@ function WidgetApp() {
   useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
+
+  useEffect(() => {
+    tileLayoutRef.current = tileLayout;
+  }, [tileLayout]);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -1824,6 +2062,11 @@ function WidgetApp() {
     [settings.systemMonitorsEnabled, settings.showCpu, settings.showRam, settings.showGpu, settings.showIgpu, settings.showCpuTemp, settings.showGpuTemp],
   );
 
+  const attachedTileIds = useMemo(
+    () => tileLayout.order.filter((tileId) => tileActive(tileId, settings) && !tileLayout.detached[tileId]),
+    [tileLayout, settings],
+  );
+
   // Live hardware polling — independent of the 60s usage refresh, and only while at least one
   // monitor tile is shown so it costs nothing when the feature is off. Failures degrade to "N/A".
   const anyMonitorShown = shownMonitors.length > 0;
@@ -1841,6 +2084,132 @@ function WidgetApp() {
       window.clearInterval(interval);
     };
   }, [anyMonitorShown, settings.monitorIntervalSec]);
+
+  useEffect(() => {
+    function reloadLayout() {
+      const next = loadTileLayout();
+      tileLayoutRef.current = next;
+      setTileLayout(next);
+    }
+    function onStorage(event: StorageEvent) { if (event.key === TILE_LAYOUT_KEY) reloadLayout(); }
+    window.addEventListener("storage", onStorage);
+    window.addEventListener(TILE_LAYOUT_EVENT, reloadLayout);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener(TILE_LAYOUT_EVENT, reloadLayout);
+    };
+  }, []);
+
+  // Only the fields this effect actually reads. Depending on the whole `settings` object made an
+  // unrelated edit (theme, refresh interval) resize and reposition every detached window.
+  const tileReconcileKey = useMemo(
+    () => [
+      settings.alwaysOnTop ? "1" : "0",
+      settings.uiScale,
+      ...ALL_TILE_IDS.map((tileId) => `${tileActive(tileId, settings) ? "1" : "0"}${tileConfigured(tileId, settings) ? "1" : "0"}`),
+    ].join("|"),
+    [settings],
+  );
+
+  useEffect(() => {
+    const settings = settingsRef.current;
+    const detachedEntries = Object.entries(tileLayout.detached) as [TileId, WindowPosition][];
+    const invalid = detachedEntries.filter(([tileId]) => !tileConfigured(tileId, settings)).map(([tileId]) => tileId);
+    if (invalid.length) {
+      commitTileLayout((current) => {
+        const detached = { ...current.detached };
+        invalid.forEach((tileId) => delete detached[tileId]);
+        return { ...current, detached };
+      });
+      invalid.forEach((tileId) => { void invoke("close_detached_tile", { tileId }).catch(() => undefined); });
+      return;
+    }
+    for (const [tileId, savedPosition] of detachedEntries) {
+      if (!tileActive(tileId, settings)) {
+        void invoke("close_detached_tile", { tileId }).catch(() => undefined);
+        continue;
+      }
+      void normalizeDetachedTilePosition(savedPosition, settings.uiScale).then((position) =>
+        invoke("open_detached_tile", { tileId, position, pinned: settings.alwaysOnTop, scale: settings.uiScale }),
+      ).catch(() => undefined);
+    }
+    void invoke("set_detached_tiles_pinned", { pinned: settings.alwaysOnTop }).catch(() => undefined);
+  }, [tileLayout, tileReconcileKey]);
+
+  useEffect(() => {
+    const now = Date.now();
+    const pausedProviders = (["claude", "codex", "codex-1"] as Provider[]).filter((provider) =>
+      !shouldAutoRefreshProvider(provider, snapshots[provider], now, lastLimitedAutoRefreshRef.current),
+    );
+    const payload: DetachedRuntimeState = {
+      snapshots,
+      monitorReadings,
+      activeEffects,
+      flashProviders: [...flashSet],
+      pausedProviders,
+      freshAt: { ...lastFreshAtRef.current },
+    };
+    runtimePayloadRef.current = payload;
+    for (const tileId of Object.keys(tileLayout.detached).filter(isTileId)) {
+      if (tileActive(tileId, settings)) void emitTo(tileWindowLabel(tileId), "usageview-runtime-state", payload).catch(() => undefined);
+    }
+  }, [snapshots, monitorReadings, activeEffects, flashSet, tileLayout, settings]);
+
+  // A late-joining tile asks for the current state. This listener is deliberately kept out of the
+  // push effect above: that one re-runs on every monitor poll, and `listen` resolving after its
+  // cleanup would strand a handler holding a stale payload.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<{ label: string }>("usageview-runtime-request", ({ payload: request }) => {
+      const state = runtimePayloadRef.current;
+      if (!state || !request?.label?.startsWith("tile_")) return;
+      void emitTo(request.label, "usageview-runtime-state", state).catch(() => undefined);
+    }).then((dispose) => { if (disposed) dispose(); else unlisten = dispose; });
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const disposers: Array<() => void> = [];
+    const keep = (dispose: () => void) => { if (disposed) dispose(); else disposers.push(dispose); };
+
+    async function dockTile(payload: DetachedTileEvent) {
+      const windowPosition = await getCurrentWindow().outerPosition().catch(() => new PhysicalPosition(0, 0));
+      const clientY = (payload.screenY - windowPosition.y) / (window.devicePixelRatio || 1);
+      const current = tileLayoutRef.current;
+      const attached = current.order.filter((tileId) => tileActive(tileId, settingsRef.current) && !current.detached[tileId] && tileId !== payload.tileId);
+      const before = attached.find((tileId) => {
+        const rect = tileElementsRef.current[tileId]?.getBoundingClientRect();
+        return rect ? clientY < rect.top + rect.height / 2 : false;
+      });
+      commitTileLayout((layout) => {
+        const detached = { ...layout.detached };
+        delete detached[payload.tileId];
+        const order = layout.order.filter((tileId) => tileId !== payload.tileId);
+        const index = before ? order.indexOf(before) : order.length;
+        order.splice(index < 0 ? order.length : index, 0, payload.tileId);
+        return { ...layout, order, detached };
+      });
+    }
+
+    void listen<DetachedTileEvent>("usageview-dock-tile", ({ payload }) => { if (isTileId(payload.tileId)) void dockTile(payload); })
+      .then(keep);
+    void listen<DetachedTileEvent>("usageview-detached-position", ({ payload }) => {
+      if (!isTileId(payload.tileId)) return;
+      commitTileLayout((layout) => ({ ...layout, detached: { ...layout.detached, [payload.tileId]: { x: payload.x, y: payload.y } } }));
+    }).then(keep);
+    void listen<string>("usageview-hide-tile", ({ payload: tileId }) => {
+      if (!isTileId(tileId)) return;
+      updateSettings(hideTileInSettings(tileId, settingsRef.current));
+      commitTileLayout((layout) => {
+        const detached = { ...layout.detached };
+        delete detached[tileId];
+        return { ...layout, detached };
+      });
+    }).then(keep);
+    return () => { disposed = true; disposers.forEach((dispose) => dispose()); };
+  }, []);
 
   // Never let two reads of the same provider run at once. At low refresh intervals a slow Claude
   // read would otherwise be reloaded out from under itself by the next tick. A manual request that
@@ -2006,7 +2375,9 @@ async function refresh(provider: Provider, requestNonce: string) {
   }
 
   function prepareCompactDrag(event: React.MouseEvent<HTMLElement>) {
-    if (event.button !== 0 || (event.target as HTMLElement).closest("button, .mini-mark-btn")) return;
+    // The grip owns tile drags; without this the 5px window-drag threshold would always beat the
+    // 7px tile threshold and the tile could never be dragged.
+    if (event.button !== 0 || (event.target as HTMLElement).closest("button, .mini-mark-btn, .tile-grip")) return;
     compactPointerRef.current = { x: event.clientX, y: event.clientY, dragged: false };
   }
 
@@ -2041,19 +2412,112 @@ async function refresh(provider: Provider, requestNonce: string) {
     !shouldAutoRefreshProvider(p, snapshots[p], now, lastLimitedAutoRefreshRef.current);
   const agoFor = (p: Provider) => formatAgo(lastFreshAtRef.current[p]);
 
+  function renderFullTile(tileId: TileId) {
+    const provider = providerFromTile(tileId);
+    if (provider) {
+      return timerSet.has(provider)
+        ? <TimerView snapshot={snapshots[provider]} onBack={() => toggleTimer(provider)} paused={isPaused(provider)} />
+        : <UsageBlock snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} onFlip={() => toggleTimer(provider)} />;
+    }
+    const monitor = monitorFromTile(tileId);
+    return monitor ? <MonitorBlock reading={monitorReadings[monitor]} tone={monitorTone(settings, monitorReadings[monitor])} /> : null;
+  }
+
+  function renderMiniTile(tileId: TileId) {
+    const provider = providerFromTile(tileId);
+    if (provider) {
+      return timerSet.has(provider)
+        ? <MiniTimerRow snapshot={snapshots[provider]} onBack={() => toggleTimer(provider)} paused={isPaused(provider)} />
+        : <MiniUsageRow snapshot={snapshots[provider]} paused={isPaused(provider)} updatedAgo={agoFor(provider)} flash={flashSet.has(provider)} onFlip={() => toggleTimer(provider)} />;
+    }
+    const monitor = monitorFromTile(tileId);
+    return monitor ? <MonitorMiniRow reading={monitorReadings[monitor]} tone={monitorTone(settings, monitorReadings[monitor])} /> : null;
+  }
+
+  function previewTileOrder(tileId: TileId, clientY: number) {
+    const candidates = attachedTileIds.filter((id) => id !== tileId);
+    const before = candidates.find((id) => {
+      const rect = tileElementsRef.current[id]?.getBoundingClientRect();
+      return rect ? clientY < rect.top + rect.height / 2 : false;
+    });
+    const current = tileLayoutRef.current;
+    const order = current.order.filter((id) => id !== tileId);
+    const index = before ? order.indexOf(before) : order.length;
+    order.splice(index < 0 ? order.length : index, 0, tileId);
+    const next = { ...current, order };
+    tileLayoutRef.current = next;
+    setTileLayout(next);
+  }
+
+  // `handleOnly` is for mini mode, where the tile fills the window: only the grip starts a tile
+  // drag, so the rest of the surface still moves the window itself.
+  function beginTileDrag(event: React.PointerEvent<HTMLDivElement>, tileId: TileId, handleOnly = false) {
+    // A drag that ends in a detach unmounts the tile before its click lands, so the suppression
+    // set mid-drag is never consumed. Drop it here or it eats the first click after docking back.
+    suppressTileClickRef.current = null;
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    if (target.closest("button, input, a, [role='button']")) return;
+    if (handleOnly && !target.closest(".tile-grip")) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    tileDragRef.current = { tileId, x: event.clientX, y: event.clientY, dragged: false };
+  }
+
+  function moveTileDrag(event: React.PointerEvent<HTMLDivElement>) {
+    const drag = tileDragRef.current;
+    if (!drag || (event.buttons & 1) !== 1) return;
+    if (!drag.dragged) {
+      if (Math.abs(event.clientX - drag.x) < 7 && Math.abs(event.clientY - drag.y) < 7) return;
+      drag.dragged = true;
+      suppressTileClickRef.current = drag.tileId;
+      setDraggingTile(drag.tileId);
+    }
+    if (event.clientX >= 0 && event.clientX <= window.innerWidth && event.clientY >= 0 && event.clientY <= window.innerHeight) {
+      previewTileOrder(drag.tileId, event.clientY);
+    }
+  }
+
+  function finishTileDrag(event: React.PointerEvent<HTMLDivElement>) {
+    const drag = tileDragRef.current;
+    tileDragRef.current = null;
+    setDraggingTile(null);
+    if (!drag?.dragged) return;
+    const outside = event.clientX < 0 || event.clientX > window.innerWidth || event.clientY < 0 || event.clientY > window.innerHeight;
+    if (!outside) {
+      saveTileLayout(tileLayoutRef.current);
+      return;
+    }
+    void invoke<WindowPosition>("open_detached_tile", { tileId: drag.tileId, position: null, pinned: settingsRef.current.alwaysOnTop, scale: settingsRef.current.uiScale })
+      .then((position) => commitTileLayout((layout) => ({ ...layout, detached: { ...layout.detached, [drag.tileId]: position } })))
+      .catch(() => saveTileLayout(tileLayoutRef.current));
+  }
+
   if (mode === "mini") {
     return (
       <main className={`compact-widget mini-widget ${themeClass(settings.theme)} ${panelScopeClasses(settings)}`} style={panelStyle(settings)} onMouseDown={prepareCompactDrag} onMouseMove={maybeStartCompactDrag} onContextMenu={openCompactMenu}>
         <div ref={compactProvidersRef} className="mini-providers">
-          {shown.map((provider) => (
-            timerSet.has(provider)
-              ? <MiniTimerRow key={provider} snapshot={snapshots[provider]} onBack={() => toggleTimer(provider)} paused={isPaused(provider)} />
-              : <MiniUsageRow key={provider} snapshot={snapshots[provider]} paused={isPaused(provider)} updatedAgo={agoFor(provider)} flash={flashSet.has(provider)} onFlip={() => toggleTimer(provider)} />
+          {attachedTileIds.map((tileId) => (
+            <div
+              key={tileId}
+              ref={(node) => { tileElementsRef.current[tileId] = node; }}
+              className={`tile-shell mini-tile-shell${draggingTile === tileId ? " is-dragging" : ""}`}
+              data-tile-id={tileId}
+              onPointerDown={(event) => beginTileDrag(event, tileId, true)}
+              onPointerMove={moveTileDrag}
+              onPointerUp={finishTileDrag}
+              onPointerCancel={finishTileDrag}
+              onClickCapture={(event) => {
+                if (suppressTileClickRef.current !== tileId) return;
+                suppressTileClickRef.current = null;
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+            >
+              <span className="tile-grip" aria-hidden="true" title="Drag to reorder or detach" />
+              {renderMiniTile(tileId)}
+            </div>
           ))}
-          {shownMonitors.map((kind) => (
-            <MonitorMiniRow key={`mon-${kind}`} reading={monitorReadings[kind]} tone={monitorTone(settings, monitorReadings[kind])} />
-          ))}
-          {shown.length === 0 && shownMonitors.length === 0 && <EmptyProviderState />}
+          {attachedTileIds.length === 0 && <EmptyProviderState />}
         </div>
       </main>
     );
@@ -2074,15 +2538,27 @@ async function refresh(provider: Provider, requestNonce: string) {
         </div>
       </div>
       <div ref={providersRef} className="providers">
-        {shown.map((provider) => (
-          timerSet.has(provider)
-            ? <TimerView key={provider} snapshot={snapshots[provider]} onBack={() => toggleTimer(provider)} paused={isPaused(provider)} />
-             : <UsageBlock key={provider} snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} onFlip={() => toggleTimer(provider)} />
+        {attachedTileIds.map((tileId) => (
+          <div
+            key={tileId}
+            ref={(node) => { tileElementsRef.current[tileId] = node; }}
+            className={`tile-shell${draggingTile === tileId ? " is-dragging" : ""}`}
+            data-tile-id={tileId}
+            onPointerDown={(event) => beginTileDrag(event, tileId)}
+            onPointerMove={moveTileDrag}
+            onPointerUp={finishTileDrag}
+            onPointerCancel={finishTileDrag}
+            onClickCapture={(event) => {
+              if (suppressTileClickRef.current !== tileId) return;
+              suppressTileClickRef.current = null;
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+          >
+            {renderFullTile(tileId)}
+          </div>
         ))}
-        {shownMonitors.map((kind) => (
-          <MonitorBlock key={`mon-${kind}`} reading={monitorReadings[kind]} tone={monitorTone(settings, monitorReadings[kind])} />
-        ))}
-        {shown.length === 0 && shownMonitors.length === 0 && <EmptyProviderState />}
+        {attachedTileIds.length === 0 && <EmptyProviderState />}
       </div>
       </div>
     </main>
@@ -3252,6 +3728,33 @@ const MONITOR_SHOW_KEY: Record<MonitorKind, keyof Settings> = {
   cputemp: "showCpuTemp",
   gputemp: "showGpuTemp",
 };
+
+const PROVIDER_SHOW_KEY: Record<Provider, keyof Settings> = {
+  claude: "showClaude",
+  codex: "showCodex",
+  "codex-1": "showCodex1",
+};
+
+function tileConfigured(tileId: TileId, settings: Settings) {
+  const provider = providerFromTile(tileId);
+  if (provider) return Boolean(settings[PROVIDER_SHOW_KEY[provider]]);
+  const monitor = monitorFromTile(tileId);
+  return monitor ? Boolean(settings[MONITOR_SHOW_KEY[monitor]]) : false;
+}
+
+function tileActive(tileId: TileId, settings: Settings) {
+  const provider = providerFromTile(tileId);
+  if (provider) return settings.aiUsageEnabled && Boolean(settings[PROVIDER_SHOW_KEY[provider]]);
+  const monitor = monitorFromTile(tileId);
+  return monitor ? settings.systemMonitorsEnabled && Boolean(settings[MONITOR_SHOW_KEY[monitor]]) : false;
+}
+
+function hideTileInSettings(tileId: TileId, settings: Settings): Settings {
+  const provider = providerFromTile(tileId);
+  if (provider) return { ...settings, [PROVIDER_SHOW_KEY[provider]]: false };
+  const monitor = monitorFromTile(tileId);
+  return monitor ? { ...settings, [MONITOR_SHOW_KEY[monitor]]: false } : settings;
+}
 
 async function readSystemMetrics(): Promise<SystemMetrics | null> {
   try {

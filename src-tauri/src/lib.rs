@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{mpsc, Mutex};
@@ -29,6 +29,10 @@ const CONTEXT_REFRESH: &str = "widget_context_refresh";
 const CONTEXT_SETTINGS: &str = "widget_context_settings";
 const CONTEXT_CLOSE: &str = "widget_context_close";
 const CONTEXT_ACTION_EVENT: &str = "usageview-context-action";
+const DETACHED_HIDE_PREFIX: &str = "detached_hide:";
+const DETACHED_DOCK_EVENT: &str = "usageview-dock-tile";
+const DETACHED_POSITION_EVENT: &str = "usageview-detached-position";
+const DETACHED_HIDE_EVENT: &str = "usageview-hide-tile";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct WindowPosition {
@@ -38,6 +42,20 @@ struct WindowPosition {
 
 struct CurrentWidgetMode(Mutex<String>);
 struct WindowPositionStoreLock(Mutex<()>);
+
+/// Labels of detached tiles we are closing from code. `on_window_event` reads any *unmarked*
+/// tile close as the user hiding the tile, so docking and master toggles must mark first —
+/// otherwise they would silently turn the tile's Show setting off.
+struct ProgrammaticCloses(Mutex<HashSet<String>>);
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DetachedTileEvent {
+  tile_id: String,
+  x: f64,
+  y: f64,
+  screen_y: f64,
+}
 
 /// Live hardware readings. Purely additive: nothing here touches usage extraction.
 /// The `sysinfo::System` is kept alive so CPU% has two samples to diff between reads.
@@ -241,6 +259,283 @@ fn show_widget_context_menu(
   window
     .popup_menu_at(&menu, tauri::LogicalPosition::new(x, y))
     .map_err(|error| error.to_string())
+}
+
+const ALL_TILE_IDS: [&str; 9] = [
+  "provider:claude",
+  "provider:codex",
+  "provider:codex-1",
+  "monitor:cpu",
+  "monitor:ram",
+  "monitor:gpu",
+  "monitor:igpu",
+  "monitor:cputemp",
+  "monitor:gputemp",
+];
+
+fn detached_tile_parts(tile_id: &str) -> Result<(&str, &str), String> {
+  let (kind, id) = tile_id.split_once(':').ok_or_else(|| "Invalid tile id".to_string())?;
+  let valid = match kind {
+    "provider" => matches!(id, "claude" | "codex" | "codex-1"),
+    "monitor" => matches!(id, "cpu" | "ram" | "gpu" | "igpu" | "cputemp" | "gputemp"),
+    _ => false,
+  };
+  if valid { Ok((kind, id)) } else { Err("Invalid tile id".to_string()) }
+}
+
+fn detached_tile_label(tile_id: &str) -> Result<String, String> {
+  let (kind, id) = detached_tile_parts(tile_id)?;
+  Ok(format!("tile_{}_{}", kind, id.replace('-', "_")))
+}
+
+fn detached_tile_title(tile_id: &str) -> Result<String, String> {
+  let (_, id) = detached_tile_parts(tile_id)?;
+  Ok(match id {
+    "claude" => "Claude",
+    "codex" => "Codex 1",
+    "codex-1" => "Codex 2",
+    "cpu" => "CPU usage",
+    "ram" => "RAM",
+    "gpu" => "GPU usage",
+    "igpu" => "iGPU usage",
+    "cputemp" => "CPU temperature",
+    "gputemp" => "GPU temperature",
+    _ => id,
+  }.to_string())
+}
+
+fn tile_id_for_label(label: &str) -> Option<&'static str> {
+  ALL_TILE_IDS
+    .iter()
+    .copied()
+    .find(|tile_id| detached_tile_label(tile_id).ok().as_deref() == Some(label))
+}
+
+fn mark_programmatic_close(app: &tauri::AppHandle, label: &str) {
+  if let Some(state) = app.try_state::<ProgrammaticCloses>() {
+    if let Ok(mut labels) = state.0.lock() {
+      labels.insert(label.to_string());
+    }
+  }
+}
+
+fn unmark_programmatic_close(app: &tauri::AppHandle, label: &str) -> bool {
+  app
+    .try_state::<ProgrammaticCloses>()
+    .and_then(|state| state.0.lock().ok().map(|mut labels| labels.remove(label)))
+    .unwrap_or(false)
+}
+
+/// Close a detached tile from code. Always go through this instead of `window.close()`, so the
+/// close is marked and `on_window_event` does not mistake it for the user hiding the tile.
+fn close_tile_window(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
+  let Some(window) = app.get_webview_window(label) else { return Ok(()) };
+  mark_programmatic_close(app, label);
+  if let Err(error) = window.close() {
+    unmark_programmatic_close(app, label);
+    return Err(error.to_string());
+  }
+  Ok(())
+}
+
+#[cfg(windows)]
+fn current_cursor_position() -> Option<(f64, f64)> {
+  use windows::Win32::Foundation::POINT;
+  use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+  let mut point = POINT::default();
+  unsafe { GetCursorPos(&mut point).ok()?; }
+  Some((point.x as f64, point.y as f64))
+}
+
+#[cfg(windows)]
+fn left_mouse_button_down() -> bool {
+  use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
+  unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 }
+}
+
+#[cfg(not(windows))]
+fn left_mouse_button_down() -> bool { false }
+
+#[cfg(not(windows))]
+fn current_cursor_position() -> Option<(f64, f64)> { None }
+
+#[cfg(windows)]
+fn clamp_detached_to_work_area(position: &WindowPosition, width: u32, height: u32) -> WindowPosition {
+  use windows::Win32::Foundation::RECT;
+  use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONEAREST};
+
+  let left = position.x.round() as i32;
+  let top = position.y.round() as i32;
+  let rect = RECT { left, top, right: left.saturating_add(width as i32), bottom: top.saturating_add(height as i32) };
+  let monitor = unsafe { MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST) };
+  let mut info = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+  if unsafe { GetMonitorInfoW(monitor, &mut info).as_bool() } {
+    let max_x = info.rcWork.right.saturating_sub(width as i32);
+    let max_y = info.rcWork.bottom.saturating_sub(height as i32);
+    return WindowPosition {
+      x: position.x.round().clamp(info.rcWork.left as f64, max_x.max(info.rcWork.left) as f64),
+      y: position.y.round().clamp(info.rcWork.top as f64, max_y.max(info.rcWork.top) as f64),
+    };
+  }
+  position.clone()
+}
+
+#[cfg(not(windows))]
+fn clamp_detached_to_work_area(position: &WindowPosition, _width: u32, _height: u32) -> WindowPosition {
+  position.clone()
+}
+
+fn place_detached_tile(window: &tauri::WebviewWindow, position: &WindowPosition) -> Result<WindowPosition, String> {
+  let size = window.outer_size().map_err(|error| error.to_string())?;
+  let clamped = clamp_detached_to_work_area(position, size.width, size.height);
+  window
+    .set_position(tauri::PhysicalPosition::new(clamped.x.round() as i32, clamped.y.round() as i32))
+    .map_err(|error| error.to_string())?;
+  Ok(clamped)
+}
+
+#[tauri::command]
+fn open_detached_tile(
+  app: tauri::AppHandle,
+  tile_id: String,
+  position: Option<WindowPosition>,
+  pinned: bool,
+  scale: f64,
+) -> Result<WindowPosition, String> {
+  let label = detached_tile_label(&tile_id)?;
+  let is_cursor_position = position.is_none();
+  let requested = position
+    .as_ref()
+    .map(|position| (position.x, position.y))
+    .or_else(current_cursor_position)
+    .unwrap_or((80.0, 80.0));
+  let target = WindowPosition { x: requested.0 - if is_cursor_position { 196.0 } else { 0.0 }, y: requested.1 - if is_cursor_position { 100.0 } else { 0.0 } };
+  let scale = scale.clamp(0.5, 1.5);
+
+  if let Some(window) = app.get_webview_window(&label) {
+    window.set_always_on_top(pinned).map_err(|error| error.to_string())?;
+    window.set_size(tauri::LogicalSize::new(392.0 * scale, 220.0 * scale)).map_err(|error| error.to_string())?;
+    let target = place_detached_tile(&window, &target)?;
+    window.show().map_err(|error| error.to_string())?;
+    return Ok(target);
+  }
+
+  let title = detached_tile_title(&tile_id)?;
+  let create_target = target.clone();
+  tauri::async_runtime::spawn(async move {
+    let result = (|| -> Result<(), String> {
+      let window = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("index.html".into()))
+        .title(format!("{title} — UsageView"))
+        .inner_size(392.0 * scale, 220.0 * scale)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .always_on_top(pinned)
+        .skip_taskbar(true)
+        .resizable(false)
+        .zoom_hotkeys_enabled(false)
+        .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows")
+        .build()
+        .map_err(|error| error.to_string())?;
+      let placed = place_detached_tile(&window, &create_target)?;
+      let size = window.outer_size().map_err(|error| error.to_string())?;
+      let payload = DetachedTileEvent {
+        tile_id,
+        x: placed.x,
+        y: placed.y,
+        screen_y: placed.y + size.height as f64 / 2.0,
+      };
+      app.emit_to("widget", DETACHED_POSITION_EVENT, payload).map_err(|error| error.to_string())?;
+      Ok(())
+    })();
+    if let Err(error) = result { eprintln!("Could not create detached tile: {error}"); }
+  });
+  Ok(target)
+}
+
+#[tauri::command]
+fn close_detached_tile(app: tauri::AppHandle, tile_id: String) -> Result<(), String> {
+  let label = detached_tile_label(&tile_id)?;
+  close_tile_window(&app, &label)
+}
+
+#[tauri::command]
+fn close_all_detached_tiles(app: tauri::AppHandle) -> Result<(), String> {
+  for (label, _) in app.webview_windows() {
+    if label.starts_with("tile_") {
+      let _ = close_tile_window(&app, &label);
+    }
+  }
+  Ok(())
+}
+
+#[tauri::command]
+fn set_detached_tiles_pinned(app: tauri::AppHandle, pinned: bool) -> Result<(), String> {
+  for (_, window) in app.webview_windows() {
+    if window.label().starts_with("tile_") {
+      let _ = window.set_always_on_top(pinned);
+    }
+  }
+  Ok(())
+}
+
+#[tauri::command]
+fn show_detached_tile_context_menu(
+  app: tauri::AppHandle,
+  window: tauri::WebviewWindow,
+  tile_id: String,
+  x: f64,
+  y: f64,
+) -> Result<(), String> {
+  detached_tile_parts(&tile_id)?;
+  let hide = MenuItem::with_id(
+    &app,
+    format!("{DETACHED_HIDE_PREFIX}{tile_id}"),
+    format!("Hide {}", detached_tile_title(&tile_id)?),
+    true,
+    None::<&str>,
+  ).map_err(|error| error.to_string())?;
+  let menu = Menu::with_items(&app, &[&hide]).map_err(|error| error.to_string())?;
+  window.popup_menu_at(&menu, tauri::LogicalPosition::new(x, y)).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn finish_detached_tile_drag(app: tauri::AppHandle, tile_id: String) -> Result<Option<bool>, String> {
+  if left_mouse_button_down() { return Ok(None); }
+  let label = detached_tile_label(&tile_id)?;
+  let tile = app.get_webview_window(&label).ok_or_else(|| "Detached tile window is missing".to_string())?;
+  let tile_position = tile.outer_position().map_err(|error| error.to_string())?;
+  let tile_size = tile.outer_size().map_err(|error| error.to_string())?;
+  let mut x = tile_position.x as f64;
+  let mut y = tile_position.y as f64;
+  let center_x = x + tile_size.width as f64 / 2.0;
+  let mut center_y = y + tile_size.height as f64 / 2.0;
+  let mut docked = false;
+
+  if let Some(widget) = app.get_webview_window("widget") {
+    if widget.is_visible().unwrap_or(false) {
+      if let (Ok(widget_position), Ok(widget_size)) = (widget.outer_position(), widget.outer_size()) {
+        docked = center_x >= widget_position.x as f64
+          && center_x <= (widget_position.x + widget_size.width as i32) as f64
+          && center_y >= widget_position.y as f64
+          && center_y <= (widget_position.y + widget_size.height as i32) as f64;
+      }
+    }
+  }
+
+  if docked {
+    let payload = DetachedTileEvent { tile_id, x, y, screen_y: center_y };
+    app.emit_to("widget", DETACHED_DOCK_EVENT, payload).map_err(|error| error.to_string())?;
+    close_tile_window(&app, &label)?;
+  } else {
+    let placed = place_detached_tile(&tile, &WindowPosition { x, y })?;
+    x = placed.x;
+    y = placed.y;
+    center_y = y + tile_size.height as f64 / 2.0;
+    let payload = DetachedTileEvent { tile_id, x, y, screen_y: center_y };
+    app.emit_to("widget", DETACHED_POSITION_EVENT, payload).map_err(|error| error.to_string())?;
+  }
+  Ok(Some(docked))
 }
 
 fn geometry_store_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -997,6 +1292,7 @@ pub fn run() {
     .plugin(tauri_plugin_opener::init())
     .manage(CurrentWidgetMode(Mutex::new("widget".to_string())))
     .manage(WindowPositionStoreLock(Mutex::new(())))
+    .manage(ProgrammaticCloses(Mutex::new(HashSet::new())))
     .manage({
       let mut sys = sysinfo::System::new();
       sys.refresh_memory();
@@ -1018,6 +1314,16 @@ pub fn run() {
       Ok(())
     })
     .on_menu_event(|app, event| {
+      if let Some(tile_id) = event.id().as_ref().strip_prefix(DETACHED_HIDE_PREFIX) {
+        let tile_id = tile_id.to_string();
+        let _ = app.emit_to("widget", DETACHED_HIDE_EVENT, tile_id.clone());
+        if let Ok(label) = detached_tile_label(&tile_id) {
+          // The hide event is already emitted above; mark the close so the window handler
+          // does not emit a second one.
+          let _ = close_tile_window(app, &label);
+        }
+        return;
+      }
       let action = match event.id().as_ref() {
         CONTEXT_MINI => Some("mini"),
         CONTEXT_FULL => Some("widget"),
@@ -1046,6 +1352,16 @@ pub fn run() {
             let _ = widget.set_focus();
           }
           let _ = window.hide();
+        } else if label.starts_with("tile_") {
+          // A detached tile has no titlebar, so Alt+F4 is the only OS close path — treat it as
+          // the same Hide the context menu offers. Closes we started ourselves (docking, master
+          // toggles, the Hide item) are marked, and must not touch the Show setting.
+          let app = window.app_handle();
+          if !unmark_programmatic_close(app, label) {
+            if let Some(tile_id) = tile_id_for_label(label) {
+              let _ = app.emit_to("widget", DETACHED_HIDE_EVENT, tile_id);
+            }
+          }
         }
       }
     })
@@ -1060,6 +1376,12 @@ pub fn run() {
       reset_window_geometry,
       set_widget_mode,
       show_widget_context_menu,
+      open_detached_tile,
+      close_detached_tile,
+      close_all_detached_tiles,
+      set_detached_tiles_pinned,
+      show_detached_tile_context_menu,
+      finish_detached_tile_drag,
       toggle_settings_window,
       update_tray_tooltip,
       open_in_chrome,

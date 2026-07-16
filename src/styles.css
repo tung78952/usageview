@@ -29,6 +29,9 @@
 
 * { box-sizing: border-box; }
 html, body, #root { width: 100%; height: 100%; min-height: 100%; overflow: hidden; }
+.detached-surface,
+.detached-surface body,
+.detached-surface #root { height: auto; min-height: 0; }
 *::-webkit-scrollbar { width: 0; height: 0; }
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-thumb { background: transparent; }
@@ -398,6 +401,41 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 .window-btn { min-width: 76px; }
 
 .providers { min-width: 0; flex: 0 0 auto; padding: 10px; display: grid; gap: 10px; align-content: start; }
+.tile-shell { min-width: 0; transition: opacity 120ms ease, transform 120ms ease; touch-action: none; cursor: grab; }
+.tile-shell > .provider-tile { width: 100%; }
+.tile-shell:not(.mini-tile-shell):active { cursor: grabbing; }
+.tile-shell.is-dragging { opacity: 0.58; transform: scale(0.985); }
+.tile-shell.is-dragging > .provider-tile { outline: 1px dashed color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 3px; }
+
+/* Mini has no header, so the surface at large still drags the window — only this grip starts a
+   tile drag. Full mode needs no grip: the whole shell is the handle there. */
+.mini-tile-shell { display: grid; grid-template-columns: 9px 1fr; gap: 3px; align-items: center; cursor: default; }
+.mini-tile-shell > :not(.tile-grip) { min-width: 0; }
+.tile-grip {
+  align-self: stretch;
+  border-radius: 3px;
+  cursor: grab;
+  opacity: 0.3;
+  background-image: radial-gradient(circle at center, var(--muted) 1px, transparent 1px);
+  background-size: 3px 4px;
+  transition: opacity 120ms ease;
+}
+.mini-tile-shell:hover .tile-grip { opacity: 0.72; }
+.tile-grip:active { cursor: grabbing; }
+
+.detached-tile.widget {
+  height: auto;
+  min-height: 0;
+  padding: 10px;
+  overflow: visible;
+  border: 0;
+  background: transparent !important;
+  box-shadow: none !important;
+  touch-action: none;
+}
+.detached-tile > .provider-tile { width: 100%; }
+.detached-tile { cursor: grab; }
+.detached-tile:active { cursor: grabbing; }
 
 .usage {
   --tone: var(--accent);

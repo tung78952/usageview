@@ -71,6 +71,12 @@
         image-rendering: auto;
       }
 
+.theme-glass.detached-tile.widget {
+        border: 0;
+        background: transparent;
+        box-shadow: none;
+      }
+
 .theme-glass .scale-shell,
 .theme-glass.control-shell > * {
         position: relative;
