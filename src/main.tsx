@@ -1064,6 +1064,12 @@ async function extractProvider(provider: Provider, url: string): Promise<UsageSn
 }
 
 async function refreshProviderFromUrl(provider: Provider, url: string, background = false): Promise<UsageSnapshot> {
+  // Auto refresh reads the provider's cookie-authed usage API, which needs no page render, so it
+  // goes straight to the extractor — which already navigates itself when the page is off-target.
+  // Reloading the whole SPA every tick, then sleeping below purely to absorb that reload, was work
+  // for nothing. (It is not what makes the app expensive at idle, though: the hidden provider pages
+  // cost ~30% of a core just by staying loaded.) Manual refresh still reloads first.
+  if (background) return extractProvider(provider, url);
   try {
     await refreshProviderPage(provider, url, background);
     await wait(provider === "claude" ? 2600 : 900);
@@ -1996,11 +2002,13 @@ function WidgetApp() {
     }
   }, [snapshots]);
 
-  // Re-render every 30s so the "updated ago" labels stay current between refreshes.
+  // Re-render every 30s so the "updated ago" labels stay current between refreshes. Only the AI
+  // tiles carry those labels, so with AI usage off this ticker would re-render the tree for nothing.
   useEffect(() => {
+    if (!settings.aiUsageEnabled) return;
     const id = window.setInterval(() => setAgoTick((tick) => tick + 1), 30000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [settings.aiUsageEnabled]);
 
   useEffect(() => {
     function reloadLocal() {
@@ -2074,8 +2082,8 @@ function WidgetApp() {
     if (!anyMonitorShown) return;
     let cancelled = false;
     async function tick() {
-      const metrics = await readSystemMetrics();
-      if (!cancelled) setMonitorReadings(buildMonitorReadings(metrics));
+      const metrics = await readSystemMetrics(shownMonitors);
+      if (!cancelled) setMonitorReadings(buildMonitorReadings(metrics, shownMonitors));
     }
     void tick();
     const interval = window.setInterval(tick, clampNumber(settings.monitorIntervalSec, 1, 10, 2) * 1000);
@@ -2083,7 +2091,7 @@ function WidgetApp() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [anyMonitorShown, settings.monitorIntervalSec]);
+  }, [anyMonitorShown, shownMonitors, settings.monitorIntervalSec]);
 
   useEffect(() => {
     function reloadLayout() {
@@ -2308,13 +2316,17 @@ async function refresh(provider: Provider, requestNonce: string) {
     }
   }, [snapshots]);
 
-  function toggleTimer(provider: Provider) {
-    setTimerSet((prev) => {
+  // One stable flip handler per provider. A fresh `() => toggleTimer(p)` on every render would
+  // change the prop identity each time and defeat the memo on the tiles below, which is the whole
+  // point of memoising them: a monitor poll must not re-render the AI tiles.
+  const timerToggles = useMemo(() => {
+    const make = (provider: Provider) => () => setTimerSet((prev) => {
       const next = new Set(prev);
       next.has(provider) ? next.delete(provider) : next.add(provider);
       return next;
     });
-  }
+    return { claude: make("claude"), codex: make("codex"), "codex-1": make("codex-1") } as Record<Provider, () => void>;
+  }, []);
 
   // Execute commands posted by the detached Settings window (single engine owner lives here).
   useEffect(() => {
@@ -2416,8 +2428,8 @@ async function refresh(provider: Provider, requestNonce: string) {
     const provider = providerFromTile(tileId);
     if (provider) {
       return timerSet.has(provider)
-        ? <TimerView snapshot={snapshots[provider]} onBack={() => toggleTimer(provider)} paused={isPaused(provider)} />
-        : <UsageBlock snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} onFlip={() => toggleTimer(provider)} />;
+        ? <TimerView snapshot={snapshots[provider]} onBack={timerToggles[provider]} paused={isPaused(provider)} />
+        : <UsageBlock snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} onFlip={timerToggles[provider]} />;
     }
     const monitor = monitorFromTile(tileId);
     return monitor ? <MonitorBlock reading={monitorReadings[monitor]} tone={monitorTone(settings, monitorReadings[monitor])} /> : null;
@@ -2427,8 +2439,8 @@ async function refresh(provider: Provider, requestNonce: string) {
     const provider = providerFromTile(tileId);
     if (provider) {
       return timerSet.has(provider)
-        ? <MiniTimerRow snapshot={snapshots[provider]} onBack={() => toggleTimer(provider)} paused={isPaused(provider)} />
-        : <MiniUsageRow snapshot={snapshots[provider]} paused={isPaused(provider)} updatedAgo={agoFor(provider)} flash={flashSet.has(provider)} onFlip={() => toggleTimer(provider)} />;
+        ? <MiniTimerRow snapshot={snapshots[provider]} onBack={timerToggles[provider]} paused={isPaused(provider)} />
+        : <MiniUsageRow snapshot={snapshots[provider]} paused={isPaused(provider)} updatedAgo={agoFor(provider)} flash={flashSet.has(provider)} onFlip={timerToggles[provider]} />;
     }
     const monitor = monitorFromTile(tileId);
     return monitor ? <MonitorMiniRow reading={monitorReadings[monitor]} tone={monitorTone(settings, monitorReadings[monitor])} /> : null;
@@ -3756,9 +3768,9 @@ function hideTileInSettings(tileId: TileId, settings: Settings): Settings {
   return monitor ? { ...settings, [MONITOR_SHOW_KEY[monitor]]: false } : settings;
 }
 
-async function readSystemMetrics(): Promise<SystemMetrics | null> {
+async function readSystemMetrics(kinds: MonitorKind[]): Promise<SystemMetrics | null> {
   try {
-    return await invoke<SystemMetrics>("read_system_metrics");
+    return await invoke<SystemMetrics>("read_system_metrics", { kinds });
   } catch {
     return null;
   }
@@ -3802,9 +3814,11 @@ function keepAvailable(details: MonitorDetail[]): MonitorDetail[] {
   return details.filter((d) => d.value !== NA);
 }
 
-function buildMonitorReadings(m: SystemMetrics | null): Record<MonitorKind, MonitorReading> {
+// `kinds` limits the work to the tiles on screen; the others still get a key so the record shape
+// holds, they just skip building a reading and its details array on every poll.
+function buildMonitorReadings(m: SystemMetrics | null, kinds?: MonitorKind[]): Record<MonitorKind, MonitorReading> {
   const make = (kind: MonitorKind): MonitorReading => {
-    if (!m) return emptyReading(kind);
+    if (!m || (kinds && !kinds.includes(kind))) return emptyReading(kind);
     switch (kind) {
       case "cpu": {
         const pct = clampPercent(m.cpu_percent);
@@ -3894,7 +3908,9 @@ function monitorTone(settings: Settings, reading: MonitorReading): string {
 
 // Ease a displayed number toward its target with requestAnimationFrame so fast-changing
 // metrics glide instead of snapping each poll. Cheap: stops itself once it reaches the goal.
-function useSmoothedValue(target: number, speed = 0.2): number {
+// The readout is rounded to a whole percent, so settling closer than half a point buys nothing
+// visible and only costs frames — every frame re-renders the tile and rebuilds its bar cells.
+function useSmoothedValue(target: number, speed = 0.3): number {
   const [display, setDisplay] = useState(target);
   const currentRef = useRef(target);
   const goalRef = useRef(target);
@@ -3903,7 +3919,7 @@ function useSmoothedValue(target: number, speed = 0.2): number {
     goalRef.current = target;
     const tick = () => {
       const diff = goalRef.current - currentRef.current;
-      if (Math.abs(diff) < 0.15) {
+      if (Math.abs(diff) < 0.5) {
         currentRef.current = goalRef.current;
         setDisplay(goalRef.current);
         rafRef.current = null;
@@ -3974,7 +3990,7 @@ function MonitorMark({ kind }: { kind: MonitorKind }) {
   );
 }
 
-function MonitorBlock({ reading, tone }: { reading: MonitorReading; tone: string }) {
+const MonitorBlock = React.memo(function MonitorBlock({ reading, tone }: { reading: MonitorReading; tone: string }) {
   const [flipped, setFlipped] = useState(false);
   const smoothed = useSmoothedValue(reading.available ? reading.percent ?? 0 : 0);
   const details = reading.details ?? [];
@@ -4015,9 +4031,9 @@ function MonitorBlock({ reading, tone }: { reading: MonitorReading; tone: string
       )}
     </article>
   );
-}
+});
 
-function MonitorMiniRow({ reading, tone }: { reading: MonitorReading; tone: string }) {
+const MonitorMiniRow = React.memo(function MonitorMiniRow({ reading, tone }: { reading: MonitorReading; tone: string }) {
   const smoothed = useSmoothedValue(reading.available ? reading.percent ?? 0 : 0);
   const fill = reading.available ? smoothed : 0;
   return (
@@ -4034,9 +4050,9 @@ function MonitorMiniRow({ reading, tone }: { reading: MonitorReading; tone: stri
       </span>
     </article>
   );
-}
+});
 
-function MiniUsageRow({ snapshot, paused = false, updatedAgo, flash = false, onFlip }: { snapshot: UsageSnapshot; paused?: boolean; updatedAgo?: string; flash?: boolean; onFlip?: () => void }) {
+const MiniUsageRow = React.memo(function MiniUsageRow({ snapshot, paused = false, updatedAgo, flash = false, onFlip }: { snapshot: UsageSnapshot; paused?: boolean; updatedAgo?: string; flash?: boolean; onFlip?: () => void }) {
   const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
   const stale = isStale(snapshot);
   const state = stale ? "stale" : snapshot.status !== "ok" ? "warn" : paused ? "paused" : "ok";
@@ -4059,7 +4075,7 @@ function MiniUsageRow({ snapshot, paused = false, updatedAgo, flash = false, onF
       </span>
     </article>
   );
-}
+});
 
 function MiniTimerRow({ snapshot, onBack, paused = false }: { snapshot: UsageSnapshot; onBack: () => void; paused?: boolean }) {
   const [, setTick] = useState(0);
@@ -4075,7 +4091,10 @@ function MiniTimerRow({ snapshot, onBack, paused = false }: { snapshot: UsageSna
     </article>
   );
 }
-function UsageBlock({ snapshot, flash = false, paused = false, updatedAgo, effect, dropCell = false, onFlip }: { snapshot: UsageSnapshot; flash?: boolean; paused?: boolean; updatedAgo?: string; effect?: UsageEffect; dropCell?: boolean; onFlip?: () => void }) {
+// Memoised: a system-monitor poll lands as often as once a second and re-renders the widget, but
+// nothing about an AI tile changed — without this every poll rebuilt each tile's bar cells and its
+// eleven liquid layers. Same reasoning for the other tiles below.
+const UsageBlock = React.memo(function UsageBlock({ snapshot, flash = false, paused = false, updatedAgo, effect, dropCell = false, onFlip }: { snapshot: UsageSnapshot; flash?: boolean; paused?: boolean; updatedAgo?: string; effect?: UsageEffect; dropCell?: boolean; onFlip?: () => void }) {
   const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
   const stale = isStale(snapshot);
   const sourceState = stale ? "stale" : snapshot.status !== "ok" ? snapshot.status : paused ? "paused" : "ok";
@@ -4105,7 +4124,7 @@ function UsageBlock({ snapshot, flash = false, paused = false, updatedAgo, effec
       </div>
     </article>
   );
-}
+});
 
 function StatusPill({ status }: { status: UsageStatus }) {
   return <span className={`pill ${status}`}>{readableStatus(status)}</span>;

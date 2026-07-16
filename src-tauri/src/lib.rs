@@ -29,6 +29,20 @@ const CONTEXT_REFRESH: &str = "widget_context_refresh";
 const CONTEXT_SETTINGS: &str = "widget_context_settings";
 const CONTEXT_CLOSE: &str = "widget_context_close";
 const CONTEXT_ACTION_EVENT: &str = "usageview-context-action";
+/// WebView2 builds one environment per user-data folder, and every webview sharing that folder must
+/// request the same browser arguments — mismatch one window and its creation silently fails (Codex
+/// then reads "failed to receive message from webview" and Claude freezes on its cached value).
+/// Hence a single constant, and it must stay byte-identical to `additionalBrowserArgs` on every
+/// window in tauri.conf.json. Changing it for one window only is not possible.
+///
+/// The throttle-defeating flags cost real idle CPU — the hidden claude.ai/chatgpt.com pages account
+/// for ~30% of a core (measured: turning AI usage off drops the app from ~40% to ~3.5%). Dropping
+/// them was tried and measured no better, apparently because a Tauri-hidden window is still visible
+/// to Chromium, so it never backgrounds the renderer anyway. They are kept because the widget is the
+/// single refresh engine and its timers must not throttle while it sits in the tray. Reclaiming that
+/// CPU needs the provider windows gone, not throttled — see `suspend_provider_windows`.
+const WEBVIEW_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows";
+
 const DETACHED_HIDE_PREFIX: &str = "detached_hide:";
 const DETACHED_DOCK_EVENT: &str = "usageview-dock-tile";
 const DETACHED_POSITION_EVENT: &str = "usageview-detached-position";
@@ -434,7 +448,7 @@ fn open_detached_tile(
         .skip_taskbar(true)
         .resizable(false)
         .zoom_hotkeys_enabled(false)
-        .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows")
+        .additional_browser_args(WEBVIEW_BROWSER_ARGS)
         .build()
         .map_err(|error| error.to_string())?;
       let placed = place_detached_tile(&window, &create_target)?;
@@ -636,7 +650,7 @@ fn show_widget_window(app: &tauri::AppHandle) -> Result<(), String> {
     .skip_taskbar(true)
     .resizable(false)
     .zoom_hotkeys_enabled(false)
-    .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows")
+    .additional_browser_args(WEBVIEW_BROWSER_ARGS)
     .build()
     .map_err(|error| error.to_string())?;
   Ok(())
@@ -665,6 +679,11 @@ fn toggle_settings_window(app: tauri::AppHandle) -> Result<(), String> {
 fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
   // Rebuild the window if it was destroyed (e.g. the user hit the native close button); state lives in
   // localStorage so a fresh window comes back identical.
+  //
+  // This is a fallback, not the normal path: `settings` is declared in tauri.conf.json. Dropping it
+  // from there to save its renderer was tried and the rebuilt window came up blank and transparent —
+  // the webview never initialised, `outer_size()` below kept failing, so it never even moved next to
+  // the widget. Keep it pre-declared.
   let window = match app.get_webview_window("settings") {
     Some(window) => window,
     None => WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
@@ -678,7 +697,7 @@ fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
       .shadow(false)
       .always_on_top(true)
       .skip_taskbar(true)
-      .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows")
+      .additional_browser_args(WEBVIEW_BROWSER_ARGS)
       .build()
       .map_err(|error| error.to_string())?,
   };
@@ -983,7 +1002,18 @@ async fn discover_provider_api(app: tauri::AppHandle, provider: String, url: Str
 /// fails degrades to `None` (or 0) so the widget just shows "N/A" for that tile and the
 /// rest of the app is unaffected. CPU temperature is intentionally `None` in Phase 1.
 #[tauri::command]
-fn read_system_metrics(state: tauri::State<SystemMonitorState>) -> SystemMetrics {
+fn read_system_metrics(state: tauri::State<SystemMonitorState>, kinds: Vec<String>) -> SystemMetrics {
+  // Only read the sensors whose tiles are actually on screen. Every source here has a real cost
+  // (NVML issues 7 device queries, the iGPU counter enumerates every GPU engine, the sidecar hits
+  // the disk), and this runs as often as once a second — paying for all of it to show one tile was
+  // most of the polling cost.
+  let wants = |kind: &str| kinds.iter().any(|k| k == kind);
+  let want_sys = wants("cpu") || wants("ram");
+  let want_nvml = wants("gpu") || wants("gputemp");
+  let want_igpu = wants("igpu");
+  // The sidecar and ASUS ACPI carry CPU package temp plus both fan tachometers.
+  let want_temps = wants("cputemp") || wants("gputemp");
+
   let mut ram_percent = 0.0f32;
   let mut ram_used_mb = 0u64;
   let mut ram_total_mb = 0u64;
@@ -995,7 +1025,7 @@ fn read_system_metrics(state: tauri::State<SystemMonitorState>) -> SystemMetrics
   let mut cpu_freq_mhz = 0u32;
   let mut cpu_logical_cores = 0u32;
   let mut cpu_physical_cores = None;
-  if let Ok(mut sys) = state.sys.lock() {
+  if let Some(mut sys) = state.sys.lock().ok().filter(|_| want_sys) {
     sys.refresh_memory();
     sys.refresh_cpu_all();
     cpu_physical_cores = sys.physical_core_count().map(|c| c as u32);
@@ -1028,8 +1058,8 @@ fn read_system_metrics(state: tauri::State<SystemMonitorState>) -> SystemMetrics
   let mut gpu_power_w = None;
   let mut gpu_clock_mhz = None;
   let mut gpu_fan_percent = None;
-  let have_nvidia = state.nvml.is_some();
-  if let Some(nvml) = state.nvml.as_ref() {
+  let have_nvidia = state.nvml.is_some() && want_nvml;
+  if let Some(nvml) = state.nvml.as_ref().filter(|_| want_nvml) {
     if let Ok(device) = nvml.device_by_index(0) {
       if let Ok(util) = device.utilization_rates() {
         gpu_percent = Some(util.gpu as f32);
@@ -1071,33 +1101,35 @@ fn read_system_metrics(state: tauri::State<SystemMonitorState>) -> SystemMetrics
   }
 
   // Integrated GPU (Intel) via Windows perf counters — see gpu_perf.rs.
-  let (igpu_percent, igpu_name) = read_igpu(&state);
+  let (igpu_percent, igpu_name) = if want_igpu { read_igpu(&state) } else { (None, None) };
 
   // CPU temperature + fan RPM from the optional elevated sidecar (Phase 2). Absent → None → N/A.
   let mut cpu_temp_c = None;
   let mut cpu_temp_cores = Vec::new();
   let mut cpu_fan_rpm = None;
   let mut gpu_fan_rpm = None;
-  if let Some(sensors) = read_sidecar_sensors() {
-    cpu_temp_c = sensors.cpu_temp_c;
-    cpu_temp_cores = sensors.cpu_temp_cores;
-    cpu_fan_rpm = sensors.cpu_fan_rpm.map(|v| v.round() as u32);
-    gpu_fan_rpm = sensors.gpu_fan_rpm.map(|v| v.round() as u32);
-  }
+  if want_temps {
+    if let Some(sensors) = read_sidecar_sensors() {
+      cpu_temp_c = sensors.cpu_temp_c;
+      cpu_temp_cores = sensors.cpu_temp_cores;
+      cpu_fan_rpm = sensors.cpu_fan_rpm.map(|v| v.round() as u32);
+      gpu_fan_rpm = sensors.gpu_fan_rpm.map(|v| v.round() as u32);
+    }
 
-  // ASUS exposes its laptop tachometers through ATKACPI rather than standard SuperIO sensors.
-  // Prefer that built-in, non-admin source and retain the LHM sidecar only as a generic fallback.
-  #[cfg(windows)]
-  if let Ok(mut monitor) = state.asus_acpi.lock() {
-    let readings = monitor.read();
-    if readings.cpu_temp_c.is_some() {
-      cpu_temp_c = readings.cpu_temp_c;
-    }
-    if readings.cpu_fan_rpm.is_some() {
-      cpu_fan_rpm = readings.cpu_fan_rpm;
-    }
-    if readings.gpu_fan_rpm.is_some() {
-      gpu_fan_rpm = readings.gpu_fan_rpm;
+    // ASUS exposes its laptop tachometers through ATKACPI rather than standard SuperIO sensors.
+    // Prefer that built-in, non-admin source and retain the LHM sidecar only as a generic fallback.
+    #[cfg(windows)]
+    if let Ok(mut monitor) = state.asus_acpi.lock() {
+      let readings = monitor.read();
+      if readings.cpu_temp_c.is_some() {
+        cpu_temp_c = readings.cpu_temp_c;
+      }
+      if readings.cpu_fan_rpm.is_some() {
+        cpu_fan_rpm = readings.cpu_fan_rpm;
+      }
+      if readings.gpu_fan_rpm.is_some() {
+        gpu_fan_rpm = readings.gpu_fan_rpm;
+      }
     }
   }
 
@@ -1419,6 +1451,9 @@ fn provider_host(provider: &str) -> Result<&'static str, String> {
 /// tauri.conf.json so get_webview_window always finds them. Additional account windows
 /// (provider_codex_1 etc.) are created dynamically with a separate data_directory so
 /// they can hold an independent login session.
+///
+/// This is also the rebuild path after `suspend_provider_windows` destroys them, so the builder
+/// below must reproduce the tauri.conf.json declarations faithfully — see the browser-args note.
 fn get_or_create_provider_window(app: &tauri::AppHandle, label: &str) -> Result<tauri::WebviewWindow, String> {
   if let Some(window) = app.get_webview_window(label) {
     return Ok(window);
@@ -1429,9 +1464,14 @@ fn get_or_create_provider_window(app: &tauri::AppHandle, label: &str) -> Result<
     .map_err(|e| e.to_string())?
     .join("profiles")
     .join(label);
-  let title = label.strip_prefix("provider_").unwrap_or(label).replace('_', " ");
+  let title = match label {
+    "provider_claude" => "Claude Usage - UsageView".to_string(),
+    "provider_codex" => "Codex Usage - UsageView".to_string(),
+    "provider_codex_1" => "Codex 2 Usage - UsageView".to_string(),
+    _ => format!("{} \u{2014} UsageView", label.strip_prefix("provider_").unwrap_or(label).replace('_', " ")),
+  };
   let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
-    .title(format!("{} \u{2014} UsageView", title))
+    .title(title)
     .inner_size(980.0, 760.0)
     .min_inner_size(720.0, 520.0)
     .resizable(false)
@@ -1444,7 +1484,7 @@ fn get_or_create_provider_window(app: &tauri::AppHandle, label: &str) -> Result<
     builder.data_directory(data_dir)
   };
   builder
-    .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows")
+    .additional_browser_args(WEBVIEW_BROWSER_ARGS)
     .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
     .build()
     .map_err(|e| e.to_string())
