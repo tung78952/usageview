@@ -1227,7 +1227,11 @@ function SettingsWindowApp() {
           <div className={`status-line ${statusLineTone(message)}`}><span />{message}<strong>{settings.alwaysOnTop ? "pinned" : "unpinned"}</strong></div>
         </section>
 
-        <section className="settings-section">
+        <section className="settings-section ai-usage-master">
+          <FeatureSwitch label="AI usage" checked={settings.aiUsageEnabled} onChange={(aiUsageEnabled) => handleChange({ ...settings, aiUsageEnabled })} />
+        </section>
+
+        {settings.aiUsageEnabled && <section className="settings-section">
           <h2>Accounts</h2>
           {providerFields.map(([provider, urlKey, showKey]) => (
             <ProviderPanel
@@ -1244,11 +1248,11 @@ function SettingsWindowApp() {
               discovery={discovery[provider]}
               onExtract={() => void refresh(provider)}
               onUrlChange={(url) => handleChange({ ...settings, [urlKey]: url })}
-              shownInWidget={settings.aiUsageEnabled && (settings[showKey] as boolean)}
-              onToggleShown={() => handleChange({ ...settings, aiUsageEnabled: true, [showKey]: settings.aiUsageEnabled ? !(settings[showKey] as boolean) : true })}
+              shownInWidget={settings[showKey] as boolean}
+              onToggleShown={() => handleChange({ ...settings, [showKey]: !(settings[showKey] as boolean) })}
             />
           ))}
-        </section>
+        </section>}
 
         <WidgetSettings
           settings={settings}
@@ -2682,11 +2686,6 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
   const [testTo, setTestTo] = useState(37);
   const [driveBar, setDriveBar] = useState(false);
   const testable = settings.effectsEnabled;
-  const aiProviderToggles: [Provider, string, keyof Settings][] = [
-    ["claude", "Claude usage", "showClaude"],
-    ["codex", "Codex 1 usage", "showCodex"],
-    ["codex-1", "Codex 2 usage", "showCodex1"],
-  ];
   const presets: [string, number, number][] = [["36→37", 36, 37], ["80→81", 80, 81], ["0→63", 0, 63], ["99→100", 99, 100], ["0→100", 0, 100]];
 
   function play(from: number, to: number) {
@@ -2779,6 +2778,20 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
             onChange={(value) => patch({ uiScale: value })}
           />
         </div>
+        <div className="seg-field">
+          <span className="seg-label">Refresh (enabled AIs)</span>
+          <div className="num-field">
+            <input
+              type="number"
+              min="10"
+              value={secondsDraft}
+              onChange={(event) => setSecondsDraft(event.target.value)}
+              onBlur={commitSeconds}
+              onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commitSeconds(); } }}
+            />
+            <span className="num-unit">sec</span>
+          </div>
+        </div>
       </div>
       <div className="settings-row">
         <div className="seg-field">
@@ -2801,37 +2814,6 @@ function WidgetSettings({ settings, savedAt, onChange, onEffectPlay, onEffectRes
           </div>
         </div>
       )}
-      <div className="effect-settings ai-usage-settings">
-        <FeatureSwitch label="AI usage" checked={settings.aiUsageEnabled} onChange={(aiUsageEnabled) => patch({ aiUsageEnabled })} />
-        {settings.aiUsageEnabled && <div className="feature-settings-body">
-          {aiProviderToggles.map(([provider, label, showKey]) => (
-            <label className="toggle-row" key={provider}>
-              <span>{label}</span>
-              <input
-                className="switch-control"
-                type="checkbox"
-                role="switch"
-                checked={settings[showKey] as boolean}
-                onChange={(event) => patch({ [showKey]: event.target.checked } as Partial<Settings>)}
-              />
-            </label>
-          ))}
-          <div className="seg-field ai-refresh-field">
-            <span className="seg-label">Refresh (enabled AIs)</span>
-            <div className="num-field">
-              <input
-                type="number"
-                min="10"
-                value={secondsDraft}
-                onChange={(event) => setSecondsDraft(event.target.value)}
-                onBlur={commitSeconds}
-                onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commitSeconds(); } }}
-              />
-              <span className="num-unit">sec</span>
-            </div>
-          </div>
-        </div>}
-      </div>
       <div className="effect-settings">
         <FeatureSwitch label="Usage effect" checked={settings.effectsEnabled} onChange={(effectsEnabled) => patch({ effectsEnabled })} />
         {settings.effectsEnabled && <div className="feature-settings-body">
