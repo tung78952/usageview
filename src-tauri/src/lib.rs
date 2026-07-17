@@ -29,6 +29,17 @@ const CONTEXT_REFRESH: &str = "widget_context_refresh";
 const CONTEXT_SETTINGS: &str = "widget_context_settings";
 const CONTEXT_CLOSE: &str = "widget_context_close";
 const CONTEXT_ACTION_EVENT: &str = "usageview-context-action";
+const PROVIDER_RELEASED_EVENT: &str = "usageview-provider-released";
+/// Fraction of the SMALLER of (tile, widget) that must overlap before a dropped tile docks.
+///
+/// Do not go back to "is the tile's centre inside the widget": a detached tile is ~248px tall while
+/// the Mini widget is only ~48-150px, so the tile's centre sits ~124px below its own top edge and
+/// had to be aimed at a 48px-tall strip — while the user's cursor is over the grip at the tile's
+/// left edge, nowhere near that centre. Docking from Mini was luck. Measuring against the smaller
+/// area makes one formula fit both modes: in Mini the widget is smaller, so covering it is enough;
+/// in Full the tile is smaller, so it must genuinely be dragged inside and a tile merely parked
+/// against the widget's edge stays put.
+const DOCK_OVERLAP_RATIO: f64 = 0.35;
 /// WebView2 builds one environment per user-data folder, and every webview sharing that folder must
 /// request the same browser arguments — mismatch one window and its creation silently fails (Codex
 /// then reads "failed to receive message from webview" and Claude freezes on its cached value).
@@ -64,7 +75,7 @@ struct WindowPosition {
 
 struct CurrentWidgetMode(Mutex<String>);
 struct WindowPositionStoreLock(Mutex<()>);
-struct ProviderEnabledState(Mutex<HashMap<String, bool>>);
+struct ProviderEnabledState(Mutex<HashMap<String, (bool, u64)>>);
 
 #[cfg(windows)]
 fn set_webview_memory_target(window: &tauri::WebviewWindow, low: bool) -> Result<(), String> {
@@ -209,6 +220,7 @@ fn close_provider_window(app: tauri::AppHandle, provider: String) -> Result<(), 
     window.hide().map_err(|error| error.to_string())?;
     if !provider_enabled(&app, &label) {
       window.destroy().map_err(|error| error.to_string())?;
+      let _ = app.emit_to("widget", PROVIDER_RELEASED_EVENT, label);
     } else {
       let _ = set_webview_memory_target(&window, true);
     }
@@ -219,34 +231,66 @@ fn close_provider_window(app: tauri::AppHandle, provider: String) -> Result<(), 
 fn provider_enabled(app: &tauri::AppHandle, label: &str) -> bool {
   app
     .try_state::<ProviderEnabledState>()
-    .and_then(|state| state.0.lock().ok().and_then(|values| values.get(label).copied()))
+    .and_then(|state| state.0.lock().ok().and_then(|values| values.get(label).map(|value| value.0)))
     .unwrap_or(true)
 }
 
-fn release_provider_window(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
-  if let Some(window) = app.get_webview_window(label) {
-    // Never tear down a visible login page. The next explicit Hide/close will finish the release.
-    if window.is_visible().unwrap_or(false) {
-      return Ok(());
-    }
-    window.destroy().map_err(|error| error.to_string())?;
+/// Outcome of a release request. The caller must be able to tell these apart:
+/// - `visible`: a login page is up; only the user's Hide/close may finish the release.
+/// - `superseded`: a newer ON/OFF owns this provider, so this command must stay silent.
+/// - `absent`: no window to destroy *yet*. At startup the predeclared provider windows are built by
+///   Tauri after the widget's JS runs, so an OFF that lands first finds nothing and would otherwise
+///   report success while Tauri quietly brings the window up behind it — leaving a disabled
+///   provider's WebView alive for the whole session.
+const RELEASE_RELEASED: &str = "released";
+const RELEASE_VISIBLE: &str = "visible";
+const RELEASE_SUPERSEDED: &str = "superseded";
+const RELEASE_ABSENT: &str = "absent";
+
+fn release_provider_window(app: &tauri::AppHandle, label: &str) -> Result<&'static str, String> {
+  let Some(window) = app.get_webview_window(label) else {
+    return Ok(RELEASE_ABSENT);
+  };
+  // Never tear down a visible login page. The next explicit Hide/close will finish the release.
+  // If the visibility query itself fails, assume visible: destroying a login window the user is
+  // typing into is unrecoverable, while deferring the release only postpones freeing memory.
+  if window.is_visible().unwrap_or(true) {
+    return Ok(RELEASE_VISIBLE);
   }
-  Ok(())
+  window.destroy().map_err(|error| error.to_string())?;
+  Ok(RELEASE_RELEASED)
 }
 
 #[tauri::command]
-fn set_provider_enabled(app: tauri::AppHandle, provider: String, enabled: bool) -> Result<(), String> {
+fn set_provider_enabled(app: tauri::AppHandle, provider: String, enabled: bool, generation: u64) -> Result<bool, String> {
   let label = provider_label(&provider)?;
   let state = app.state::<ProviderEnabledState>();
-  state
+  let mut values = state.0.lock().map_err(|error| error.to_string())?;
+  if values.get(&label).is_some_and(|value| value.1 > generation) {
+    return Ok(false);
+  }
+  values.insert(label, (enabled, generation));
+  Ok(true)
+}
+
+#[tauri::command]
+fn release_provider_window_command(app: tauri::AppHandle, provider: String, generation: u64) -> Result<&'static str, String> {
+  let label = provider_label(&provider)?;
+  let state = app.state::<ProviderEnabledState>();
+  let current = state
     .0
     .lock()
     .map_err(|error| error.to_string())?
-    .insert(label.clone(), enabled);
-  if !enabled {
-    release_provider_window(&app, &label)?;
+    .get(&label)
+    .copied();
+  if current != Some((false, generation)) {
+    return Ok(RELEASE_SUPERSEDED);
   }
-  Ok(())
+  let outcome = release_provider_window(&app, &label)?;
+  if outcome == RELEASE_RELEASED {
+    let _ = app.emit_to("widget", PROVIDER_RELEASED_EVENT, label);
+  }
+  Ok(outcome)
 }
 
 #[tauri::command]
@@ -616,17 +660,21 @@ fn finish_detached_tile_drag(app: tauri::AppHandle, tile_id: String) -> Result<O
   let tile_size = tile.outer_size().map_err(|error| error.to_string())?;
   let mut x = tile_position.x as f64;
   let mut y = tile_position.y as f64;
-  let center_x = x + tile_size.width as f64 / 2.0;
   let mut center_y = y + tile_size.height as f64 / 2.0;
   let mut docked = false;
 
   if let Some(widget) = app.get_webview_window("widget") {
     if widget.is_visible().unwrap_or(false) {
       if let (Ok(widget_position), Ok(widget_size)) = (widget.outer_position(), widget.outer_size()) {
-        docked = center_x >= widget_position.x as f64
-          && center_x <= (widget_position.x + widget_size.width as i32) as f64
-          && center_y >= widget_position.y as f64
-          && center_y <= (widget_position.y + widget_size.height as i32) as f64;
+        let tile_w = tile_size.width as f64;
+        let tile_h = tile_size.height as f64;
+        let widget_w = widget_size.width as f64;
+        let widget_h = widget_size.height as f64;
+        let overlap_w = ((x + tile_w).min(widget_position.x as f64 + widget_w) - x.max(widget_position.x as f64)).max(0.0);
+        let overlap_h = ((y + tile_h).min(widget_position.y as f64 + widget_h) - y.max(widget_position.y as f64)).max(0.0);
+        let overlap = overlap_w * overlap_h;
+        let smaller_area = (tile_w * tile_h).min(widget_w * widget_h);
+        docked = smaller_area > 0.0 && overlap >= DOCK_OVERLAP_RATIO * smaller_area;
       }
     }
   }
@@ -923,15 +971,19 @@ async fn extract_provider(app: tauri::AppHandle, provider: String, url: String) 
   let window = get_or_create_provider_window(&app, &label)?;
   let expected_host = provider_host(&provider)?;
 
-  // A freshly-created dynamic window (Codex 2 / provider_codex_1) isn't ready right after build();
-  // calling url()/navigate()/eval() too early throws "failed to receive message from webview" and the
-  // first read fails until a manual refresh. Wait until the webview responds. Predeclared windows
-  // (Claude/Codex) answer immediately, so this adds no delay for them.
-  for _ in 0..20 {
+  // Any provider becomes a freshly-created dynamic window after Show OFF destroys it. Do not proceed
+  // until the controller responds; otherwise the first read leaks "failed to receive message from
+  // webview" into the snapshot and stays broken until a manual refresh.
+  let mut webview_ready = false;
+  for _ in 0..40 {
     if window.url().is_ok() {
+      webview_ready = true;
       break;
     }
     std::thread::sleep(Duration::from_millis(100));
+  }
+  if !webview_ready {
+    return Err(format!("{} WebView is still starting", provider));
   }
 
   // Silent background refresh: if the window is hidden and not already on the provider site
@@ -1500,6 +1552,7 @@ pub fn run() {
             }
           } else {
             let _ = window.destroy();
+            let _ = window.app_handle().emit_to("widget", PROVIDER_RELEASED_EVENT, label.to_string());
           }
         } else if label.starts_with("tile_") {
           // A detached tile has no titlebar, so Alt+F4 is the only OS close path — treat it as
@@ -1518,6 +1571,7 @@ pub fn run() {
       open_provider_window,
       close_provider_window,
       set_provider_enabled,
+      release_provider_window_command,
       suspend_provider_windows,
       refresh_provider_page,
       open_widget_window,

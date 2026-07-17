@@ -25,6 +25,20 @@ type UsageSnapshot = {
   updatedAt: string;
 };
 
+type ProviderLifecyclePhase = "stopped" | "starting" | "retrying" | "ready" | "login-needed" | "stopping" | "waiting-close" | "error";
+/// Mirrors `release_provider_window_command` in lib.rs: `visible` means a login window is still up
+/// and the release waits for its Hide/close; `superseded` means a newer toggle already owns this
+/// provider and this command must stay silent; `absent` means there is nothing to destroy yet —
+/// see PROVIDER_RELEASE_SWEEPS.
+type ReleaseOutcome = "released" | "visible" | "superseded" | "absent";
+type ProviderLifecycle = {
+  provider: Provider;
+  phase: ProviderLifecyclePhase;
+  generation: number;
+  attempt?: number;
+  message?: string;
+};
+
 // --- System monitors (RAM/CPU/GPU/temperatures) ---------------------------------
 // A fully parallel model to UsageSnapshot: these are live local-hardware readings, not
 // scraped provider usage. Nothing here touches the protected Provider/UsageSnapshot flow.
@@ -240,6 +254,16 @@ const MINI_MIN_HEIGHT_FALLBACK = 48;
 const MODE_KEY = "usageview.mode";
 const TILE_LAYOUT_KEY = "usageview.tileLayout.v1";
 const TILE_LAYOUT_EVENT = "usageview:tile-layout";
+const PROVIDER_LIFECYCLE_EVENT = "usageview-provider-lifecycle";
+const PROVIDER_LIFECYCLE_REQUEST_EVENT = "usageview-provider-lifecycle-request";
+const PROVIDER_RELEASED_EVENT = "usageview-provider-released";
+const PROVIDER_RETRY_EVENT = "usageview-provider-retry";
+const PROVIDER_START_ATTEMPTS = 3;
+// Tauri builds the predeclared provider windows after the widget's JS is already running, so an OFF
+// evaluated at startup can find no window to release and then watch Tauri raise one behind it. Keep
+// sweeping for a few seconds so a provider that is switched off stays off.
+const PROVIDER_RELEASE_SWEEPS = 6;
+const PROVIDER_RELEASE_SWEEP_MS = 700;
 const ALL_TILE_IDS = [
   "provider:claude", "provider:codex", "provider:codex-1",
   "monitor:cpu", "monitor:ram", "monitor:gpu", "monitor:igpu", "monitor:cputemp", "monitor:gputemp",
@@ -756,6 +780,34 @@ function providerLabel(provider: Provider) {
   return "Codex 1";
 }
 
+function lifecycleShowsTile(lifecycle: ProviderLifecycle | undefined) {
+  return lifecycle?.phase === "ready" || lifecycle?.phase === "login-needed";
+}
+
+function lifecycleIsTransitioning(lifecycle: ProviderLifecycle | undefined) {
+  return lifecycle?.phase === "starting" || lifecycle?.phase === "retrying" || lifecycle?.phase === "stopping" || lifecycle?.phase === "waiting-close";
+}
+
+function lifecycleLabel(lifecycle: ProviderLifecycle | undefined) {
+  if (!lifecycle) return undefined;
+  switch (lifecycle.phase) {
+    case "stopped": return "stopped";
+    case "starting": return "starting";
+    case "retrying": return `retry ${lifecycle.attempt ?? 1}/${PROVIDER_START_ATTEMPTS}`;
+    case "ready": return "live";
+    case "login-needed": return "login needed";
+    case "stopping": return "stopping";
+    case "waiting-close": return "close window";
+    case "error": return "error";
+  }
+}
+
+function lifecycleTone(lifecycle: ProviderLifecycle | undefined): "ok" | "warn" | "page_unavailable" {
+  if (lifecycle?.phase === "ready" || lifecycle?.phase === "stopped") return "ok";
+  if (lifecycle?.phase === "error") return "page_unavailable";
+  return "warn";
+}
+
 function providerUrl(provider: Provider, settings: Settings): string {
   if (provider === "claude") return settings.claudeUrl;
   if (provider === "codex-1") return settings.codex1Url;
@@ -1041,11 +1093,13 @@ async function discoverProviderApi(provider: Provider, url: string): Promise<str
   }
 }
 
-async function extractProvider(provider: Provider, url: string): Promise<UsageSnapshot> {
+type SnapshotCommitGuard = (snapshot: UsageSnapshot) => boolean;
+
+async function extractProvider(provider: Provider, url: string, shouldCommit: SnapshotCommitGuard = () => true): Promise<UsageSnapshot> {
   try {
     const encoded = await invoke<string>("extract_provider", { provider, url });
     const snapshot = retainLastGoodClaude(decodeSnapshot(provider, encoded));
-    saveSnapshot(snapshot);
+    if (shouldCommit(snapshot)) saveSnapshot(snapshot);
     return snapshot;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1057,25 +1111,25 @@ async function extractProvider(provider: Provider, url: string): Promise<UsageSn
       message,
       updatedAt: new Date().toISOString(),
     });
-    saveSnapshot(snapshot);
+    if (shouldCommit(snapshot)) saveSnapshot(snapshot);
     return snapshot;
   }
 }
 
-async function refreshProviderFromUrl(provider: Provider, url: string, background = false): Promise<UsageSnapshot> {
+async function refreshProviderFromUrl(provider: Provider, url: string, background = false, shouldCommit?: SnapshotCommitGuard): Promise<UsageSnapshot> {
   // Auto refresh reads the provider's cookie-authed usage API, which needs no page render, so it
   // goes straight to the extractor — which already navigates itself when the page is off-target.
   // Reloading the whole SPA every tick, then sleeping below purely to absorb that reload, was work
   // for nothing. (It is not what makes the app expensive at idle, though: the hidden provider pages
   // cost ~30% of a core just by staying loaded.) Manual refresh still reloads first.
-  if (background) return extractProvider(provider, url);
+  if (background) return extractProvider(provider, url, shouldCommit);
   try {
     await refreshProviderPage(provider, url, background);
     await wait(provider === "claude" ? 2600 : 900);
   } catch {
     // If navigation fails, still try the extractor so the UI gets a useful error snapshot.
   }
-  return extractProvider(provider, url);
+  return extractProvider(provider, url, shouldCommit);
 }
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error?: Error }> {
@@ -1367,6 +1421,7 @@ function SettingsWindowApp() {
   const [busy, setBusy] = useState<Provider | `${Provider}-open` | `${Provider}-close` | `${Provider}-reload` | `${Provider}-logout` | `${Provider}-discover` | null>(null);
   const [activity, setActivity] = useState("Settings ready");
   const [commandErrors, setCommandErrors] = useState<Partial<Record<Provider, string>>>({});
+  const [providerLifecycles, setProviderLifecycles] = useState<Partial<Record<Provider, ProviderLifecycle>>>({});
   const [generalError, setGeneralError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const refreshNonceRef = useRef<Partial<Record<Provider, string>>>({});
@@ -1417,6 +1472,25 @@ function SettingsWindowApp() {
       }
     }).then((dispose) => { unlisten = dispose; });
     return () => unlisten?.();
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<ProviderLifecycle>(PROVIDER_LIFECYCLE_EVENT, ({ payload }) => {
+      if (!payload?.provider) return;
+      setProviderLifecycles((current) => ({ ...current, [payload.provider]: payload }));
+      // Settled phases must overwrite the activity line too, or it keeps announcing "Starting
+      // Claude..." long after Claude went live.
+      if (payload.message) setActivity(payload.message);
+    }).then((dispose) => {
+      if (disposed) dispose();
+      else unlisten = dispose;
+    });
+    const request = () => void emitTo("widget", PROVIDER_LIFECYCLE_REQUEST_EVENT).catch(() => undefined);
+    request();
+    const retry = window.setTimeout(request, 600);
+    return () => { disposed = true; unlisten?.(); window.clearTimeout(retry); };
   }, []);
 
   function handleChange(next: Settings) {
@@ -1515,7 +1589,11 @@ function SettingsWindowApp() {
   ];
   const activeProviders = SETTINGS_PROVIDER_ORDER.filter((provider) => providerEnabled(provider, settings));
   const commandErrorProviders = settings.aiUsageEnabled ? SETTINGS_PROVIDER_ORDER.filter((provider) => commandErrors[provider]) : [];
-  const snapshotErrorProviders = activeProviders.filter((provider) => isProviderError(snapshots[provider].status) && !commandErrors[provider]);
+  const snapshotErrorProviders = activeProviders.filter((provider) =>
+    !lifecycleIsTransitioning(providerLifecycles[provider])
+    && isProviderError(snapshots[provider].status)
+    && !commandErrors[provider],
+  );
   const errorProviders = [...commandErrorProviders, ...snapshotErrorProviders];
   const errorCount = errorProviders.length + (generalError ? 1 : 0);
   const firstErrorProvider = errorProviders[0];
@@ -1523,8 +1601,14 @@ function SettingsWindowApp() {
     ? commandErrors[firstErrorProvider] ?? `${providerLabel(firstErrorProvider)}: ${providerMessage(snapshots[firstErrorProvider])}`
     : null);
   const hasProviderWarning = activeProviders.some((provider) => snapshots[provider].status !== "ok");
-  const headerTone: SettingsHeaderTone = firstError ? "error" : busy !== null || hasProviderWarning ? "warn" : "ok";
-  const headerMessage = firstError ? `${firstError}${errorCount > 1 ? ` (+${errorCount - 1})` : ""}` : activity;
+  const lifecycleActivity = SETTINGS_PROVIDER_ORDER
+    .map((provider) => providerLifecycles[provider])
+    .find((lifecycle) => lifecycle && lifecycle.phase !== "ready" && lifecycle.phase !== "stopped");
+  const lifecycleError = lifecycleActivity?.phase === "error";
+  const headerTone: SettingsHeaderTone = firstError ? "error" : lifecycleError ? "error" : busy !== null || hasProviderWarning || lifecycleActivity ? "warn" : "ok";
+  const headerMessage = firstError
+    ? `${firstError}${errorCount > 1 ? ` (+${errorCount - 1})` : ""}`
+    : lifecycleActivity?.message ?? activity;
   const savedLabel = savedAt ? `Saved ${savedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Auto-save on";
 
   return (
@@ -1549,6 +1633,7 @@ function SettingsWindowApp() {
               provider={provider}
               url={settings[urlKey] as string}
               snapshot={snapshots[provider]}
+              lifecycle={providerLifecycles[provider]}
               busy={busy}
               onOpen={() => void openInApp(provider)}
               onReload={() => void reloadInApp(provider)}
@@ -1557,6 +1642,7 @@ function SettingsWindowApp() {
               onDiscover={() => void findApi(provider)}
               discovery={discovery[provider]}
               onExtract={() => void refresh(provider)}
+              onRetry={() => void emitTo("widget", PROVIDER_RETRY_EVENT, provider)}
               onUrlChange={(url) => handleChange({ ...settings, [urlKey]: url })}
               shownInWidget={settings[showKey] as boolean}
               onToggleShown={() => handleChange({ ...settings, [showKey]: !(settings[showKey] as boolean) })}
@@ -1616,7 +1702,17 @@ function WidgetApp() {
     "codex-1": loadSnapshot("codex-1"),
   });
   const snapshotsRef = useRef(snapshots);
-  const refreshInFlightRef = useRef<Partial<Record<Provider, Promise<UsageSnapshot>>>>({});
+  const refreshInFlightRef = useRef<Partial<Record<Provider, { operation: Promise<UsageSnapshot>; generation: number }>>>({});
+  const [providerLifecycles, setProviderLifecycles] = useState<Record<Provider, ProviderLifecycle>>(() => ({
+    claude: { provider: "claude", phase: providerEnabled("claude", settings) ? "starting" : "stopped", generation: 0 },
+    codex: { provider: "codex", phase: providerEnabled("codex", settings) ? "starting" : "stopped", generation: 0 },
+    "codex-1": { provider: "codex-1", phase: providerEnabled("codex-1", settings) ? "starting" : "stopped", generation: 0 },
+  }));
+  const providerLifecycleRef = useRef(providerLifecycles);
+  const providerGenerationRef = useRef<Record<Provider, number>>({ claude: 0, codex: 0, "codex-1": 0 });
+  const providerDesiredRef = useRef<Partial<Record<Provider, boolean>>>({});
+  const [providerNotices, setProviderNotices] = useState<Partial<Record<Provider, ProviderLifecycle>>>({});
+  const providerNoticeTimersRef = useRef<Partial<Record<Provider, number>>>({});
   const lastLimitedAutoRefreshRef = useRef<Record<Provider, number>>({ claude: 0, codex: 0, "codex-1": 0 });
   const prevFlashTokenRef = useRef<Partial<Record<Provider, string>>>({});
   const prevEffectPercentRef = useRef<Partial<Record<Provider, number>>>({});
@@ -1707,7 +1803,9 @@ function WidgetApp() {
     }
     effectTimersRef.current = {};
     setActiveEffects({});
-    const providers = ["claude", "codex", "codex-1"] as Provider[];
+    const providers = (["claude", "codex", "codex-1"] as Provider[]).filter((p) =>
+      providerEnabled(p, settingsRef.current) && lifecycleShowsTile(providerLifecycleRef.current[p]),
+    );
     const results = await Promise.all(providers.map((p) => guardedRefresh(p, providerUrl(p, settingsRef.current), true)));
     setSnapshots((current) => results.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), current));
   }
@@ -1738,17 +1836,186 @@ function WidgetApp() {
     settingsRef.current = settings;
   }, [settings]);
 
-  useEffect(() => {
-    const providers: Provider[] = ["claude", "codex", "codex-1"];
-    const syncProviderWindows = () => {
-      for (const provider of providers) {
-        void invoke("set_provider_enabled", { provider, enabled: providerEnabled(provider, settings) }).catch(() => undefined);
+  function publishProviderLifecycle(next: ProviderLifecycle) {
+    providerLifecycleRef.current = { ...providerLifecycleRef.current, [next.provider]: next };
+    setProviderLifecycles(providerLifecycleRef.current);
+    setProviderNotices((current) => ({ ...current, [next.provider]: next }));
+    const existingTimer = providerNoticeTimersRef.current[next.provider];
+    if (existingTimer !== undefined) window.clearTimeout(existingTimer);
+    if (next.phase === "ready" || next.phase === "stopped") {
+      providerNoticeTimersRef.current[next.provider] = window.setTimeout(() => {
+        setProviderNotices((current) => {
+          const updated = { ...current };
+          delete updated[next.provider];
+          return updated;
+        });
+        delete providerNoticeTimersRef.current[next.provider];
+      }, 1800);
+    }
+    void emitTo("settings", PROVIDER_LIFECYCLE_EVENT, next).catch(() => undefined);
+  }
+
+  const lifecycleCurrent = (provider: Provider, generation: number) =>
+    providerGenerationRef.current[provider] === generation && providerDesiredRef.current[provider] === true;
+
+  // `set_provider_enabled` answers `false` for a generation Rust has already moved past — that is a
+  // normal outcome of rapid toggling and the newer generation owns the phase, so stay quiet. A
+  // rejected invoke is different: nobody else will publish, so surface it instead of leaving the UI
+  // stuck on STARTING/STOPPING forever.
+  async function claimProviderGeneration(provider: Provider, enabled: boolean, generation: number): Promise<boolean> {
+    try {
+      return await invoke<boolean>("set_provider_enabled", { provider, enabled, generation });
+    } catch (error) {
+      if (providerGenerationRef.current[provider] === generation) {
+        publishProviderLifecycle({
+          provider,
+          phase: "error",
+          generation,
+          message: `${providerLabel(provider)} could not ${enabled ? "start" : "stop"}: ${error instanceof Error ? error.message : String(error)}`,
+        });
+      }
+      return false;
+    }
+  }
+
+  async function startProviderLifecycle(provider: Provider, generation: number) {
+    publishProviderLifecycle({ provider, phase: "starting", generation, attempt: 1, message: `Starting ${providerLabel(provider)}...` });
+    if (!await claimProviderGeneration(provider, true, generation)) return;
+    if (!lifecycleCurrent(provider, generation)) return;
+
+    await settleProviderRefresh(provider, generation);
+
+    let lastSnapshot: UsageSnapshot | undefined;
+    for (let attempt = 1; attempt <= PROVIDER_START_ATTEMPTS; attempt += 1) {
+      if (!lifecycleCurrent(provider, generation)) return;
+      if (attempt > 1) {
+        publishProviderLifecycle({
+          provider,
+          phase: "retrying",
+          generation,
+          attempt,
+          message: `${providerLabel(provider)} is warming up (${attempt}/${PROVIDER_START_ATTEMPTS})...`,
+        });
+        await wait(450 * attempt);
+      }
+      if (!lifecycleCurrent(provider, generation)) return;
+
+      const shouldCommit: SnapshotCommitGuard = (snapshot) =>
+        lifecycleCurrent(provider, generation)
+        && ((snapshot.status === "ok" && !isStale(snapshot)) || snapshot.status === "not_open" || snapshot.status === "not_logged_in");
+      const snapshot = await guardedRefresh(provider, providerUrl(provider, settingsRef.current), true, shouldCommit, generation);
+      lastSnapshot = snapshot;
+      if (!lifecycleCurrent(provider, generation)) return;
+
+      if (snapshot.status === "ok" && !isStale(snapshot)) {
+        setSnapshots((current) => ({ ...current, [provider]: snapshot }));
+        setLastUpdated(new Date());
+        publishProviderLifecycle({ provider, phase: "ready", generation, message: `${providerLabel(provider)} ready` });
+        return;
+      }
+      if (snapshot.status === "not_open" || snapshot.status === "not_logged_in") {
+        setSnapshots((current) => ({ ...current, [provider]: snapshot }));
+        publishProviderLifecycle({ provider, phase: "login-needed", generation, message: `${providerLabel(provider)} needs login` });
+        return;
       }
     }
-    syncProviderWindows();
-    const retry = window.setTimeout(syncProviderWindows, 1500);
-    return () => window.clearTimeout(retry);
+
+    if (lifecycleCurrent(provider, generation)) {
+      publishProviderLifecycle({
+        provider,
+        phase: "error",
+        generation,
+        message: `${providerLabel(provider)} could not start${lastSnapshot?.message ? `: ${lastSnapshot.message}` : ""}`,
+      });
+    }
+  }
+
+  const stopIsCurrent = (provider: Provider, generation: number) =>
+    providerGenerationRef.current[provider] === generation && providerDesiredRef.current[provider] === false;
+
+  async function stopProviderLifecycle(provider: Provider, generation: number) {
+    publishProviderLifecycle({ provider, phase: "stopping", generation, message: `Stopping ${providerLabel(provider)}...` });
+    if (!await claimProviderGeneration(provider, false, generation)) return;
+    if (!stopIsCurrent(provider, generation)) return;
+
+    await settleProviderRefresh(provider, generation);
+    if (!stopIsCurrent(provider, generation)) return;
+
+    let lastError: unknown;
+    let announcedStopped = false;
+    for (let sweep = 0; sweep < PROVIDER_RELEASE_SWEEPS; sweep += 1) {
+      if (!stopIsCurrent(provider, generation)) return;
+      try {
+        const outcome = await invoke<ReleaseOutcome>("release_provider_window_command", { provider, generation });
+        if (!stopIsCurrent(provider, generation)) return;
+        if (outcome === "superseded") return;
+        if (outcome === "released") {
+          publishProviderLifecycle({ provider, phase: "stopped", generation, message: `${providerLabel(provider)} stopped` });
+          return;
+        }
+        if (outcome === "visible") {
+          publishProviderLifecycle({ provider, phase: "waiting-close", generation, message: `Close ${providerLabel(provider)} window to finish stopping` });
+          return;
+        }
+        // absent: nothing exists to destroy. The provider is already off as far as the user is
+        // concerned, so say so once, then keep watching in case Tauri is still building the
+        // predeclared window underneath us.
+        if (!announcedStopped) {
+          publishProviderLifecycle({ provider, phase: "stopped", generation, message: `${providerLabel(provider)} stopped` });
+          announcedStopped = true;
+        }
+        await wait(PROVIDER_RELEASE_SWEEP_MS);
+      } catch (error) {
+        lastError = error;
+        await wait(PROVIDER_RELEASE_SWEEP_MS);
+      }
+    }
+    if (lastError && !announcedStopped && stopIsCurrent(provider, generation)) {
+      publishProviderLifecycle({
+        provider,
+        phase: "error",
+        generation,
+        message: `${providerLabel(provider)} could not stop: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+      });
+    }
+  }
+
+  useEffect(() => {
+    const providers: Provider[] = ["claude", "codex", "codex-1"];
+    for (const provider of providers) {
+      const desired = providerEnabled(provider, settings);
+      if (providerDesiredRef.current[provider] === desired) continue;
+      providerDesiredRef.current[provider] = desired;
+      const generation = providerGenerationRef.current[provider] + 1;
+      providerGenerationRef.current[provider] = generation;
+      if (desired) void startProviderLifecycle(provider, generation);
+      else void stopProviderLifecycle(provider, generation);
+    }
   }, [settings.aiUsageEnabled, settings.showClaude, settings.showCodex, settings.showCodex1]);
+
+  useEffect(() => {
+    let disposed = false;
+    const disposers: Array<() => void> = [];
+    const keep = (dispose: () => void) => { if (disposed) dispose(); else disposers.push(dispose); };
+    void listen<string>(PROVIDER_RELEASED_EVENT, ({ payload: label }) => {
+      const provider = providerForLabel(label);
+      if (!provider || providerDesiredRef.current[provider] !== false) return;
+      const generation = providerGenerationRef.current[provider];
+      publishProviderLifecycle({ provider, phase: "stopped", generation, message: `${providerLabel(provider)} stopped` });
+    }).then(keep);
+    void listen(PROVIDER_LIFECYCLE_REQUEST_EVENT, () => {
+      for (const lifecycle of Object.values(providerLifecycleRef.current)) {
+        void emitTo("settings", PROVIDER_LIFECYCLE_EVENT, lifecycle).catch(() => undefined);
+      }
+    }).then(keep);
+    void listen<Provider>(PROVIDER_RETRY_EVENT, ({ payload: provider }) => {
+      if (!provider || providerDesiredRef.current[provider] !== true) return;
+      const generation = providerGenerationRef.current[provider] + 1;
+      providerGenerationRef.current[provider] = generation;
+      void startProviderLifecycle(provider, generation);
+    }).then(keep);
+    return () => { disposed = true; disposers.forEach((dispose) => dispose()); };
+  }, []);
 
   useEffect(() => {
     // Provider windows are pre-declared and hidden at startup, so put their renderers in WebView2's
@@ -1980,6 +2247,9 @@ function WidgetApp() {
       for (const timer of Object.values(effectTimersRef.current)) {
         if (timer !== undefined) window.clearTimeout(timer);
       }
+      for (const timer of Object.values(providerNoticeTimersRef.current)) {
+        if (timer !== undefined) window.clearTimeout(timer);
+      }
     };
   }, []);
 
@@ -2004,7 +2274,6 @@ function WidgetApp() {
     effectTimersRef.current = {};
     setFlashSet(new Set());
     setActiveEffects({});
-    void invoke("suspend_provider_windows").catch(() => undefined);
   }, [settings.aiUsageEnabled]);
 
   useEffect(() => {
@@ -2056,7 +2325,9 @@ function WidgetApp() {
     async function refreshOpenProviders(force = false) {
       const now = Date.now();
       const currentSnapshots = snapshotsRef.current;
-      const providers: Provider[] = (["claude", "codex", "codex-1"] as Provider[]).filter((provider) => providerEnabled(provider, settings)).filter((provider) =>
+      const providers: Provider[] = (["claude", "codex", "codex-1"] as Provider[])
+        .filter((provider) => providerEnabled(provider, settings) && lifecycleShowsTile(providerLifecycleRef.current[provider]))
+        .filter((provider) =>
         force || shouldAutoRefreshProvider(provider, currentSnapshots[provider], now, lastLimitedAutoRefreshRef.current)
       );
       if (!providers.length) return;
@@ -2075,13 +2346,11 @@ function WidgetApp() {
         setLastUpdated(new Date());
       }
     }
-    // Refresh once shortly after launch (gives the hidden WebViews a moment to exist/navigate),
-    // then keep refreshing on the interval — all silently in the background.
-    const initial = window.setTimeout(() => refreshOpenProviders(true), 800);
+    // First read after Show ON belongs to the lifecycle controller above. This interval only handles
+    // providers that are already ready, so it cannot race a destroy/recreate transition.
     const interval = window.setInterval(refreshOpenProviders, Math.max(10, settings.refreshIntervalSec) * 1000);
     return () => {
       cancelled = true;
-      window.clearTimeout(initial);
       window.clearInterval(interval);
     };
   }, [settings.aiUsageEnabled, settings.showClaude, settings.showCodex, settings.showCodex1, settings.refreshIntervalSec, settings.claudeUrl, settings.codexUrl, settings.codex1Url]);
@@ -2089,15 +2358,22 @@ function WidgetApp() {
   const shown = useMemo(() => {
     return (["claude", "codex", "codex-1"] as Provider[]).filter((provider) => providerEnabled(provider, settings));
   }, [settings.aiUsageEnabled, settings.showClaude, settings.showCodex, settings.showCodex1]);
+  const providerLifecyclePending = shown.some((provider) => !lifecycleShowsTile(providerLifecycles[provider]));
 
   const shownMonitors = useMemo(
     () => settings.systemMonitorsEnabled ? MONITOR_ORDER.filter((kind) => settings[MONITOR_SHOW_KEY[kind]] as boolean) : [],
     [settings.systemMonitorsEnabled, settings.showCpu, settings.showRam, settings.showGpu, settings.showIgpu, settings.showCpuTemp, settings.showGpuTemp],
   );
 
+  function runtimeTileActive(tileId: TileId, currentSettings: Settings) {
+    if (!tileActive(tileId, currentSettings)) return false;
+    const provider = providerFromTile(tileId);
+    return !provider || lifecycleShowsTile(providerLifecycleRef.current[provider]);
+  }
+
   const attachedTileIds = useMemo(
-    () => tileLayout.order.filter((tileId) => tileActive(tileId, settings) && !tileLayout.detached[tileId]),
-    [tileLayout, settings],
+    () => tileLayout.order.filter((tileId) => runtimeTileActive(tileId, settings) && !tileLayout.detached[tileId]),
+    [tileLayout, settings, providerLifecycles],
   );
 
   // Live hardware polling — independent of the 60s usage refresh, and only while at least one
@@ -2135,13 +2411,16 @@ function WidgetApp() {
 
   // Only the fields this effect actually reads. Depending on the whole `settings` object made an
   // unrelated edit (theme, refresh interval) resize and reposition every detached window.
+  // `runtimeTileActive` also reads the provider lifecycle, so that must be a dependency too: without
+  // it the starting -> ready transition left the key unchanged and a detached provider tile never
+  // reopened after its Show was switched back on.
   const tileReconcileKey = useMemo(
     () => [
       settings.alwaysOnTop ? "1" : "0",
       settings.uiScale,
-      ...ALL_TILE_IDS.map((tileId) => `${tileActive(tileId, settings) ? "1" : "0"}${tileConfigured(tileId, settings) ? "1" : "0"}`),
+      ...ALL_TILE_IDS.map((tileId) => `${runtimeTileActive(tileId, settings) ? "1" : "0"}${tileConfigured(tileId, settings) ? "1" : "0"}`),
     ].join("|"),
-    [settings],
+    [settings, providerLifecycles],
   );
 
   useEffect(() => {
@@ -2158,7 +2437,7 @@ function WidgetApp() {
       return;
     }
     for (const [tileId, savedPosition] of detachedEntries) {
-      if (!tileActive(tileId, settings)) {
+      if (!runtimeTileActive(tileId, settings)) {
         void invoke("close_detached_tile", { tileId }).catch(() => undefined);
         continue;
       }
@@ -2174,7 +2453,7 @@ function WidgetApp() {
     const previous = runtimePayloadRef.current;
     const next: Partial<Record<TileId, DetachedRuntimeState>> = {};
     for (const tileId of Object.keys(tileLayout.detached).filter(isTileId)) {
-      if (!tileActive(tileId, settings)) continue;
+      if (!runtimeTileActive(tileId, settings)) continue;
       const provider = providerFromTile(tileId);
       const monitor = monitorFromTile(tileId);
       const state: DetachedRuntimeState = provider
@@ -2228,7 +2507,7 @@ function WidgetApp() {
       const windowPosition = await getCurrentWindow().outerPosition().catch(() => new PhysicalPosition(0, 0));
       const clientY = (payload.screenY - windowPosition.y) / (window.devicePixelRatio || 1);
       const current = tileLayoutRef.current;
-      const attached = current.order.filter((tileId) => tileActive(tileId, settingsRef.current) && !current.detached[tileId] && tileId !== payload.tileId);
+      const attached = current.order.filter((tileId) => runtimeTileActive(tileId, settingsRef.current) && !current.detached[tileId] && tileId !== payload.tileId);
       const before = attached.find((tileId) => {
         const rect = tileElementsRef.current[tileId]?.getBoundingClientRect();
         return rect ? clientY < rect.top + rect.height / 2 : false;
@@ -2264,25 +2543,70 @@ function WidgetApp() {
   // Never let two reads of the same provider run at once. At low refresh intervals a slow Claude
   // read would otherwise be reloaded out from under itself by the next tick. A manual request that
   // arrives mid-read awaits that read instead of being silently answered with the stale snapshot.
-  async function guardedRefresh(provider: Provider, url: string, background: boolean): Promise<UsageSnapshot> {
+  //
+  // A read is bound to the lifecycle generation that started it: its `shouldCommit` guard closes over
+  // that generation, and it may be reading a WebView that a Show OFF has since destroyed. Sharing it
+  // across generations let a doomed read commit `page_unavailable` over the fresh one's snapshot, so
+  // a caller from another generation waits it out and issues its own read instead.
+  async function guardedRefresh(
+    provider: Provider,
+    url: string,
+    background: boolean,
+    shouldCommit?: SnapshotCommitGuard,
+    generation = providerGenerationRef.current[provider],
+  ): Promise<UsageSnapshot> {
     const existing = refreshInFlightRef.current[provider];
-    if (existing) return existing;
-    const operation = refreshProviderFromUrl(provider, url, background);
-    refreshInFlightRef.current[provider] = operation;
-    void operation.then(
-      () => { if (refreshInFlightRef.current[provider] === operation) delete refreshInFlightRef.current[provider]; },
-      () => { if (refreshInFlightRef.current[provider] === operation) delete refreshInFlightRef.current[provider]; },
-    );
-    return operation;
+    if (existing) {
+      if (existing.generation === generation) return existing.operation;
+      await existing.operation.catch(() => undefined);
+      if (providerGenerationRef.current[provider] !== generation) return snapshotsRef.current[provider];
+    }
+    const entry = { operation: refreshProviderFromUrl(provider, url, background, shouldCommit), generation };
+    refreshInFlightRef.current[provider] = entry;
+    const release = () => { if (refreshInFlightRef.current[provider] === entry) delete refreshInFlightRef.current[provider]; };
+    void entry.operation.then(release, release);
+    return entry.operation;
+  }
+
+  // Wait out whatever read is already in flight for this provider so a lifecycle transition never
+  // races it, without adopting its result.
+  async function settleProviderRefresh(provider: Provider, generation: number) {
+    const pending = refreshInFlightRef.current[provider];
+    if (!pending) return;
+    if (pending.generation === generation) return;
+    await pending.operation.catch(() => undefined);
   }
 
 async function refresh(provider: Provider, requestNonce: string) {
+    // The widget owns the lifecycle, so it — not the Settings button's disabled state — is what
+    // decides a manual read is safe. Settings can miss the transition (its window may have opened
+    // after the phase event), and a manual read started mid-STARTING carries no commit guard: the
+    // lifecycle's own retry would then adopt that promise and write `page_unavailable` over a
+    // healthy snapshot. Answer with what we already have and let the lifecycle finish.
+    if (lifecycleIsTransitioning(providerLifecycleRef.current[provider])) {
+      const current = snapshotsRef.current[provider];
+      await emitTo("settings", "usageview-refresh-result", {
+        nonce: requestNonce,
+        provider,
+        status: current.status,
+        message: `${providerLabel(provider)} is still starting`,
+      } satisfies RefreshResult).catch(() => undefined);
+      return;
+    }
     setBusy(provider);
     try {
       const snapshot = await guardedRefresh(provider, providerUrl(provider, settingsRef.current), false);
       triggerManualReplay(provider, snapshot);
       setSnapshots((currentSnapshots) => ({ ...currentSnapshots, [provider]: snapshot }));
       setLastUpdated(new Date());
+      if (providerDesiredRef.current[provider] === true) {
+        const generation = providerGenerationRef.current[provider];
+        if (snapshot.status === "ok" && !isStale(snapshot)) {
+          publishProviderLifecycle({ provider, phase: "ready", generation, message: `${providerLabel(provider)} ready` });
+        } else if (snapshot.status === "not_open" || snapshot.status === "not_logged_in") {
+          publishProviderLifecycle({ provider, phase: "login-needed", generation, message: `${providerLabel(provider)} needs login` });
+        }
+      }
       await emitTo("settings", "usageview-refresh-result", {
         nonce: requestNonce,
         provider,
@@ -2397,7 +2721,9 @@ async function refresh(provider: Provider, requestNonce: string) {
   }, []);
 
   async function refreshAll() {
-    const providers = (["claude", "codex", "codex-1"] as Provider[]).filter((provider) => providerEnabled(provider, settings));
+    const providers = (["claude", "codex", "codex-1"] as Provider[]).filter((provider) =>
+      providerEnabled(provider, settings) && lifecycleShowsTile(providerLifecycleRef.current[provider]),
+    );
     if (!providers.length) return;
     setBusy(providers[0]);
     const results = await Promise.all(
@@ -2554,6 +2880,7 @@ async function refresh(provider: Provider, requestNonce: string) {
   if (mode === "mini") {
     return (
       <main className={`compact-widget mini-widget ${themeClass(settings.theme)} ${panelScopeClasses(settings)}`} style={panelStyle(settings)} onMouseDown={prepareCompactDrag} onMouseMove={maybeStartCompactDrag} onContextMenu={openCompactMenu}>
+        <ProviderLifecycleToasts notices={providerNotices} />
         <div ref={compactProvidersRef} className="mini-providers">
           {attachedTileIds.map((tileId) => (
             <div
@@ -2576,7 +2903,7 @@ async function refresh(provider: Provider, requestNonce: string) {
               {renderMiniTile(tileId)}
             </div>
           ))}
-          {attachedTileIds.length === 0 && <EmptyProviderState />}
+          {attachedTileIds.length === 0 && !providerLifecyclePending && <EmptyProviderState />}
         </div>
       </main>
     );
@@ -2584,6 +2911,7 @@ async function refresh(provider: Provider, requestNonce: string) {
 
   return (
     <main ref={widgetRef} className={`widget ${themeClass(settings.theme)} ${panelScopeClasses(settings)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag}>
+      <ProviderLifecycleToasts notices={providerNotices} />
       <div className="scale-shell">
       <div ref={widgetHeaderRef} className="widget-header">
         <div className="window-title">
@@ -2617,7 +2945,7 @@ async function refresh(provider: Provider, requestNonce: string) {
             {renderFullTile(tileId)}
           </div>
         ))}
-        {attachedTileIds.length === 0 && <EmptyProviderState />}
+        {attachedTileIds.length === 0 && !providerLifecyclePending && <EmptyProviderState />}
       </div>
       </div>
     </main>
@@ -2689,7 +3017,7 @@ function ProviderLoginApp({ provider }: { provider: Provider }) {
 
   async function hideToWidget() {
     await invoke("open_widget_window");
-    await getCurrentWindow().hide();
+    await closeProvider(provider);
   }
 
   return (
@@ -2726,6 +3054,7 @@ function ProviderPanel({
   provider,
   url,
   snapshot,
+  lifecycle,
   busy,
   onOpen,
   onReload,
@@ -2734,6 +3063,7 @@ function ProviderPanel({
   onDiscover,
   discovery,
   onExtract,
+  onRetry,
   onUrlChange,
   shownInWidget,
   onToggleShown,
@@ -2741,6 +3071,7 @@ function ProviderPanel({
   provider: Provider;
   url: string;
   snapshot: UsageSnapshot;
+  lifecycle?: ProviderLifecycle;
   busy: Provider | `${Provider}-open` | `${Provider}-close` | `${Provider}-reload` | `${Provider}-logout` | `${Provider}-discover` | null;
   onOpen: () => void;
   onReload: () => void;
@@ -2749,24 +3080,37 @@ function ProviderPanel({
   onDiscover: () => void;
   discovery?: string;
   onExtract: () => void;
+  onRetry: () => void;
   onUrlChange: (url: string) => void;
   shownInWidget: boolean;
   onToggleShown: () => void;
 }) {
+  const transitioning = lifecycleIsTransitioning(lifecycle);
+  const providerCommandBusy = busy === provider || (["open", "close", "reload", "logout", "discover"] as const).some((suffix) => busy === `${provider}-${suffix}`);
+  const lifecycleActive = lifecycle && lifecycle.phase !== "ready";
+  const pillStatus = lifecycleActive ? lifecycleTone(lifecycle) : snapshot.status;
+  const pillLabel = lifecycleActive ? lifecycleLabel(lifecycle) : undefined;
+  const showLabel = lifecycle?.phase === "starting" || lifecycle?.phase === "retrying"
+    ? "Cancel"
+    : lifecycle?.phase === "stopping" || lifecycle?.phase === "waiting-close"
+      ? "Show again"
+      : lifecycle?.phase === "error"
+        ? "Retry"
+      : shownInWidget ? "Hide widget" : "Show widget";
   return (
-    <section className={`mini-card ${provider}`}>
+    <section className={`mini-card ${provider}${lifecycle?.phase === "stopped" ? " provider-stopped" : ""}`}>
       <div className="mini-head">
         <div>
           <h2><ProviderMark provider={provider} />{providerLabel(provider)}</h2>
           <p>{provider === "claude" ? "Claude account session." : provider === "codex-1" ? "Codex account 2 (isolated session)." : "Codex account session."}</p>
         </div>
-        <StatusPill status={snapshot.status} />
+        <StatusPill status={pillStatus} label={pillLabel} />
       </div>
       <UsageBlock snapshot={snapshot} />
       <div className="daily-actions">
         <button className="primary" onClick={onOpen} disabled={busy === `${provider}-open`}>{busy === `${provider}-open` ? "Opening" : "Login"}</button>
-        <button onClick={onExtract} disabled={busy === provider}>{busy === provider ? "Refreshing" : "Refresh now"}</button>
-        <button onClick={onToggleShown}>{shownInWidget ? "Hide widget" : "Show widget"}</button>
+        <button onClick={onExtract} disabled={busy === provider || transitioning}>{busy === provider ? "Refreshing" : "Refresh now"}</button>
+        <button onClick={lifecycle?.phase === "error" ? onRetry : onToggleShown} disabled={providerCommandBusy}>{showLabel}</button>
       </div>
       <div className="daily-actions secondary-actions">
         <button onClick={onLogout} disabled={busy === `${provider}-logout`}>{busy === `${provider}-logout` ? "Signing out" : "Log out"}</button>
@@ -4180,8 +4524,25 @@ const UsageBlock = React.memo(function UsageBlock({ snapshot, flash = false, pau
   );
 });
 
-function StatusPill({ status }: { status: UsageStatus }) {
-  return <span className={`pill ${status}`}>{readableStatus(status)}</span>;
+function StatusPill({ status, label }: { status: UsageStatus | "warn"; label?: string }) {
+  return <span className={`pill ${status}`}>{label ?? readableStatus(status as UsageStatus)}</span>;
+}
+
+function ProviderLifecycleToasts({ notices }: { notices: Partial<Record<Provider, ProviderLifecycle>> }) {
+  const rows = (['claude', 'codex', 'codex-1'] as Provider[])
+    .map((provider) => notices[provider])
+    .filter((lifecycle): lifecycle is ProviderLifecycle => Boolean(lifecycle));
+  if (!rows.length) return null;
+  return (
+    <div className="provider-lifecycle-toasts" aria-live="polite" aria-atomic="false">
+      {rows.map((lifecycle) => (
+        <div key={`${lifecycle.provider}-${lifecycle.generation}-${lifecycle.phase}`} className={`provider-lifecycle-toast ${lifecycleTone(lifecycle)}`}>
+          <span className="provider-lifecycle-dot" aria-hidden="true" />
+          <span>{lifecycle.message ?? `${providerLabel(lifecycle.provider)} ${lifecycleLabel(lifecycle)}`}</span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function ProviderMark({ provider }: { provider: Provider }) {

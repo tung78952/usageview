@@ -319,6 +319,51 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   image-rendering: pixelated;
 }
 
+/* Overlay, never a row in the tile list: a provider mid-STARTING has no tile yet, and the widget
+   must not resize just because a status line appeared. Centred over the whole widget — the zoom
+   setting scales the entire page (setZoom), so at the 75% people actually use, the old 10px text
+   rendered at 7.5px and could not be read in the couple of seconds it shows. Serves both Full and
+   Mini: each root already has position: relative. No transition here on purpose — it appears and
+   disappears outright. */
+.provider-lifecycle-toasts {
+  position: absolute;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  gap: 6px;
+  padding: 0 12px;
+  pointer-events: none;
+}
+.provider-lifecycle-toast {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 30px;
+  padding: 7px 12px;
+  border: 1px solid color-mix(in oklch, var(--warn) 42%, var(--border));
+  border-radius: 4px;
+  color: var(--fg);
+  /* Nearly opaque: this now sits over a tile, not over empty space. */
+  background: color-mix(in oklch, var(--surface) 96%, transparent);
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--shadow) 72%, transparent);
+  font: 800 14px/1.15 var(--font-mono);
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.provider-lifecycle-toast.ok { border-color: color-mix(in oklch, var(--ok) 46%, var(--border)); }
+.provider-lifecycle-toast.page_unavailable { border-color: color-mix(in oklch, var(--danger) 55%, var(--border)); }
+.provider-lifecycle-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border: 1px solid var(--warn);
+  background: var(--warn);
+  box-shadow: 0 0 6px color-mix(in oklch, var(--warn) 55%, transparent);
+}
+.provider-lifecycle-toast.ok .provider-lifecycle-dot { border-color: var(--ok); background: var(--ok); box-shadow: 0 0 6px color-mix(in oklch, var(--ok) 55%, transparent); }
+.provider-lifecycle-toast.page_unavailable .provider-lifecycle-dot { border-color: var(--danger); background: var(--danger); box-shadow: 0 0 6px color-mix(in oklch, var(--danger) 55%, transparent); }
+
 .widget-header {
   position: relative;
   z-index: 1;
@@ -515,7 +560,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   white-space: nowrap;
 }
 .source-pill.ok, .pill.ok { color: var(--ok); background: color-mix(in oklch, var(--ok) 16%, transparent); border: 1px solid color-mix(in oklch, var(--ok) 34%, transparent); }
-.source-pill.warn, .source-pill.not_open, .source-pill.not_logged_in, .pill.not_open, .pill.not_logged_in { color: var(--warn); border: 1px solid color-mix(in oklch, var(--warn) 46%, transparent); background: color-mix(in oklch, var(--warn) 13%, transparent); }
+.source-pill.warn, .source-pill.not_open, .source-pill.not_logged_in, .pill.warn, .pill.not_open, .pill.not_logged_in { color: var(--warn); border: 1px solid color-mix(in oklch, var(--warn) 46%, transparent); background: color-mix(in oklch, var(--warn) 13%, transparent); }
 .source-pill.not_found, .source-pill.parser_failed, .source-pill.page_unavailable, .pill.not_found, .pill.parser_failed, .pill.page_unavailable { color: var(--danger); border: 1px solid color-mix(in oklch, var(--danger) 46%, transparent); background: color-mix(in oklch, var(--danger) 14%, transparent); }
 .source-pill.stale { color: var(--warn); border: 1px solid color-mix(in oklch, var(--warn) 46%, transparent); background: color-mix(in oklch, var(--warn) 13%, transparent); }
 .source-pill.paused { color: var(--muted); border: 1px solid color-mix(in oklch, var(--muted) 38%, transparent); background: color-mix(in oklch, var(--muted) 12%, transparent); }
@@ -992,6 +1037,11 @@ h2 {
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.03);
 }
+
+/* A stopped provider keeps its last reading on screen as a record. Dim it so a stale
+   PAGE UNAVAILABLE left over from the final read cannot be read as a live failure. The heading,
+   status pill and buttons stay at full contrast — they are still meaningful and still clickable. */
+.mini-card.provider-stopped .usage { opacity: 0.5; }
 
 .mini-card:has(.provider-tile.claude), .mini-card.claude { --tone: var(--u-claude, var(--claude)); }
 .mini-card:has(.provider-tile.codex), .mini-card.codex { --tone: var(--u-codex, var(--codex)); }
