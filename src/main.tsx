@@ -56,7 +56,6 @@ type SystemMetrics = {
   gpu_vram_total_mb: number | null;
   gpu_power_w: number | null;
   gpu_clock_mhz: number | null;
-  gpu_fan_percent: number | null;
   gpu_fan_rpm: number | null;
   igpu_percent: number | null;
   igpu_name: string | null;
@@ -253,12 +252,12 @@ const clampTileScale = (scale: number) => Math.min(1.5, Math.max(0.5, scale));
 type TileLayout = { version: 1; order: TileId[]; detached: Partial<Record<TileId, WindowPosition>> };
 type DetachedTileEvent = { tileId: TileId; x: number; y: number; screenY: number };
 type DetachedRuntimeState = {
-  snapshots: Record<Provider, UsageSnapshot>;
-  monitorReadings: Record<MonitorKind, MonitorReading>;
-  activeEffects: Partial<Record<Provider, UsageEffect>>;
-  flashProviders: Provider[];
-  pausedProviders: Provider[];
-  freshAt: Partial<Record<Provider, string>>;
+  snapshot?: UsageSnapshot;
+  monitorReading?: MonitorReading;
+  activeEffect?: UsageEffect;
+  flash: boolean;
+  paused: boolean;
+  freshAt?: string;
 };
 let windowGeometryCache: Partial<Record<AppMode, WindowPosition>> | undefined;
 let windowGeometryResetGeneration = 0;
@@ -1112,14 +1111,16 @@ function App() {
 
 function DetachedTileApp({ tileId }: { tileId: TileId }) {
   const [settings, setSettings] = useState(loadSettings);
-  const [runtime, setRuntime] = useState<DetachedRuntimeState>(() => ({
-    snapshots: { claude: loadSnapshot("claude"), codex: loadSnapshot("codex"), "codex-1": loadSnapshot("codex-1") },
-    monitorReadings: buildMonitorReadings(null),
-    activeEffects: {},
-    flashProviders: [],
-    pausedProviders: [],
-    freshAt: {},
-  }));
+  const [runtime, setRuntime] = useState<DetachedRuntimeState>(() => {
+    const provider = providerFromTile(tileId);
+    const monitor = monitorFromTile(tileId);
+    return {
+      snapshot: provider ? loadSnapshot(provider) : undefined,
+      monitorReading: monitor ? emptyReading(monitor) : undefined,
+      flash: false,
+      paused: false,
+    };
+  });
   const [timer, setTimer] = useState(false);
   const rootRef = useRef<HTMLElement | null>(null);
   const pointerRef = useRef<{ x: number; y: number; dragging: boolean } | null>(null);
@@ -1193,21 +1194,22 @@ function DetachedTileApp({ tileId }: { tileId: TileId }) {
 
   const provider = providerFromTile(tileId);
   const monitor = monitorFromTile(tileId);
-  const paused = provider ? runtime.pausedProviders.includes(provider) : false;
+  const snapshot = provider ? runtime.snapshot ?? emptySnapshot(provider) : null;
+  const reading = monitor ? runtime.monitorReading ?? emptyReading(monitor) : null;
   const content = provider
     ? timer
-      ? <TimerView snapshot={runtime.snapshots[provider]} onBack={() => setTimer(false)} paused={paused} />
+      ? <TimerView snapshot={snapshot!} onBack={() => setTimer(false)} paused={runtime.paused} />
       : <UsageBlock
-          snapshot={runtime.snapshots[provider]}
-          flash={runtime.flashProviders.includes(provider)}
-          paused={paused}
-          updatedAgo={formatAgo(runtime.freshAt[provider])}
-          effect={settings.effectsEnabled ? runtime.activeEffects[provider] : undefined}
+          snapshot={snapshot!}
+          flash={runtime.flash}
+          paused={runtime.paused}
+          updatedAgo={formatAgo(runtime.freshAt)}
+          effect={settings.effectsEnabled ? runtime.activeEffect : undefined}
           dropCell={settings.effectDropCell}
           onFlip={() => setTimer(true)}
         />
     : monitor
-      ? <MonitorBlock reading={runtime.monitorReadings[monitor]} tone={monitorTone(settings, runtime.monitorReadings[monitor])} />
+      ? <MonitorBlock reading={reading!} tone={monitorTone(settings, reading!)} />
       : null;
 
   return (
@@ -1400,7 +1402,8 @@ function SettingsWindowApp() {
     let unlisten: (() => void) | undefined;
     void listen<RefreshResult>("usageview-refresh-result", ({ payload }) => {
       if (refreshNonceRef.current[payload.provider] !== payload.nonce) return;
-      setSnapshots({ claude: loadSnapshot("claude"), codex: loadSnapshot("codex"), "codex-1": loadSnapshot("codex-1") });
+      const snapshot = loadSnapshot(payload.provider);
+      setSnapshots((current) => ({ ...current, [payload.provider]: snapshot }));
       setBusy((current) => current === payload.provider ? null : current);
       delete refreshNonceRef.current[payload.provider];
       const text = payload.status === "ok"
@@ -1534,7 +1537,7 @@ function SettingsWindowApp() {
             <span className="settings-header-message">{headerMessage}</span>
             <span className="settings-header-saved">{savedLabel}</span>
           </div>
-          <button className="window-control close settings-close" type="button" title="Close" aria-label="Close" onClick={() => void getCurrentWindow().hide()}>x</button>
+          <button className="window-control close settings-close" type="button" title="Close" aria-label="Close" onClick={() => void invoke("toggle_settings_window")}>x</button>
         </header>
 
         <WidgetSettings
@@ -1619,7 +1622,7 @@ function WidgetApp() {
   const prevEffectPercentRef = useRef<Partial<Record<Provider, number>>>({});
   const runtimeValidReadRef = useRef<Partial<Record<Provider, boolean>>>({});
   const lastFreshAtRef = useRef<Partial<Record<Provider, string>>>({});
-  const runtimePayloadRef = useRef<DetachedRuntimeState | null>(null);
+  const runtimePayloadRef = useRef<Partial<Record<TileId, DetachedRuntimeState>>>({});
   const flashTimersRef = useRef<Partial<Record<Provider, number>>>({});
   const effectTimersRef = useRef<Partial<Record<Provider, number>>>({});
   const lastCmdNonceRef = useRef<string | null>(null);
@@ -1705,7 +1708,7 @@ function WidgetApp() {
     effectTimersRef.current = {};
     setActiveEffects({});
     const providers = ["claude", "codex", "codex-1"] as Provider[];
-    const results = await Promise.all(providers.map((p) => guardedRefresh(p, providerUrl(p, settings), true)));
+    const results = await Promise.all(providers.map((p) => guardedRefresh(p, providerUrl(p, settingsRef.current), true)));
     setSnapshots((current) => results.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), current));
   }
 
@@ -1734,6 +1737,30 @@ function WidgetApp() {
   useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
+
+  useEffect(() => {
+    const providers: Provider[] = ["claude", "codex", "codex-1"];
+    const syncProviderWindows = () => {
+      for (const provider of providers) {
+        void invoke("set_provider_enabled", { provider, enabled: providerEnabled(provider, settings) }).catch(() => undefined);
+      }
+    }
+    syncProviderWindows();
+    const retry = window.setTimeout(syncProviderWindows, 1500);
+    return () => window.clearTimeout(retry);
+  }, [settings.aiUsageEnabled, settings.showClaude, settings.showCodex, settings.showCodex1]);
+
+  useEffect(() => {
+    // Provider windows are pre-declared and hidden at startup, so put their renderers in WebView2's
+    // low-memory target without touching the extraction or refresh pipeline. Opening a provider
+    // switches it back to normal in Rust; a short delay lets the configured WebViews initialise.
+    const id = window.setTimeout(() => {
+      for (const label of ["provider_claude", "provider_codex", "provider_codex_1", "settings"]) {
+        void invoke("set_webview_memory_target_command", { label, low: true }).catch(() => undefined);
+      }
+    }, 1200);
+    return () => window.clearTimeout(id);
+  }, []);
 
   useEffect(() => {
     tileLayoutRef.current = tileLayout;
@@ -2017,11 +2044,9 @@ function WidgetApp() {
       setLastUpdated(new Date());
     }
     window.addEventListener("storage", reloadLocal);
-    window.addEventListener("usageview:snapshot", reloadLocal);
     window.addEventListener("usageview:settings", reloadLocal);
     return () => {
       window.removeEventListener("storage", reloadLocal);
-      window.removeEventListener("usageview:snapshot", reloadLocal);
       window.removeEventListener("usageview:settings", reloadLocal);
     };
   }, []);
@@ -2146,21 +2171,37 @@ function WidgetApp() {
 
   useEffect(() => {
     const now = Date.now();
-    const pausedProviders = (["claude", "codex", "codex-1"] as Provider[]).filter((provider) =>
-      !shouldAutoRefreshProvider(provider, snapshots[provider], now, lastLimitedAutoRefreshRef.current),
-    );
-    const payload: DetachedRuntimeState = {
-      snapshots,
-      monitorReadings,
-      activeEffects,
-      flashProviders: [...flashSet],
-      pausedProviders,
-      freshAt: { ...lastFreshAtRef.current },
-    };
-    runtimePayloadRef.current = payload;
+    const previous = runtimePayloadRef.current;
+    const next: Partial<Record<TileId, DetachedRuntimeState>> = {};
     for (const tileId of Object.keys(tileLayout.detached).filter(isTileId)) {
-      if (tileActive(tileId, settings)) void emitTo(tileWindowLabel(tileId), "usageview-runtime-state", payload).catch(() => undefined);
+      if (!tileActive(tileId, settings)) continue;
+      const provider = providerFromTile(tileId);
+      const monitor = monitorFromTile(tileId);
+      const state: DetachedRuntimeState = provider
+        ? {
+            snapshot: snapshots[provider],
+            activeEffect: settings.effectsEnabled ? activeEffects[provider] : undefined,
+            flash: flashSet.has(provider),
+            paused: !shouldAutoRefreshProvider(provider, snapshots[provider], now, lastLimitedAutoRefreshRef.current),
+            freshAt: lastFreshAtRef.current[provider],
+          }
+        : {
+            monitorReading: monitor ? monitorReadings[monitor] : undefined,
+            flash: false,
+            paused: false,
+          };
+      next[tileId] = state;
+      const old = previous[tileId];
+      const changed = !old
+        || old.snapshot !== state.snapshot
+        || old.monitorReading !== state.monitorReading
+        || old.activeEffect !== state.activeEffect
+        || old.flash !== state.flash
+        || old.paused !== state.paused
+        || old.freshAt !== state.freshAt;
+      if (changed) void emitTo(tileWindowLabel(tileId), "usageview-runtime-state", state).catch(() => undefined);
     }
+    runtimePayloadRef.current = next;
   }, [snapshots, monitorReadings, activeEffects, flashSet, tileLayout, settings]);
 
   // A late-joining tile asks for the current state. This listener is deliberately kept out of the
@@ -2170,8 +2211,9 @@ function WidgetApp() {
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<{ label: string }>("usageview-runtime-request", ({ payload: request }) => {
-      const state = runtimePayloadRef.current;
-      if (!state || !request?.label?.startsWith("tile_")) return;
+      const tileId = request?.label ? tileIdForWindowLabel(request.label) : null;
+      const state = tileId ? runtimePayloadRef.current[tileId] : undefined;
+      if (!state || !tileId) return;
       void emitTo(request.label, "usageview-runtime-state", state).catch(() => undefined);
     }).then((dispose) => { if (disposed) dispose(); else unlisten = dispose; });
     return () => { disposed = true; unlisten?.(); };
@@ -2237,7 +2279,7 @@ function WidgetApp() {
 async function refresh(provider: Provider, requestNonce: string) {
     setBusy(provider);
     try {
-      const snapshot = await guardedRefresh(provider, providerUrl(provider, settings), false);
+      const snapshot = await guardedRefresh(provider, providerUrl(provider, settingsRef.current), false);
       triggerManualReplay(provider, snapshot);
       setSnapshots((currentSnapshots) => ({ ...currentSnapshots, [provider]: snapshot }));
       setLastUpdated(new Date());
@@ -2352,7 +2394,7 @@ async function refresh(provider: Provider, requestNonce: string) {
       window.removeEventListener("storage", onStorage);
       unlistenRefresh?.();
     };
-  }, [settings]);
+  }, []);
 
   async function refreshAll() {
     const providers = (["claude", "codex", "codex-1"] as Provider[]).filter((provider) => providerEnabled(provider, settings));
@@ -2471,8 +2513,10 @@ async function refresh(provider: Provider, requestNonce: string) {
     const target = event.target as HTMLElement;
     if (target.closest("button, input, a, [role='button']")) return;
     if (handleOnly && !target.closest(".tile-grip")) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
     tileDragRef.current = { tileId, x: event.clientX, y: event.clientY, dragged: false };
+    // Mini's grip is an explicit drag handle, so capture immediately. Otherwise a fast drag can
+    // leave the small window before crossing the threshold and never deliver the outside pointer-up.
+    if (handleOnly) event.currentTarget.setPointerCapture(event.pointerId);
   }
 
   function moveTileDrag(event: React.PointerEvent<HTMLDivElement>) {
@@ -2480,6 +2524,9 @@ async function refresh(provider: Provider, requestNonce: string) {
     if (!drag || (event.buttons & 1) !== 1) return;
     if (!drag.dragged) {
       if (Math.abs(event.clientX - drag.x) < 7 && Math.abs(event.clientY - drag.y) < 7) return;
+      // Capturing on pointer-down retargets a normal click to the shell, so Full mode waits until
+      // the drag threshold. Mini's explicit grip already captured above; this is a safe fallback.
+      if (!event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.setPointerCapture(event.pointerId);
       drag.dragged = true;
       suppressTileClickRef.current = drag.tileId;
       setDraggingTile(drag.tileId);
@@ -3184,9 +3231,16 @@ function SensorServiceSettings() {
 
   useEffect(() => {
     if (status === "asus" || status === "asus_installed") return;
-    void refresh();
-    const id = window.setInterval(refresh, 6000);
-    return () => window.clearInterval(id);
+    const poll = () => {
+      if (document.visibilityState !== "hidden") void refresh();
+    };
+    poll();
+    const id = window.setInterval(poll, 6000);
+    document.addEventListener("visibilitychange", poll);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", poll);
+    };
   }, [refresh, status]);
 
   async function run(command: "install_sensor_service" | "uninstall_sensor_service") {
@@ -3615,7 +3669,7 @@ function effectStyle(effect: UsageEffect | undefined, fallbackPercent: number | 
 
 // The 11 glass liquid layers (order matches the prototype markup). Hidden by default; shown/animated
 // only under .theme-glass. Rendered always so the glass fill (--bar-fill) shows even when idle.
-function LiquidLayers() {
+const LiquidLayers = React.memo(function LiquidLayers() {
   return (
     <>
       <span className="liquid-refraction" aria-hidden="true" />
@@ -3631,7 +3685,7 @@ function LiquidLayers() {
       <span className="liquid-drop" aria-hidden="true" />
     </>
   );
-}
+});
 
 function EffectOverlays({ effect, dropCell }: { effect?: UsageEffect; dropCell: boolean }) {
   if (!effect) return null;

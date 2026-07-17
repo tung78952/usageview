@@ -23,6 +23,7 @@ sysinfo = "0.33"
 nvml-wrapper = "0.12"
 
 [target.'cfg(windows)'.dependencies]
+webview2-com = "0.38.2"
 windows = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Security",

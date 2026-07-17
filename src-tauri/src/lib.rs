@@ -39,9 +39,17 @@ const CONTEXT_ACTION_EVENT: &str = "usageview-context-action";
 /// for ~30% of a core (measured: turning AI usage off drops the app from ~40% to ~3.5%). Dropping
 /// them was tried and measured no better, apparently because a Tauri-hidden window is still visible
 /// to Chromium, so it never backgrounds the renderer anyway. They are kept because the widget is the
-/// single refresh engine and its timers must not throttle while it sits in the tray. Reclaiming that
-/// CPU needs the provider windows gone, not throttled — see `suspend_provider_windows`.
+/// single refresh engine and its timers must not throttle while it sits in the tray. The explicit
+/// WebView2 low-memory target below can trim hidden renderers, but reclaiming all provider cost still
+/// requires destroying their windows — see `suspend_provider_windows`.
 const WEBVIEW_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows";
+
+const MEMORY_TARGET_LABELS: [&str; 4] = [
+  "provider_claude",
+  "provider_codex",
+  "provider_codex_1",
+  "settings",
+];
 
 const DETACHED_HIDE_PREFIX: &str = "detached_hide:";
 const DETACHED_DOCK_EVENT: &str = "usageview-dock-tile";
@@ -56,6 +64,41 @@ struct WindowPosition {
 
 struct CurrentWidgetMode(Mutex<String>);
 struct WindowPositionStoreLock(Mutex<()>);
+struct ProviderEnabledState(Mutex<HashMap<String, bool>>);
+
+#[cfg(windows)]
+fn set_webview_memory_target(window: &tauri::WebviewWindow, low: bool) -> Result<(), String> {
+  use webview2_com::Microsoft::Web::WebView2::Win32::{
+    ICoreWebView2_19,
+    COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+    COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+  };
+  use windows::core::Interface;
+
+  let target = if low {
+    COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+  } else {
+    COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+  };
+  window
+    .with_webview(move |webview| {
+      // This is only a memory hint. Never wait for the WebView event-loop callback: a newly
+      // created or hidden controller may not dispatch it immediately, which must not block open.
+      let _ = unsafe {
+        webview
+          .controller()
+          .CoreWebView2()
+          .and_then(|core| core.cast::<ICoreWebView2_19>())
+          .and_then(|core| core.SetMemoryUsageTargetLevel(target))
+      };
+    })
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(not(windows))]
+fn set_webview_memory_target(_window: &tauri::WebviewWindow, _low: bool) -> Result<(), String> {
+  Ok(())
+}
 
 /// Labels of detached tiles we are closing from code. `on_window_event` reads any *unmarked*
 /// tile close as the user hiding the tile, so docking and master toggles must mark first —
@@ -110,7 +153,6 @@ struct SystemMetrics {
   gpu_vram_total_mb: Option<u64>,
   gpu_power_w: Option<f32>,
   gpu_clock_mhz: Option<u32>,
-  gpu_fan_percent: Option<u32>,
   gpu_fan_rpm: Option<u32>,
   igpu_percent: Option<f32>,
   igpu_name: Option<String>,
@@ -149,22 +191,74 @@ fn read_sidecar_sensors() -> Option<SidecarSensors> {
 }
 
 #[tauri::command]
-fn open_provider_window(app: tauri::AppHandle, provider: String, url: String) -> Result<(), String> {
+async fn open_provider_window(app: tauri::AppHandle, provider: String, url: String) -> Result<(), String> {
   let label = provider_label(&provider)?;
   let window = get_or_create_provider_window(&app, &label)?;
   let target = tauri::Url::parse(&url).map_err(|error| error.to_string())?;
   window.navigate(target).map_err(|error| error.to_string())?;
   window.show().map_err(|error| error.to_string())?;
   window.set_focus().map_err(|error| error.to_string())?;
+  let _ = set_webview_memory_target(&window, false);
   Ok(())
 }
 
 #[tauri::command]
 fn close_provider_window(app: tauri::AppHandle, provider: String) -> Result<(), String> {
-  // Hide instead of close so the logged-in session and remote page survive for reopen.
   let label = provider_label(&provider)?;
   if let Some(window) = app.get_webview_window(&label) {
     window.hide().map_err(|error| error.to_string())?;
+    if !provider_enabled(&app, &label) {
+      window.destroy().map_err(|error| error.to_string())?;
+    } else {
+      let _ = set_webview_memory_target(&window, true);
+    }
+  }
+  Ok(())
+}
+
+fn provider_enabled(app: &tauri::AppHandle, label: &str) -> bool {
+  app
+    .try_state::<ProviderEnabledState>()
+    .and_then(|state| state.0.lock().ok().and_then(|values| values.get(label).copied()))
+    .unwrap_or(true)
+}
+
+fn release_provider_window(app: &tauri::AppHandle, label: &str) -> Result<(), String> {
+  if let Some(window) = app.get_webview_window(label) {
+    // Never tear down a visible login page. The next explicit Hide/close will finish the release.
+    if window.is_visible().unwrap_or(false) {
+      return Ok(());
+    }
+    window.destroy().map_err(|error| error.to_string())?;
+  }
+  Ok(())
+}
+
+#[tauri::command]
+fn set_provider_enabled(app: tauri::AppHandle, provider: String, enabled: bool) -> Result<(), String> {
+  let label = provider_label(&provider)?;
+  let state = app.state::<ProviderEnabledState>();
+  state
+    .0
+    .lock()
+    .map_err(|error| error.to_string())?
+    .insert(label.clone(), enabled);
+  if !enabled {
+    release_provider_window(&app, &label)?;
+  }
+  Ok(())
+}
+
+#[tauri::command]
+fn set_webview_memory_target_command(app: tauri::AppHandle, label: String, low: bool) -> Result<(), String> {
+  if !MEMORY_TARGET_LABELS.contains(&label.as_str()) {
+    return Err("Invalid WebView label".to_string());
+  }
+  if let Some(window) = app.get_webview_window(&label) {
+    if low && window.is_visible().unwrap_or(false) {
+      return Ok(());
+    }
+    let _ = set_webview_memory_target(&window, low);
   }
   Ok(())
 }
@@ -670,6 +764,7 @@ fn toggle_settings_window(app: tauri::AppHandle) -> Result<(), String> {
   if let Some(window) = app.get_webview_window("settings") {
     if window.is_visible().unwrap_or(false) {
       window.hide().map_err(|error| error.to_string())?;
+      let _ = set_webview_memory_target(&window, true);
       return Ok(());
     }
   }
@@ -734,6 +829,7 @@ fn show_settings_window(app: &tauri::AppHandle) -> Result<(), String> {
   let _ = window.set_always_on_top(false);
   let _ = window.set_always_on_top(true);
   window.set_focus().map_err(|error| error.to_string())?;
+  let _ = set_webview_memory_target(&window, false);
   Ok(())
 }
 
@@ -1008,8 +1104,12 @@ fn read_system_metrics(state: tauri::State<SystemMonitorState>, kinds: Vec<Strin
   // the disk), and this runs as often as once a second — paying for all of it to show one tile was
   // most of the polling cost.
   let wants = |kind: &str| kinds.iter().any(|k| k == kind);
-  let want_sys = wants("cpu") || wants("ram");
-  let want_nvml = wants("gpu") || wants("gputemp");
+  let want_cpu = wants("cpu");
+  let want_ram = wants("ram");
+  let want_sys = want_cpu || want_ram;
+  let want_gpu = wants("gpu");
+  let want_gputemp = wants("gputemp");
+  let want_nvml = want_gpu || want_gputemp;
   let want_igpu = wants("igpu");
   // The sidecar and ASUS ACPI carry CPU package temp plus both fan tachometers.
   let want_temps = wants("cputemp") || wants("gputemp");
@@ -1026,27 +1126,31 @@ fn read_system_metrics(state: tauri::State<SystemMonitorState>, kinds: Vec<Strin
   let mut cpu_logical_cores = 0u32;
   let mut cpu_physical_cores = None;
   if let Some(mut sys) = state.sys.lock().ok().filter(|_| want_sys) {
-    sys.refresh_memory();
-    sys.refresh_cpu_all();
-    cpu_physical_cores = sys.physical_core_count().map(|c| c as u32);
-    let total = sys.total_memory();
-    let used = sys.used_memory();
-    ram_percent = if total > 0 {
-      (used as f64 / total as f64 * 100.0) as f32
-    } else {
-      0.0
-    };
-    ram_used_mb = used / (1024 * 1024);
-    ram_total_mb = total / (1024 * 1024);
-    ram_free_mb = sys.available_memory() / (1024 * 1024);
-    swap_used_mb = sys.used_swap() / (1024 * 1024);
-    swap_total_mb = sys.total_swap() / (1024 * 1024);
-    cpu_percent = sys.global_cpu_usage();
-    let cpus = sys.cpus();
-    cpu_logical_cores = cpus.len() as u32;
-    if let Some(first) = cpus.first() {
-      cpu_name = first.brand().trim().to_string();
-      cpu_freq_mhz = first.frequency() as u32;
+    if want_ram {
+      sys.refresh_memory();
+      let total = sys.total_memory();
+      let used = sys.used_memory();
+      ram_percent = if total > 0 {
+        (used as f64 / total as f64 * 100.0) as f32
+      } else {
+        0.0
+      };
+      ram_used_mb = used / (1024 * 1024);
+      ram_total_mb = total / (1024 * 1024);
+      ram_free_mb = sys.available_memory() / (1024 * 1024);
+      swap_used_mb = sys.used_swap() / (1024 * 1024);
+      swap_total_mb = sys.total_swap() / (1024 * 1024);
+    }
+    if want_cpu {
+      sys.refresh_cpu_all();
+      cpu_physical_cores = sys.physical_core_count().map(|c| c as u32);
+      cpu_percent = sys.global_cpu_usage();
+      let cpus = sys.cpus();
+      cpu_logical_cores = cpus.len() as u32;
+      if let Some(first) = cpus.first() {
+        cpu_name = first.brand().trim().to_string();
+        cpu_freq_mhz = first.frequency() as u32;
+      }
     }
   }
 
@@ -1057,31 +1161,33 @@ fn read_system_metrics(state: tauri::State<SystemMonitorState>, kinds: Vec<Strin
   let mut gpu_vram_total_mb = None;
   let mut gpu_power_w = None;
   let mut gpu_clock_mhz = None;
-  let mut gpu_fan_percent = None;
   let have_nvidia = state.nvml.is_some() && want_nvml;
   if let Some(nvml) = state.nvml.as_ref().filter(|_| want_nvml) {
     if let Ok(device) = nvml.device_by_index(0) {
-      if let Ok(util) = device.utilization_rates() {
-        gpu_percent = Some(util.gpu as f32);
+      if want_gpu {
+        if let Ok(util) = device.utilization_rates() {
+          gpu_percent = Some(util.gpu as f32);
+        }
+        if let Ok(mem) = device.memory_info() {
+          gpu_vram_used_mb = Some(mem.used / (1024 * 1024));
+          gpu_vram_total_mb = Some(mem.total / (1024 * 1024));
+        }
+        if let Ok(power_mw) = device.power_usage() {
+          gpu_power_w = Some(power_mw as f32 / 1000.0);
+        }
+        if let Ok(clock) = device.clock_info(nvml_wrapper::enum_wrappers::device::Clock::Graphics) {
+          gpu_clock_mhz = Some(clock);
+        }
       }
-      if let Ok(temp) = device.temperature(nvml_wrapper::enum_wrappers::device::TemperatureSensor::Gpu) {
-        gpu_temp_c = Some(temp as f32);
+      if want_gputemp {
+        if let Ok(temp) = device.temperature(nvml_wrapper::enum_wrappers::device::TemperatureSensor::Gpu) {
+          gpu_temp_c = Some(temp as f32);
+        }
       }
       if let Ok(name) = device.name() {
-        gpu_name = Some(name);
-      }
-      if let Ok(mem) = device.memory_info() {
-        gpu_vram_used_mb = Some(mem.used / (1024 * 1024));
-        gpu_vram_total_mb = Some(mem.total / (1024 * 1024));
-      }
-      if let Ok(power_mw) = device.power_usage() {
-        gpu_power_w = Some(power_mw as f32 / 1000.0);
-      }
-      if let Ok(clock) = device.clock_info(nvml_wrapper::enum_wrappers::device::Clock::Graphics) {
-        gpu_clock_mhz = Some(clock);
-      }
-      if let Ok(fan) = device.fan_speed(0) {
-        gpu_fan_percent = Some(fan);
+        if want_gpu || want_gputemp {
+          gpu_name = Some(name);
+        }
       }
     }
   }
@@ -1089,13 +1195,17 @@ fn read_system_metrics(state: tauri::State<SystemMonitorState>, kinds: Vec<Strin
   // tile stays "live" at its last reading instead of flashing N/A. On success, record the value.
   if have_nvidia {
     if let Ok(mut last) = state.dgpu_last.lock() {
-      match gpu_percent {
-        Some(v) => last.0 = Some(v),
-        None => gpu_percent = last.0,
+      if want_gpu {
+        match gpu_percent {
+          Some(v) => last.0 = Some(v),
+          None => gpu_percent = last.0,
+        }
       }
-      match gpu_temp_c {
-        Some(v) => last.1 = Some(v),
-        None => gpu_temp_c = last.1,
+      if want_gputemp {
+        match gpu_temp_c {
+          Some(v) => last.1 = Some(v),
+          None => gpu_temp_c = last.1,
+        }
       }
     }
   }
@@ -1155,7 +1265,6 @@ fn read_system_metrics(state: tauri::State<SystemMonitorState>, kinds: Vec<Strin
     gpu_vram_total_mb,
     gpu_power_w,
     gpu_clock_mhz,
-    gpu_fan_percent,
     gpu_fan_rpm,
     igpu_percent,
     igpu_name,
@@ -1324,6 +1433,7 @@ pub fn run() {
     .plugin(tauri_plugin_opener::init())
     .manage(CurrentWidgetMode(Mutex::new("widget".to_string())))
     .manage(WindowPositionStoreLock(Mutex::new(())))
+    .manage(ProviderEnabledState(Mutex::new(HashMap::new())))
     .manage(ProgrammaticCloses(Mutex::new(HashSet::new())))
     .manage({
       let mut sys = sysinfo::System::new();
@@ -1384,6 +1494,13 @@ pub fn run() {
             let _ = widget.set_focus();
           }
           let _ = window.hide();
+          if provider_enabled(window.app_handle(), label) {
+            if let Some(webview) = window.app_handle().get_webview_window(label) {
+              let _ = set_webview_memory_target(&webview, true);
+            }
+          } else {
+            let _ = window.destroy();
+          }
         } else if label.starts_with("tile_") {
           // A detached tile has no titlebar, so Alt+F4 is the only OS close path — treat it as
           // the same Hide the context menu offers. Closes we started ourselves (docking, master
@@ -1400,6 +1517,7 @@ pub fn run() {
     .invoke_handler(tauri::generate_handler![
       open_provider_window,
       close_provider_window,
+      set_provider_enabled,
       suspend_provider_windows,
       refresh_provider_page,
       open_widget_window,
@@ -1408,6 +1526,7 @@ pub fn run() {
       reset_window_geometry,
       set_widget_mode,
       show_widget_context_menu,
+      set_webview_memory_target_command,
       open_detached_tile,
       close_detached_tile,
       close_all_detached_tiles,
@@ -1483,11 +1602,13 @@ fn get_or_create_provider_window(app: &tauri::AppHandle, label: &str) -> Result<
   } else {
     builder.data_directory(data_dir)
   };
-  builder
+  let window = builder
     .additional_browser_args(WEBVIEW_BROWSER_ARGS)
     .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
     .build()
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+  let _ = set_webview_memory_target(&window, true);
+  Ok(window)
 }
 
 fn is_usable_provider_page(provider: &str, current: &tauri::Url, expected_host: &str, target_url: &str) -> bool {

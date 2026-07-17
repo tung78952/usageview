@@ -415,12 +415,12 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   align-self: stretch;
   border-radius: 3px;
   cursor: grab;
-  opacity: 0.3;
+  opacity: 0.55;
   background-image: radial-gradient(circle at center, var(--muted) 1px, transparent 1px);
   background-size: 3px 4px;
   transition: opacity 120ms ease;
 }
-.mini-tile-shell:hover .tile-grip { opacity: 0.72; }
+.mini-tile-shell:hover .tile-grip { opacity: 0.85; }
 .tile-grip:active { cursor: grabbing; }
 
 .detached-tile.widget {
