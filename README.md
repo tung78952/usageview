@@ -19,7 +19,11 @@ You log in **inside the app's own embedded WebView** — sessions stay local, no
 For each account it reads the provider's **own internal usage JSON** (the same request the site
 makes) and shows **% used**, **weekly left %**, and **reset time**.
 
-- **3 accounts:** Claude, Codex, and a second isolated Codex session.
+- **Unlimited accounts:** add any number of Claude or Codex accounts; each account has its own
+  isolated in-app session and can be renamed, shown, hidden, or removed independently. A fresh
+  install starts with no accounts and uses the **Add account** action in Settings.
+- **Per-account colors:** every added account has its own accent, including Full, Mini, Settings,
+  timer, and detached-tile views.
 - **Auto-refresh** on launch and every *N* seconds (default 60), even while hidden to the tray.
   A maxed-out account backs off automatically until near its reset.
 - **Reset countdown:** tap a tile (or the square logo in Mini) to flip it to a live `H:MM:SS`

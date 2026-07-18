@@ -492,9 +492,8 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   box-shadow: 0 0 0 1px color-mix(in oklch, var(--shadow) 54%, transparent) inset;
 }
 
-.usage.claude, .provider-tile.claude { --tone: var(--u-claude, var(--claude)); }
-.usage.codex, .provider-tile.codex { --tone: var(--u-codex, var(--codex)); }
-.usage.codex-1, .provider-tile.codex-1 { --tone: var(--u-codex-1, var(--u-codex, var(--codex))); }
+.usage.claude, .provider-tile.claude { --tone: var(--provider-accent, var(--claude)); }
+.usage.codex, .provider-tile.codex { --tone: var(--provider-accent, var(--codex)); }
 /* System monitor tiles — live hardware readings. Additive and outside the USAGE EFFECT block.
    --tone is set inline (load color or user override), so the shared .percent/.cell/.mark rules
    colour these tiles automatically. A short transition softens the discrete cell flips; the
@@ -936,13 +935,15 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   gap: 8px;
   padding: 10px 12px;
 }
-.settings-header-label {
+.settings-header-title {
   flex: 0 0 auto;
-  color: var(--muted) !important;
-  font: 750 9px/1 var(--font-mono) !important;
-  letter-spacing: 0.08em !important;
-  text-transform: uppercase;
   white-space: nowrap;
+}
+.settings-header-title strong {
+  color: var(--fg) !important;
+  font: 800 12px/1 var(--font-display) !important;
+  letter-spacing: 0.01em !important;
+  text-transform: none;
 }
 .settings-header-status {
   min-width: 0;
@@ -988,6 +989,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   white-space: nowrap;
 }
 .settings-close { width: 32px; min-width: 32px; height: 32px; min-height: 32px; }
+.close-icon { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; }
 
 .title-row { display: flex; align-items: center; gap: 10px; }
 .settings-section {
@@ -1043,10 +1045,9 @@ h2 {
    status pill and buttons stay at full contrast — they are still meaningful and still clickable. */
 .mini-card.provider-stopped .usage { opacity: 0.5; }
 
-.mini-card:has(.provider-tile.claude), .mini-card.claude { --tone: var(--u-claude, var(--claude)); }
-.mini-card:has(.provider-tile.codex), .mini-card.codex { --tone: var(--u-codex, var(--codex)); }
-.mini-card:has(.provider-tile.codex-1), .mini-card.codex-1 { --tone: var(--u-codex-1, var(--u-codex, var(--codex))); }
-.mini-card:is(.claude, .codex, .codex-1) .daily-actions button.primary {
+.mini-card:has(.provider-tile.claude), .mini-card.claude { --tone: var(--provider-accent, var(--claude)); }
+.mini-card:has(.provider-tile.codex), .mini-card.codex { --tone: var(--provider-accent, var(--codex)); }
+.mini-card:is(.claude, .codex) .daily-actions button.primary {
   color: var(--tone);
   border-color: color-mix(in oklch, var(--tone) 44%, transparent);
   background: color-mix(in oklch, var(--tone) 14%, transparent);
@@ -1060,10 +1061,82 @@ h2 {
 }
 .mini-head h2 { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--fg); }
 .mini-head p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
+.settings-card-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+.settings-card-title span { color: var(--muted); font-size: 10px; }
 .daily-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 7px; margin-top: 12px; }
-.secondary-actions { grid-template-columns: 1fr; margin-top: 7px; }
+.secondary-actions { grid-template-columns: 1fr 1fr; margin-top: 7px; }
+.account-remove { color: var(--danger); border-color: color-mix(in oklch, var(--danger) 40%, transparent); }
+.account-remove:hover:not(:disabled) { background: color-mix(in oklch, var(--danger) 14%, transparent); }
+
+/* Rename: pencil next to the account name, becomes an inline input while editing. */
+.account-rename {
+  min-height: 0;
+  padding: 3px;
+  color: var(--muted);
+  border: 1px solid transparent;
+  background: transparent;
+  vertical-align: middle;
+  opacity: 0.65;
+}
+.account-rename:hover { color: var(--fg); opacity: 1; border-color: color-mix(in oklch, var(--accent) 40%, transparent); }
+.account-name-edit {
+  min-width: 0;
+  max-width: 190px;
+  padding: 3px 7px;
+  color: var(--fg);
+  font: inherit;
+  border: 1px solid color-mix(in oklch, var(--accent) 50%, var(--border));
+  border-radius: 4px;
+  background: color-mix(in oklch, var(--surface) 92%, transparent);
+}
+
+/* One button opens the Add-account modal instead of a permanent inline form. */
+.add-account-btn {
+  width: 100%;
+  margin-top: 10px;
+  min-height: var(--settings-control-h);
+  color: var(--accent);
+  border: 1px dashed color-mix(in oklch, var(--accent) 45%, var(--border));
+  border-radius: 4px;
+  background: color-mix(in oklch, var(--accent) 8%, transparent);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.add-account-btn:hover { background: color-mix(in oklch, var(--accent) 16%, transparent); }
+
+/* In-app modal — inherits the window theme so it matches Pixel and Glass, never the raw confirm() box. */
+.app-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: color-mix(in srgb, var(--shadow) 62%, transparent);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+.app-modal-card {
+  width: min(360px, 100%);
+  margin: 0;
+  background: var(--surface);
+  box-shadow: 6px 6px 0 color-mix(in srgb, var(--shadow) 70%, transparent);
+}
+.modal-actions { grid-template-columns: 1fr 1fr; }
+.add-account-form { display: grid; gap: 10px; }
+.modal-confirm { display: grid; gap: 8px; }
+.modal-confirm h2 { margin: 0; font-size: 14px; }
+.modal-confirm p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+.theme-glass .app-modal-card {
+  border: 1px solid var(--paper-glass-line);
+  background-color: color-mix(in srgb, var(--paper-panel) 82%, transparent);
+  backdrop-filter: blur(14px) saturate(150%);
+  -webkit-backdrop-filter: blur(14px) saturate(150%);
+}
 .advanced-tools { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 11px; }
-.advanced-tools summary { cursor: pointer; color: var(--muted); font: 750 11px/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.advanced-tools summary { display: flex; align-items: center; cursor: pointer; color: var(--muted); font: 750 11px/1 var(--font-mono); letter-spacing: 0.08em; text-transform: uppercase; list-style: none; }
+.advanced-tools summary::-webkit-details-marker { display: none; }
+.advanced-tools[open] > summary .disclosure-chevron { transform: rotate(90deg); }
 .button-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px; }
 .debug-text { margin-top: 8px; font-size: 11px; }
 .debug-text summary { cursor: pointer; color: var(--muted); }
@@ -1402,9 +1475,12 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 }
 .color-target .mark { width: 22px; height: 22px; }
 .color-target .mark svg { width: 15px; height: 15px; }
+.color-target-copy { display: grid; gap: 2px; min-width: 0; }
 .color-target-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.color-target-copy small { overflow: hidden; color: var(--muted); font: 700 8px/1 var(--font-mono); letter-spacing: 0.09em; text-overflow: ellipsis; text-transform: uppercase; white-space: nowrap; }
 .color-target-preview { display: inline-flex; align-items: center; gap: 3px; }
 .color-target-preview i { width: 9px; height: 9px; border-radius: 999px; border: 1px solid color-mix(in srgb, #000 24%, transparent); }
+.color-empty { grid-column: 1 / -1; padding: 9px 0; color: var(--muted); font-size: 11px; }
 .color-target.is-selected { border-color: color-mix(in oklch, var(--tone) 72%, var(--fg)); background: color-mix(in oklch, var(--tone) 13%, var(--surface-2)); box-shadow: 0 0 0 1px color-mix(in oklch, var(--tone) 28%, transparent); }
 .color-target:hover { transform: none; box-shadow: 0 0 0 1px color-mix(in oklch, var(--tone) 32%, transparent); }
 .color-editor { display: grid; gap: 10px; margin: 12px 0; padding: 11px; border: 1px solid color-mix(in oklch, var(--accent) 42%, var(--border)); border-radius: 8px; background: color-mix(in oklch, var(--surface-2) 78%, transparent); }
@@ -1418,8 +1494,10 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 .monitor-level-tab i { width: 9px; height: 9px; border-radius: 999px; }
 .monitor-level-tab.is-active { color: var(--fg); border-color: color-mix(in oklch, var(--accent) 55%, var(--border)); background: color-mix(in oklch, var(--accent) 12%, transparent); }
 .colors-advanced { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 9px; }
-.colors-advanced > summary { color: var(--muted); font: 750 10px/1 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer; }
+.colors-advanced > summary { display: flex; align-items: center; color: var(--muted); font: 750 10px/1 var(--font-mono); letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer; list-style: none; }
+.colors-advanced > summary::-webkit-details-marker { display: none; }
 .colors-advanced[open] > summary { color: var(--fg); }
+.colors-advanced[open] > summary .disclosure-chevron { transform: rotate(90deg); }
 .swatch-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .swatch {
   width: 22px; height: 22px; min-height: 0; padding: 0; border-radius: 999px;
@@ -1489,6 +1567,10 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   .bar { height: 18px; gap: 1px; }
 
   .settings-section.mini-card { margin-inline: 14px; max-width: calc(100% - 28px); }
+  .settings-titlebar { gap: 6px; padding-inline: 9px; }
+  .settings-header-title strong { font-size: 11px !important; }
+  .settings-header-status { gap: 5px; padding-inline: 7px; }
+  .settings-header-saved { display: none; }
   .settings-row { grid-template-columns: 1fr; gap: 4px; }
   .color-target-grid { grid-template-columns: 1fr; }
 }
@@ -1558,9 +1640,8 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
    (status col 8px + 6px gap = 14px) for a tidy hover state. */
 .mini-usage > .mini-mark-btn { transition: transform 120ms ease; }
 .mini-usage:not(.mini-timer):hover > .mini-mark-btn { transform: translateX(-14px); }
-.mini-usage.claude { --tone: var(--u-claude, var(--claude)); }
-.mini-usage.codex { --tone: var(--u-codex, var(--codex)); }
-.mini-usage.codex-1 { --tone: var(--u-codex-1, var(--u-codex, var(--codex))); }
+.mini-usage.claude { --tone: var(--provider-accent, var(--claude)); }
+.mini-usage.codex { --tone: var(--provider-accent, var(--codex)); }
 .mini-status {
   width: 8px;
   height: 8px;

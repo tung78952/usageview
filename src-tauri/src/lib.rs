@@ -55,13 +55,6 @@ const DOCK_OVERLAP_RATIO: f64 = 0.35;
 /// requires destroying their windows — see `suspend_provider_windows`.
 const WEBVIEW_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows";
 
-const MEMORY_TARGET_LABELS: [&str; 4] = [
-  "provider_claude",
-  "provider_codex",
-  "provider_codex_1",
-  "settings",
-];
-
 const DETACHED_HIDE_PREFIX: &str = "detached_hide:";
 const DETACHED_DOCK_EVENT: &str = "usageview-dock-tile";
 const DETACHED_POSITION_EVENT: &str = "usageview-detached-position";
@@ -76,6 +69,7 @@ struct WindowPosition {
 struct CurrentWidgetMode(Mutex<String>);
 struct WindowPositionStoreLock(Mutex<()>);
 struct ProviderEnabledState(Mutex<HashMap<String, (bool, u64)>>);
+struct RemovedProviderState(Mutex<HashSet<String>>);
 
 #[cfg(windows)]
 fn set_webview_memory_target(window: &tauri::WebviewWindow, low: bool) -> Result<(), String> {
@@ -202,14 +196,24 @@ fn read_sidecar_sensors() -> Option<SidecarSensors> {
 }
 
 #[tauri::command]
-async fn open_provider_window(app: tauri::AppHandle, provider: String, url: String) -> Result<(), String> {
+async fn open_provider_window(app: tauri::AppHandle, provider: String, url: String, display_label: String) -> Result<(), String> {
   let label = provider_label(&provider)?;
-  let window = get_or_create_provider_window(&app, &label)?;
+  let window = get_or_create_provider_window(&app, &label, Some(&display_label))?;
+  window.set_title(&format!("{} Usage - UsageView", display_label.trim())).map_err(|error| error.to_string())?;
   let target = tauri::Url::parse(&url).map_err(|error| error.to_string())?;
   window.navigate(target).map_err(|error| error.to_string())?;
   window.show().map_err(|error| error.to_string())?;
   window.set_focus().map_err(|error| error.to_string())?;
   let _ = set_webview_memory_target(&window, false);
+  Ok(())
+}
+
+#[tauri::command]
+fn set_provider_window_title(app: tauri::AppHandle, provider: String, display_label: String) -> Result<(), String> {
+  let label = provider_label(&provider)?;
+  if let Some(window) = app.get_webview_window(&label) {
+    window.set_title(&format!("{} Usage - UsageView", display_label.trim())).map_err(|error| error.to_string())?;
+  }
   Ok(())
 }
 
@@ -293,9 +297,65 @@ fn release_provider_window_command(app: tauri::AppHandle, provider: String, gene
   Ok(outcome)
 }
 
+/// Tear an account down for good: destroy its window and delete its on-disk login profile so a later
+/// re-add of the same kind starts signed out. Any account can be removed — there are no permanent
+/// built-ins.
+#[tauri::command]
+fn remove_provider_account(app: tauri::AppHandle, provider: String) -> Result<(), String> {
+  let label = provider_label(&provider)?;
+  {
+    let state = app.state::<RemovedProviderState>();
+    state.0.lock().map_err(|error| error.to_string())?.insert(label.clone());
+  }
+  if let Some(window) = app.get_webview_window(&label) {
+    if let Err(error) = window.destroy() {
+      if let Ok(mut removed) = app.state::<RemovedProviderState>().0.lock() {
+        removed.remove(&label);
+      }
+      return Err(error.to_string());
+    }
+  }
+  if let Ok(base) = app.path().app_data_dir() {
+    let profile = base.join("profiles").join(&label);
+    // WebView2 keeps the profile folder locked for a short moment after destroy(), so a single delete
+    // here usually fails. Retry off-thread until the lock clears — the command itself stays instant.
+    std::thread::spawn(move || {
+      for attempt in 0..20 {
+        if profile.exists() && fs::remove_dir_all(&profile).is_ok() {
+          return;
+        }
+        std::thread::sleep(Duration::from_millis(250 * (attempt + 1).min(4)));
+      }
+    });
+  }
+  // No PROVIDER_RELEASED_EVENT here — that fires the widget's "stopped" toast, which must stay
+  // distinct from removal. The Settings window emits its own "removed" toast event instead.
+  Ok(())
+}
+
+/// Delete any provider profile folder that no longer belongs to a current account. Called at startup
+/// with the live account ids, this reclaims disk and, more importantly, wipes the login of an account
+/// whose delete-time cleanup lost the race with WebView2's file lock.
+#[tauri::command]
+fn prune_provider_profiles(app: tauri::AppHandle, keep: Vec<String>) -> Result<(), String> {
+  let keep_labels: HashSet<String> = keep.iter().filter_map(|id| provider_label(id).ok()).collect();
+  if let Ok(base) = app.path().app_data_dir() {
+    if let Ok(entries) = fs::read_dir(base.join("profiles")) {
+      for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with("provider_") && !keep_labels.contains(&name) {
+          let _ = fs::remove_dir_all(entry.path());
+        }
+      }
+    }
+  }
+  Ok(())
+}
+
 #[tauri::command]
 fn set_webview_memory_target_command(app: tauri::AppHandle, label: String, low: bool) -> Result<(), String> {
-  if !MEMORY_TARGET_LABELS.contains(&label.as_str()) {
+  // Accept the settings window or any dynamic provider window (provider_*), not a fixed set.
+  if label != "settings" && !label.starts_with("provider_") {
     return Err("Invalid WebView label".to_string());
   }
   if let Some(window) = app.get_webview_window(&label) {
@@ -309,8 +369,9 @@ fn set_webview_memory_target_command(app: tauri::AppHandle, label: String, low: 
 
 #[tauri::command]
 fn suspend_provider_windows(app: tauri::AppHandle) -> Result<(), String> {
-  for label in ["provider_claude", "provider_codex", "provider_codex_1"] {
-    if let Some(window) = app.get_webview_window(label) {
+  // Accounts are dynamic now, so destroy every provider window rather than a fixed three.
+  for (label, window) in app.webview_windows() {
+    if label.starts_with("provider_") {
       window.destroy().map_err(|error| error.to_string())?;
     }
   }
@@ -413,22 +474,15 @@ fn show_widget_context_menu(
     .map_err(|error| error.to_string())
 }
 
-const ALL_TILE_IDS: [&str; 9] = [
-  "provider:claude",
-  "provider:codex",
-  "provider:codex-1",
-  "monitor:cpu",
-  "monitor:ram",
-  "monitor:gpu",
-  "monitor:igpu",
-  "monitor:cputemp",
-  "monitor:gputemp",
-];
+fn is_account_id(id: &str) -> bool {
+  !id.is_empty() && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
 
 fn detached_tile_parts(tile_id: &str) -> Result<(&str, &str), String> {
   let (kind, id) = tile_id.split_once(':').ok_or_else(|| "Invalid tile id".to_string())?;
   let valid = match kind {
-    "provider" => matches!(id, "claude" | "codex" | "codex-1"),
+    // Provider tiles carry a dynamic account id, so validate its shape rather than a fixed set.
+    "provider" => is_account_id(id),
     "monitor" => matches!(id, "cpu" | "ram" | "gpu" | "igpu" | "cputemp" | "gputemp"),
     _ => false,
   };
@@ -440,12 +494,12 @@ fn detached_tile_label(tile_id: &str) -> Result<String, String> {
   Ok(format!("tile_{}_{}", kind, id.replace('-', "_")))
 }
 
-fn detached_tile_title(tile_id: &str) -> Result<String, String> {
-  let (_, id) = detached_tile_parts(tile_id)?;
+fn detached_tile_title(tile_id: &str, display_label: Option<&str>) -> Result<String, String> {
+  let (kind, id) = detached_tile_parts(tile_id)?;
+  if kind == "provider" {
+    return Ok(display_label.filter(|label| !label.trim().is_empty()).unwrap_or(id).to_string());
+  }
   Ok(match id {
-    "claude" => "Claude",
-    "codex" => "Codex 1",
-    "codex-1" => "Codex 2",
     "cpu" => "CPU usage",
     "ram" => "RAM",
     "gpu" => "GPU usage",
@@ -456,11 +510,14 @@ fn detached_tile_title(tile_id: &str) -> Result<String, String> {
   }.to_string())
 }
 
-fn tile_id_for_label(label: &str) -> Option<&'static str> {
-  ALL_TILE_IDS
-    .iter()
-    .copied()
-    .find(|tile_id| detached_tile_label(tile_id).ok().as_deref() == Some(label))
+/// Reverse of detached_tile_label: `tile_<kind>_<rest>` → `<kind>:<rest with _→->`. Rebuilt rather
+/// than looked up in a fixed list so a dynamic account's tile resolves too. Ids/kinds never contain a
+/// literal `_` (account ids are [a-z0-9-]), so turning `_` back into `-` is exact.
+fn tile_id_for_label(label: &str) -> Option<String> {
+  let body = label.strip_prefix("tile_")?;
+  let (kind, rest) = body.split_once('_')?;
+  let tile_id = format!("{}:{}", kind, rest.replace('_', "-"));
+  if detached_tile_parts(&tile_id).is_ok() { Some(tile_id) } else { None }
 }
 
 fn mark_programmatic_close(app: &tauri::AppHandle, label: &str) {
@@ -553,8 +610,10 @@ fn open_detached_tile(
   position: Option<WindowPosition>,
   pinned: bool,
   scale: f64,
+  display_label: Option<String>,
 ) -> Result<WindowPosition, String> {
   let label = detached_tile_label(&tile_id)?;
+  let title = detached_tile_title(&tile_id, display_label.as_deref())?;
   let is_cursor_position = position.is_none();
   let requested = position
     .as_ref()
@@ -565,6 +624,7 @@ fn open_detached_tile(
   let scale = scale.clamp(0.5, 1.5);
 
   if let Some(window) = app.get_webview_window(&label) {
+    window.set_title(&format!("{title} — UsageView")).map_err(|error| error.to_string())?;
     window.set_always_on_top(pinned).map_err(|error| error.to_string())?;
     window.set_size(tauri::LogicalSize::new(392.0 * scale, 220.0 * scale)).map_err(|error| error.to_string())?;
     let target = place_detached_tile(&window, &target)?;
@@ -572,7 +632,6 @@ fn open_detached_tile(
     return Ok(target);
   }
 
-  let title = detached_tile_title(&tile_id)?;
   let create_target = target.clone();
   tauri::async_runtime::spawn(async move {
     let result = (|| -> Result<(), String> {
@@ -636,6 +695,7 @@ fn show_detached_tile_context_menu(
   app: tauri::AppHandle,
   window: tauri::WebviewWindow,
   tile_id: String,
+  display_label: Option<String>,
   x: f64,
   y: f64,
 ) -> Result<(), String> {
@@ -643,7 +703,7 @@ fn show_detached_tile_context_menu(
   let hide = MenuItem::with_id(
     &app,
     format!("{DETACHED_HIDE_PREFIX}{tile_id}"),
-    format!("Hide {}", detached_tile_title(&tile_id)?),
+    format!("Hide {}", detached_tile_title(&tile_id, display_label.as_deref())?),
     true,
     None::<&str>,
   ).map_err(|error| error.to_string())?;
@@ -949,27 +1009,27 @@ fn open_in_chrome(url: String) -> Result<(), String> {
   Err("Chrome not found".to_string())
 }
 
+// Async so clearing a heavy profile (claude.ai carries a lot of storage) runs off the UI thread —
+// a sync command froze the whole app while WebView2 cleared. Every account is isolated now, so a
+// logout only signs out that one account.
 #[tauri::command]
-fn logout_provider(app: tauri::AppHandle, provider: String, url: String) -> Result<(), String> {
-  // Clear the WebView session (cookies/storage) so the user is truly signed out, then send
-  // the window back to the login/usage URL.
-  // Note: primary provider windows share one WebView2 profile, so signing out of claude or
-  // codex also affects the other. Isolated accounts (codex-1 etc.) have separate profiles.
+async fn logout_provider(app: tauri::AppHandle, provider: String, url: String, display_label: String) -> Result<(), String> {
   let label = provider_label(&provider)?;
-  let window = get_or_create_provider_window(&app, &label)?;
+  let window = get_or_create_provider_window(&app, &label, Some(&display_label))?;
+  // Show first so the window is responsive while the clear runs, then wipe the session and reload.
+  window.show().map_err(|error| error.to_string())?;
+  window.set_focus().map_err(|error| error.to_string())?;
   window.clear_all_browsing_data().map_err(|error| error.to_string())?;
   let target = tauri::Url::parse(&url).map_err(|error| error.to_string())?;
   window.navigate(target).map_err(|error| error.to_string())?;
-  window.show().map_err(|error| error.to_string())?;
-  window.set_focus().map_err(|error| error.to_string())?;
   Ok(())
 }
 
 #[tauri::command]
-async fn extract_provider(app: tauri::AppHandle, provider: String, url: String) -> Result<String, String> {
+async fn extract_provider(app: tauri::AppHandle, provider: String, kind: String, url: String, display_label: String) -> Result<String, String> {
   let label = provider_label(&provider)?;
-  let window = get_or_create_provider_window(&app, &label)?;
-  let expected_host = provider_host(&provider)?;
+  let window = get_or_create_provider_window(&app, &label, Some(&display_label))?;
+  let expected_host = host_for_kind(&kind)?;
 
   // Any provider becomes a freshly-created dynamic window after Show OFF destroys it. Do not proceed
   // until the controller responds; otherwise the first read leaks "failed to receive message from
@@ -994,9 +1054,12 @@ async fn extract_provider(app: tauri::AppHandle, provider: String, url: String) 
   let current_url = window.url().ok();
   let on_target = current_url
     .as_ref()
-    .map(|current| is_usable_provider_page(&provider, current, expected_host, &url))
+    .map(|current| is_usable_provider_page(&kind, current, expected_host, &url))
     .unwrap_or(false);
-  if (provider == "claude" && !on_target) || (!visible && !on_target) {
+  // Never navigate a visible window: the user may be mid-login (e.g. on a 2FA code screen) and a
+  // navigation here would throw them back to the sign-in page. Only a hidden, off-target window is
+  // safe to steer onto the usage page — this holds for Claude and Codex alike.
+  if !visible && !on_target {
     let target = tauri::Url::parse(&url).map_err(|error| error.to_string())?;
     window.navigate(target).map_err(|error| error.to_string())?;
   }
@@ -1010,7 +1073,7 @@ async fn extract_provider(app: tauri::AppHandle, provider: String, url: String) 
     .map(|elapsed| elapsed.as_millis())
     .unwrap_or(0);
   let marker = format!("{}{}:", PAYLOAD_PREFIX, nonce);
-  let script = extract_script(&provider, &marker)?;
+  let script = extract_script(&provider, &kind, &marker)?;
   let (event_tx, event_rx) = mpsc::channel::<(String, String)>();
   let event_marker = marker.clone();
   let event_id = app.listen(EXTRACT_EVENT, move |event| {
@@ -1032,7 +1095,7 @@ async fn extract_provider(app: tauri::AppHandle, provider: String, url: String) 
   // Claude's SPA can be slow after a forced navigation, so give it a larger budget.
   let mut result: Option<String> = None;
   let mut last_webview_error: Option<String> = None;
-  let max_attempts = if provider == "claude" { 48 } else { 24 };
+  let max_attempts = if kind == "claude" { 48 } else { 24 };
   for attempt in 0..max_attempts {
     if let Ok((status, encoded)) = event_rx.try_recv() {
       last_payload = Some(encoded.clone());
@@ -1094,10 +1157,10 @@ async fn extract_provider(app: tauri::AppHandle, provider: String, url: String) 
 /// One-off discovery: find the JSON endpoint the provider's usage page actually calls, so we
 /// can later read usage directly from that API instead of scraping the rendered DOM.
 #[tauri::command]
-async fn discover_provider_api(app: tauri::AppHandle, provider: String, url: String) -> Result<String, String> {
+async fn discover_provider_api(app: tauri::AppHandle, provider: String, kind: String, url: String, display_label: String) -> Result<String, String> {
   let label = provider_label(&provider)?;
-  let window = get_or_create_provider_window(&app, &label)?;
-  let expected_host = provider_host(&provider)?;
+  let window = get_or_create_provider_window(&app, &label, Some(&display_label))?;
+  let expected_host = host_for_kind(&kind)?;
 
   let visible = window.is_visible().unwrap_or(false);
   let on_host = window
@@ -1486,6 +1549,7 @@ pub fn run() {
     .manage(CurrentWidgetMode(Mutex::new("widget".to_string())))
     .manage(WindowPositionStoreLock(Mutex::new(())))
     .manage(ProviderEnabledState(Mutex::new(HashMap::new())))
+    .manage(RemovedProviderState(Mutex::new(HashSet::new())))
     .manage(ProgrammaticCloses(Mutex::new(HashSet::new())))
     .manage({
       let mut sys = sysinfo::System::new();
@@ -1569,9 +1633,12 @@ pub fn run() {
     })
     .invoke_handler(tauri::generate_handler![
       open_provider_window,
+      set_provider_window_title,
       close_provider_window,
       set_provider_enabled,
       release_provider_window_command,
+      remove_provider_account,
+      prune_provider_profiles,
       suspend_provider_windows,
       refresh_provider_page,
       open_widget_window,
@@ -1602,33 +1669,48 @@ pub fn run() {
     .expect("error while running UsageView");
 }
 
+/// Account ids are user-facing but become window labels and on-disk profile folder names, so they
+/// must be a safe slug. `claude`/`codex`/`codex-1` (the migrated originals) still map to the exact
+/// same labels as before, so their WebView2 profiles — and logins — survive the upgrade.
 fn provider_label(provider: &str) -> Result<String, String> {
-  match provider {
-    "claude" => Ok("provider_claude".to_string()),
-    "codex" => Ok("provider_codex".to_string()),
-    "codex-1" => Ok("provider_codex_1".to_string()),
-    _ => Err(format!("Unknown provider: {}", provider)),
+  if provider.is_empty() || !provider.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
+    return Err(format!("Invalid account id: {}", provider));
   }
+  Ok(format!("provider_{}", provider.replace('-', "_")))
 }
 
-fn provider_host(provider: &str) -> Result<&'static str, String> {
-  match provider {
+/// Usage is read per host, not per account, so every account of a kind shares one host. The JS side
+/// always knows an account's kind and passes it in, so Rust needs no account registry.
+fn host_for_kind(kind: &str) -> Result<&'static str, String> {
+  match kind {
     "claude" => Ok("claude.ai"),
-    "codex" | "codex-1" => Ok("chatgpt.com"),
-    _ => Err(format!("Unknown provider: {}", provider)),
+    "codex" => Ok("chatgpt.com"),
+    _ => Err(format!("Unknown account kind: {}", kind)),
   }
 }
 
-/// Get a provider window if it exists, or create it with an isolated WebView2 profile.
-/// Primary provider windows (provider_claude, provider_codex) are pre-declared in
-/// tauri.conf.json so get_webview_window always finds them. Additional account windows
-/// (provider_codex_1 etc.) are created dynamically with a separate data_directory so
-/// they can hold an independent login session.
+/// Get a provider window if it exists, or create it with an isolated WebView2 profile. Every account
+/// window is created dynamically here (none are pre-declared in tauri.conf.json) with its own
+/// data_directory, so each holds an independent login session.
 ///
-/// This is also the rebuild path after `suspend_provider_windows` destroys them, so the builder
-/// below must reproduce the tauri.conf.json declarations faithfully — see the browser-args note.
-fn get_or_create_provider_window(app: &tauri::AppHandle, label: &str) -> Result<tauri::WebviewWindow, String> {
+/// This is also the rebuild path after a window is destroyed (Show OFF / suspend), so the builder
+/// below must apply the same browser args as `widget`/`settings` — see the browser-args note.
+fn get_or_create_provider_window(app: &tauri::AppHandle, label: &str, display_label: Option<&str>) -> Result<tauri::WebviewWindow, String> {
+  let is_removed = || -> Result<bool, String> {
+    Ok(app
+      .state::<RemovedProviderState>()
+      .0
+      .lock()
+      .map_err(|error| error.to_string())?
+      .contains(label))
+  };
+  if is_removed()? {
+    return Err("Account was removed".to_string());
+  }
   if let Some(window) = app.get_webview_window(label) {
+    if let Some(display_label) = display_label.filter(|value| !value.trim().is_empty()) {
+      window.set_title(&format!("{} Usage - UsageView", display_label.trim())).map_err(|error| error.to_string())?;
+    }
     return Ok(window);
   }
   let data_dir = app
@@ -1637,12 +1719,10 @@ fn get_or_create_provider_window(app: &tauri::AppHandle, label: &str) -> Result<
     .map_err(|e| e.to_string())?
     .join("profiles")
     .join(label);
-  let title = match label {
-    "provider_claude" => "Claude Usage - UsageView".to_string(),
-    "provider_codex" => "Codex Usage - UsageView".to_string(),
-    "provider_codex_1" => "Codex 2 Usage - UsageView".to_string(),
-    _ => format!("{} \u{2014} UsageView", label.strip_prefix("provider_").unwrap_or(label).replace('_', " ")),
-  };
+  let title = display_label
+    .filter(|value| !value.trim().is_empty())
+    .map(|value| format!("{} Usage - UsageView", value.trim()))
+    .unwrap_or_else(|| format!("{} \u{2014} UsageView", label.strip_prefix("provider_").unwrap_or(label).replace('_', " ")));
   let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
     .title(title)
     .inner_size(980.0, 760.0)
@@ -1651,26 +1731,31 @@ fn get_or_create_provider_window(app: &tauri::AppHandle, label: &str) -> Result<
     .zoom_hotkeys_enabled(false)
     .center()
     .visible(false);
-  let builder = if label == "provider_claude" || label == "provider_codex" {
-    builder
-  } else {
-    builder.data_directory(data_dir)
-  };
+  // Every account gets its own isolated WebView2 profile, so signing out of or deleting one never
+  // touches another and two accounts of the same service can hold separate logins. (The old
+  // claude/codex shared-default-profile special case is gone — they are ordinary accounts now.)
   let window = builder
+    .data_directory(data_dir)
     .additional_browser_args(WEBVIEW_BROWSER_ARGS)
     .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
     .build()
     .map_err(|e| e.to_string())?;
+  // Remove may have won the race while WebView2 was building. Do not hand this window to the caller;
+  // destroy it here so the tombstone remains authoritative without holding a mutex over build().
+  if is_removed()? {
+    let _ = window.destroy();
+    return Err("Account was removed".to_string());
+  }
   let _ = set_webview_memory_target(&window, true);
   Ok(window)
 }
 
-fn is_usable_provider_page(provider: &str, current: &tauri::Url, expected_host: &str, target_url: &str) -> bool {
+fn is_usable_provider_page(kind: &str, current: &tauri::Url, expected_host: &str, target_url: &str) -> bool {
   let on_host = current.host_str().unwrap_or_default().contains(expected_host);
   if !on_host {
     return false;
   }
-  if provider != "claude" {
+  if kind != "claude" {
     return true;
   }
   let current_path = current.path().trim_end_matches('/');
@@ -1693,12 +1778,15 @@ fn js_string(value: &str) -> String {
   serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
 }
 
-fn extract_script(provider: &str, marker: &str) -> Result<String, String> {
-  if provider != "claude" && provider != "codex" && provider != "codex-1" {
-    return Err(format!("Unknown provider: {}", provider));
+/// `id` is the account id embedded in the snapshot (so it keys back to the right tile); `kind` picks
+/// which reader to run. Branching on kind — not id — is what lets any dynamically-added account read
+/// usage, since every Codex account shares the Codex reader and every Claude account the Claude one.
+fn extract_script(id: &str, kind: &str, marker: &str) -> Result<String, String> {
+  if kind != "claude" && kind != "codex" {
+    return Err(format!("Unknown account kind: {}", kind));
   }
 
-  if provider == "codex" || provider == "codex-1" {
+  if kind == "codex" {
     return Ok(format!(
       r#"(async () => {{
   const provider = {provider_name};
@@ -1803,7 +1891,7 @@ fn extract_script(provider: &str, marker: &str) -> Result<String, String> {
     finish('not_found', fallbackSnapshot('Codex usage API fetch failed.', error && error.message ? error.message : error));
   }}
 }})();"#,
-      provider_name = js_string(provider),
+      provider_name = js_string(id),
       marker = js_string(marker),
       event = EXTRACT_EVENT
     ));
@@ -2099,17 +2187,15 @@ fn extract_script(provider: &str, marker: &str) -> Result<String, String> {
 
   Ok(
     claude_script
-      .replace("__PROVIDER__", &js_string(provider))
+      .replace("__PROVIDER__", &js_string(id))
       .replace("__MARKER__", &js_string(marker))
       .replace("__EVENT__", EXTRACT_EVENT),
   )
 }
 
 fn discover_script(provider: &str, marker: &str) -> Result<String, String> {
-  if provider != "claude" && provider != "codex" && provider != "codex-1" {
-    return Err(format!("Unknown provider: {}", provider));
-  }
-
+  // Discovery is generic (it just reports what endpoints the page calls), so it accepts any account
+  // id — the caller has already validated the id via provider_label.
   Ok(format!(
     r#"(async () => {{
   const provider = {provider};

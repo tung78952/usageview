@@ -92,6 +92,13 @@
         z-index: 20;
       }
 
+/* Direct Glass children are normally raised as relative content. A modal must stay viewport-fixed
+   above that rule or it falls into the Settings flow and leaves the controls behind it clickable. */
+.theme-glass.control-shell > .app-modal {
+        position: fixed;
+        z-index: 50;
+      }
+
 .theme-glass.control-shell {
         border-radius: 18px;
       }
@@ -116,7 +123,15 @@
           inset -.3px -1px 4px 0 color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 12%), transparent),
           inset -1.5px 2.5px 0 -2px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 20%), transparent),
           inset 0 3px 4px -2px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 20%), transparent),
-          0 12px 30px -18px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 36%), transparent);
+           0 12px 30px -18px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 36%), transparent);
+      }
+
+/* The generic mini-card skin is intentionally lighter. Modal cards keep their stronger glass sheet
+   so the dialog remains readable over a busy Settings panel. */
+.theme-glass .mini-card.app-modal-card {
+        background-color: color-mix(in srgb, var(--paper-panel) 82%, transparent);
+        backdrop-filter: blur(14px) saturate(150%);
+        -webkit-backdrop-filter: blur(14px) saturate(150%);
       }
 
 .theme-glass .provider-tile {
@@ -128,29 +143,21 @@
    (tránh compact "dài hơn" và auto-fit nhảy khi bật/tắt Glass). */
 .theme-glass .usage.provider-tile { padding: 12px; gap: 8px; }
 
-/* --u-<provider> override vars (set by panelStyle when the user picks a custom accent) layer on top of
-   the theme's tuned defaults, so a custom color reaches Glass too while defaults stay per-theme. */
+/* Each account can set --provider-color inline. These rules provide the tuned per-kind fallback when
+   an account has no custom accent, while inline values keep same-kind accounts independent. */
 .theme-glass .provider-tile.claude,
 .theme-glass .mini-card:has(.provider-tile.claude) {
-        --provider-color: var(--u-claude, #c46f42);
+        --provider-color: var(--provider-accent, #c46f42);
       }
 
 .theme-glass .provider-tile.codex,
 .theme-glass .mini-card:has(.provider-tile.codex) {
-        --provider-color: var(--u-codex, #4f78b8);
-      }
-.theme-glass .provider-tile.codex-1,
-.theme-glass .mini-card:has(.provider-tile.codex-1) {
-        --provider-color: var(--u-codex-1, var(--u-codex, #4f78b8));
+        --provider-color: var(--provider-accent, #4f78b8);
       }
 
 .theme-glass.theme-glass-dark .provider-tile.codex,
 .theme-glass.theme-glass-dark .mini-card:has(.provider-tile.codex) {
-        --provider-color: var(--u-codex, #76a7e8);
-      }
-.theme-glass.theme-glass-dark .provider-tile.codex-1,
-.theme-glass.theme-glass-dark .mini-card:has(.provider-tile.codex-1) {
-        --provider-color: var(--u-codex-1, var(--u-codex, #76a7e8));
+        --provider-color: var(--provider-accent, #76a7e8);
       }
 
 .theme-glass .provider-tile.mark-paused,

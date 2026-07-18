@@ -3,10 +3,8 @@
   "identifier": "default",
   "description": "Default app permissions",
   "windows": [
-    "widget", "provider_claude", "provider_codex", "provider_codex_1", "settings",
-    "tile_provider_claude", "tile_provider_codex", "tile_provider_codex_1",
-    "tile_monitor_cpu", "tile_monitor_ram", "tile_monitor_gpu", "tile_monitor_igpu",
-    "tile_monitor_cputemp", "tile_monitor_gputemp"
+    "widget", "settings",
+    "provider_*", "tile_provider_*", "tile_monitor_*"
   ],
   "permissions": [
     "core:default",

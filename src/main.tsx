@@ -9,7 +9,46 @@ import "./styles.css";
 import "./glass-theme.css";
 import "./glass-effect.css";
 
-type Provider = "claude" | "codex" | "codex-1";
+// A Provider is now just an account id. Accounts are dynamic: added, renamed, and removed freely, so
+// nothing here enumerates a fixed set. `kind` picks the login site + extraction; everything else keys
+// off the id.
+type Provider = string;
+type AccountKind = "claude" | "codex";
+type Account = { id: string; kind: AccountKind; label: string; url: string; shown: boolean };
+
+const ACCOUNT_DEFAULT_URL: Record<AccountKind, string> = {
+  claude: "https://claude.ai/settings/usage",
+  codex: "https://chatgpt.com/codex/cloud/settings/analytics#usage",
+};
+
+// Each window (widget / settings) keeps its own copy, refreshed from settings, so the display helpers
+// (providerLabel/providerKind/...) can resolve an id without threading `accounts` through every call.
+let accountRegistry: Record<string, Account> = {};
+function syncAccountRegistry(accounts: Account[]) {
+  accountRegistry = Object.fromEntries(accounts.map((account) => [account.id, account]));
+}
+function providerKind(id: Provider): AccountKind {
+  return accountRegistry[id]?.kind ?? "codex";
+}
+function providerRemovingKey(id: Provider) {
+  return `${PROVIDER_REMOVING_KEY_PREFIX}${id}`;
+}
+function providerRemovalPending(id: Provider) {
+  const startedAt = Number(localStorage.getItem(providerRemovingKey(id)));
+  return Number.isFinite(startedAt) && startedAt > 0 && Date.now() - startedAt < 120_000;
+}
+function accountIdsFrom(settings: Settings): Provider[] {
+  return settings.accounts.map((account) => account.id);
+}
+function makeAccountId(kind: AccountKind, existing: Account[]): string {
+  const taken = new Set(existing.map((account) => account.id));
+  let id = "";
+  do {
+    id = `${kind}-${Math.random().toString(36).slice(2, 8)}`;
+  } while (taken.has(id) || !/^[a-z0-9-]+$/.test(id));
+  return id;
+}
+
 type UsageStatus = "ok" | "not_open" | "not_logged_in" | "not_found" | "parser_failed" | "page_unavailable";
 
 type UsageSnapshot = {
@@ -101,6 +140,9 @@ type Settings = {
   effectsEnabled: boolean;
   effectDropCell: boolean;
   corner: "top-left" | "top-right" | "bottom-left" | "bottom-right";
+  accounts: Account[];
+  // Legacy single-account show flags (claudeUrl/codexUrl/codex1Url are above) — kept only so old
+  // saved settings migrate into `accounts`. Not read once `accounts` exists.
   showClaude: boolean;
   showCodex: boolean;
   showCodex1: boolean;
@@ -115,12 +157,20 @@ type Settings = {
   colorsEnabled: boolean;
   monitorColors: MonitorColors;
   providerColors: ProviderColors;
+  providerColorsVersion: number;
   colorScope: ColorScope;
   baseOverrides: Partial<Record<ThemeKey, BaseOverride>>;
 };
 
 type ThemeKey = "terminal" | "light" | "glass-light" | "glass-dark";
-type ProviderColors = { claude: string | null; codex: string | null; "codex-1": string | null };
+const ACCOUNT_BRAND_COLORS: Record<AccountKind, Record<ThemeKey, string>> = {
+  claude: { terminal: "#c46f42", light: "#b85f2e", "glass-light": "#c46f42", "glass-dark": "#c46f42" },
+  codex: { terminal: "#7b8cff", light: "#3f66ad", "glass-light": "#4f78b8", "glass-dark": "#76a7e8" },
+};
+function accountBrandColor(kind: AccountKind, theme: ThemeKey) {
+  return ACCOUNT_BRAND_COLORS[kind][theme];
+}
+type ProviderColors = Record<string, string | null>;
 type ColorScope = { text: boolean; bar: boolean; border: boolean; bgTint: boolean };
 type BaseOverride = { preset?: string; bg?: string; surface?: string; text?: string };
 
@@ -190,6 +240,7 @@ const defaultSettings: Settings = {
   effectsEnabled: true,
   effectDropCell: true,
   corner: "top-right",
+  accounts: [],
   showClaude: true,
   showCodex: true,
   showCodex1: false,
@@ -203,7 +254,8 @@ const defaultSettings: Settings = {
   monitorIntervalSec: 2,
   colorsEnabled: true,
   monitorColors: makeDefaultMonitorColors(),
-  providerColors: { claude: null, codex: null, "codex-1": null },
+  providerColors: {},
+  providerColorsVersion: 2,
   colorScope: { text: true, bar: true, border: true, bgTint: false },
   baseOverrides: {},
 };
@@ -257,6 +309,8 @@ const TILE_LAYOUT_EVENT = "usageview:tile-layout";
 const PROVIDER_LIFECYCLE_EVENT = "usageview-provider-lifecycle";
 const PROVIDER_LIFECYCLE_REQUEST_EVENT = "usageview-provider-lifecycle-request";
 const PROVIDER_RELEASED_EVENT = "usageview-provider-released";
+const PROVIDER_REMOVED_EVENT = "usageview-provider-removed";
+const PROVIDER_REMOVING_KEY_PREFIX = "usageview.provider-removing.";
 const PROVIDER_RETRY_EVENT = "usageview-provider-retry";
 const PROVIDER_START_ATTEMPTS = 3;
 // Tauri builds the predeclared provider windows after the widget's JS is already running, so an OFF
@@ -264,11 +318,18 @@ const PROVIDER_START_ATTEMPTS = 3;
 // sweeping for a few seconds so a provider that is switched off stays off.
 const PROVIDER_RELEASE_SWEEPS = 6;
 const PROVIDER_RELEASE_SWEEP_MS = 700;
-const ALL_TILE_IDS = [
-  "provider:claude", "provider:codex", "provider:codex-1",
+// Provider tiles are dynamic (`provider:<accountId>`); monitor tiles are the fixed hardware set.
+const MONITOR_TILE_IDS = [
   "monitor:cpu", "monitor:ram", "monitor:gpu", "monitor:igpu", "monitor:cputemp", "monitor:gputemp",
 ] as const;
-type TileId = typeof ALL_TILE_IDS[number];
+type MonitorTileId = typeof MONITOR_TILE_IDS[number];
+type TileId = `provider:${string}` | MonitorTileId;
+function providerTileId(id: Provider): TileId {
+  return `provider:${id}`;
+}
+function allTileIds(settings: Settings): TileId[] {
+  return [...settings.accounts.map((account) => providerTileId(account.id)), ...MONITOR_TILE_IDS];
+}
 // Must match the size and scale clamp `open_detached_tile` builds the window with in lib.rs.
 const DETACHED_TILE_WIDTH = 392;
 const DETACHED_TILE_HEIGHT = 220;
@@ -287,13 +348,18 @@ let windowGeometryCache: Partial<Record<AppMode, WindowPosition>> | undefined;
 let windowGeometryResetGeneration = 0;
 
 function isTileId(value: unknown): value is TileId {
-  return typeof value === "string" && (ALL_TILE_IDS as readonly string[]).includes(value);
+  if (typeof value !== "string") return false;
+  if ((MONITOR_TILE_IDS as readonly string[]).includes(value)) return true;
+  return value.startsWith("provider:") && /^[a-z0-9-]+$/.test(value.slice("provider:".length));
 }
 
 function normalizeTileLayout(value: unknown): TileLayout {
   const parsed = value && typeof value === "object" ? value as Partial<TileLayout> : {};
   const savedOrder = Array.isArray(parsed.order) ? parsed.order.filter(isTileId) : [];
-  const order = [...new Set([...savedOrder, ...ALL_TILE_IDS])] as TileId[];
+  // Provider tiles are dynamic, so we cannot enumerate them here (no settings) — keep whatever the
+  // saved order had and ensure the monitor tiles are always present. A newly added account's tile is
+  // appended by the widget when it renders.
+  const order = [...new Set([...savedOrder, ...MONITOR_TILE_IDS])] as TileId[];
   const detached: Partial<Record<TileId, WindowPosition>> = {};
   if (parsed.detached && typeof parsed.detached === "object") {
     for (const [id, position] of Object.entries(parsed.detached)) {
@@ -326,7 +392,14 @@ function tileWindowLabel(tileId: TileId) {
 }
 
 function tileIdForWindowLabel(label: string): TileId | null {
-  return ALL_TILE_IDS.find((tileId) => tileWindowLabel(tileId) === label) ?? null;
+  // Reverse of tileWindowLabel: `tile_<kind>_<rest>` → `<kind>:<rest with _→->`. The first underscore
+  // after `tile_` was the `:` separator; the rest were `-`. Ids/kinds never contain a literal `_`.
+  if (!label.startsWith("tile_")) return null;
+  const body = label.slice("tile_".length);
+  const sep = body.indexOf("_");
+  if (sep < 0) return null;
+  const candidate = `${body.slice(0, sep)}:${body.slice(sep + 1).replace(/_/g, "-")}`;
+  return isTileId(candidate) ? (candidate as TileId) : null;
 }
 
 function providerFromTile(tileId: TileId): Provider | null {
@@ -335,6 +408,13 @@ function providerFromTile(tileId: TileId): Provider | null {
 
 function monitorFromTile(tileId: TileId): MonitorKind | null {
   return tileId.startsWith("monitor:") ? tileId.slice("monitor:".length) as MonitorKind : null;
+}
+
+function tileDisplayLabel(tileId: TileId): string | undefined {
+  const provider = providerFromTile(tileId);
+  if (provider) return providerLabel(provider);
+  const monitor = monitorFromTile(tileId);
+  return monitor ? MONITOR_FULL_LABELS[monitor] : undefined;
 }
 
 
@@ -376,6 +456,52 @@ const emptySnapshot = (provider: Provider): UsageSnapshot => ({
   updatedAt: new Date().toISOString(),
 });
 
+function normalizeAccountLabel(kind: AccountKind, label: string) {
+  return (label.trim() || (kind === "claude" ? "Claude" : "Codex")).toLocaleUpperCase();
+}
+
+function normalizeAccount(value: unknown): Account | null {
+  if (!value || typeof value !== "object") return null;
+  const a = value as Record<string, unknown>;
+  const id = typeof a.id === "string" ? a.id : "";
+  const kind = a.kind === "claude" || a.kind === "codex" ? a.kind : null;
+  if (!/^[a-z0-9-]+$/.test(id) || !kind) return null;
+  return {
+    id,
+    kind,
+    label: normalizeAccountLabel(kind, typeof a.label === "string" ? a.label : ""),
+    url: typeof a.url === "string" && a.url ? a.url : ACCOUNT_DEFAULT_URL[kind],
+    shown: a.shown === true,
+  };
+}
+
+// Existing installs carry the three original accounts in legacy show/url fields; migrate them once,
+// preserving their ids so saved snapshots, tile layout and colours keep matching. A brand-new install
+// (no prior settings) starts with zero accounts.
+function resolveAccounts(parsed: Record<string, unknown>, hadSaved: boolean, loaded: Settings): Account[] {
+  if (Array.isArray(parsed.accounts)) {
+    return parsed.accounts.map(normalizeAccount).filter((a): a is Account => a !== null);
+  }
+  if (!hadSaved) return [];
+  return [
+    { id: "claude", kind: "claude", label: normalizeAccountLabel("claude", "Claude"), url: loaded.claudeUrl, shown: loaded.showClaude ?? true },
+    { id: "codex", kind: "codex", label: normalizeAccountLabel("codex", "Codex 1"), url: loaded.codexUrl, shown: loaded.showCodex ?? true },
+    { id: "codex-1", kind: "codex", label: normalizeAccountLabel("codex", "Codex 2"), url: loaded.codex1Url, shown: loaded.showCodex1 ?? false },
+  ];
+}
+
+function normalizeProviderColors(value: unknown, accounts: Account[], version: number): ProviderColors {
+  const saved = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const result: ProviderColors = {};
+  for (const account of accounts) {
+    const direct = saved[account.id];
+    const legacyKind = version < 2 ? saved[account.kind] : undefined;
+    const color = typeof direct === "string" ? direct : typeof legacyKind === "string" ? legacyKind : undefined;
+    if (color) result[account.id] = color;
+  }
+  return result;
+}
+
 function loadSettings(): Settings {
   try {
     const saved = localStorage.getItem("usageview.settings");
@@ -384,16 +510,24 @@ function loadSettings(): Settings {
     const legacyEffectKeys = ["effectDurationMs", "effectBarBrightness", "effectDeltaBrightness"];
     const hadLegacyEffectTuning = legacyEffectKeys.some((key) => Object.prototype.hasOwnProperty.call(parsed, key));
     for (const key of legacyEffectKeys) delete parsed[key];
-    if (hadLegacyEffectTuning) localStorage.setItem("usageview.settings", JSON.stringify(parsed));
     const loaded = { ...defaultSettings, ...parsed };
-    const savedProviderColors = (parsed.providerColors ?? {}) as Partial<ProviderColors>;
     const savedColorScope = (parsed.colorScope ?? {}) as Partial<ColorScope>;
     const hadShownMonitor = [loaded.showCpu, loaded.showRam, loaded.showGpu, loaded.showIgpu, loaded.showCpuTemp, loaded.showGpuTemp].some(Boolean);
+    const accounts = resolveAccounts(parsed, saved !== null, loaded);
+    const providerColorsVersion = Number(parsed.providerColorsVersion) >= 2 ? 2 : 1;
+    const providerColors = normalizeProviderColors(parsed.providerColors, accounts, providerColorsVersion);
+    if (saved !== null && (hadLegacyEffectTuning || providerColorsVersion < 2)) {
+      parsed.providerColors = providerColors;
+      parsed.providerColorsVersion = 2;
+      localStorage.setItem("usageview.settings", JSON.stringify(parsed));
+    }
+    syncAccountRegistry(accounts);
     return {
       ...loaded,
+      accounts,
       uiScale: clampNumber(loaded.uiScale, 0.25, 2, 1),
       theme: normalizeTheme(loaded.theme),
-      aiUsageEnabled: typeof parsed.aiUsageEnabled === "boolean" ? parsed.aiUsageEnabled : [loaded.showClaude, loaded.showCodex, loaded.showCodex1].some(Boolean),
+      aiUsageEnabled: typeof parsed.aiUsageEnabled === "boolean" ? parsed.aiUsageEnabled : accounts.some((a) => a.shown),
       effectsEnabled: loaded.effectsEnabled ?? true,
       effectDropCell: loaded.effectDropCell ?? true,
       showClaude: loaded.showClaude ?? true,
@@ -409,7 +543,8 @@ function loadSettings(): Settings {
       monitorIntervalSec: clampNumber(loaded.monitorIntervalSec, 1, 10, 2),
       colorsEnabled: loaded.colorsEnabled ?? true,
       monitorColors: normalizeMonitorColors(loaded.monitorColors),
-      providerColors: { claude: null, codex: null, "codex-1": null, ...savedProviderColors },
+      providerColors,
+      providerColorsVersion: 2,
       colorScope: { text: true, bar: true, border: true, bgTint: false, ...savedColorScope },
       baseOverrides: loaded.baseOverrides ?? {},
     };
@@ -496,10 +631,6 @@ function panelStyle(settings: Settings): React.CSSProperties {
     "--effect-delta-brightness": EFFECT_DELTA_BRIGHTNESS,
   };
   if (settings.colorsEnabled) {
-    const pc = settings.providerColors;
-    if (pc.claude) style["--u-claude"] = pc.claude;
-    if (pc.codex) style["--u-codex"] = pc.codex;
-    if (pc["codex-1"]) style["--u-codex-1"] = pc["codex-1"];
     const base = resolveBaseTokens(settings.theme, settings.baseOverrides[settings.theme]);
     if (base) {
       const glass = settings.theme === "glass-light" || settings.theme === "glass-dark";
@@ -510,6 +641,15 @@ function panelStyle(settings: Settings): React.CSSProperties {
     }
   }
   return style as React.CSSProperties;
+}
+
+function providerAccent(provider: Provider, settings: Settings): string | undefined {
+  if (!settings.colorsEnabled) return undefined;
+  return settings.providerColors[provider] ?? undefined;
+}
+
+function providerAccentStyle(accent?: string): React.CSSProperties | undefined {
+  return accent ? ({ "--provider-accent": accent } as React.CSSProperties) : undefined;
 }
 
 // Scope classes toggle where a provider's accent lands (text/bar/border/bg). Default-on scopes keep the
@@ -753,11 +893,19 @@ function saveSnapshot(snapshot: UsageSnapshot) {
   window.dispatchEvent(new Event("usageview:snapshot"));
 }
 
+function snapshotsForAccounts(accounts: Account[]): Record<Provider, UsageSnapshot> {
+  return Object.fromEntries(accounts.map((account) => [account.id, loadSnapshot(account.id)]));
+}
+
+function snapshotOf(snapshots: Record<Provider, UsageSnapshot>, id: Provider): UsageSnapshot {
+  return snapshots[id] ?? emptySnapshot(id);
+}
+
 function retainLastGoodClaude(snapshot: UsageSnapshot): UsageSnapshot {
-  if (snapshot.provider !== "claude" || (snapshot.status !== "page_unavailable" && snapshot.status !== "not_found")) {
+  if (providerKind(snapshot.provider) !== "claude" || (snapshot.status !== "page_unavailable" && snapshot.status !== "not_found")) {
     return snapshot;
   }
-  const previous = loadSnapshot("claude");
+  const previous = loadSnapshot(snapshot.provider);
   if (previous.status !== "ok") return snapshot;
   return {
     ...previous,
@@ -775,9 +923,7 @@ function readableStatus(status: UsageStatus) {
 }
 
 function providerLabel(provider: Provider) {
-  if (provider === "claude") return "Claude";
-  if (provider === "codex-1") return "Codex 2";
-  return "Codex 1";
+  return accountRegistry[provider]?.label ?? provider;
 }
 
 function lifecycleShowsTile(lifecycle: ProviderLifecycle | undefined) {
@@ -809,9 +955,8 @@ function lifecycleTone(lifecycle: ProviderLifecycle | undefined): "ok" | "warn" 
 }
 
 function providerUrl(provider: Provider, settings: Settings): string {
-  if (provider === "claude") return settings.claudeUrl;
-  if (provider === "codex-1") return settings.codex1Url;
-  return settings.codexUrl;
+  const account = settings.accounts.find((a) => a.id === provider);
+  return account?.url ?? ACCOUNT_DEFAULT_URL[providerKind(provider)];
 }
 
 // Pre-pass only: Rust clamps the real window to the monitor work area once it exists and reports
@@ -830,9 +975,7 @@ async function normalizeDetachedTilePosition(position: WindowPosition, uiScale: 
 
 function providerEnabled(provider: Provider, settings: Settings): boolean {
   if (!settings.aiUsageEnabled) return false;
-  if (provider === "claude") return settings.showClaude;
-  if (provider === "codex-1") return settings.showCodex1;
-  return settings.showCodex;
+  return settings.accounts.find((a) => a.id === provider)?.shown ?? false;
 }
 
 function resetCountdownLabel(snapshot: UsageSnapshot): string | undefined {
@@ -852,14 +995,13 @@ function providerMessage(snapshot: UsageSnapshot) {
   if (snapshot.status === "ok") {
     return resetCountdownLabel(snapshot) ?? "up to date";
   }
-  if (snapshot.status === "not_found" && snapshot.provider === "claude") return "Usage page not detected";
+  if (snapshot.status === "not_found" && providerKind(snapshot.provider) === "claude") return "Usage page not detected";
   if (snapshot.status === "not_open") return "Open login";
   if (snapshot.status === "not_logged_in") return "Sign in needed";
   return snapshot.message;
 }
 
 type SettingsHeaderTone = "ok" | "warn" | "error";
-const SETTINGS_PROVIDER_ORDER: Provider[] = ["claude", "codex", "codex-1"];
 
 function isProviderError(status: UsageStatus) {
   return status === "not_found" || status === "parser_failed" || status === "page_unavailable";
@@ -882,12 +1024,14 @@ function settingsActivityMessage(previous: Settings, next: Settings): string {
   if (previous.monitorIntervalSec !== next.monitorIntervalSec) return `Monitor update every ${next.monitorIntervalSec}s`;
   if (previous.colorsEnabled !== next.colorsEnabled) return `Colors turned ${next.colorsEnabled ? "on" : "off"}`;
 
-  const providerVisibility: [keyof Settings, string][] = [
-    ["showClaude", "Claude"], ["showCodex", "Codex 1"], ["showCodex1", "Codex 2"],
-  ];
-  for (const [key, label] of providerVisibility) {
-    if (previous[key] !== next[key]) return `${label} ${next[key] ? "shown" : "hidden"} on widget`;
+  for (const account of next.accounts) {
+    const before = previous.accounts.find((a) => a.id === account.id);
+    if (!before) return `${account.label} added`;
+    if (before.shown !== account.shown) return `${account.label} ${account.shown ? "shown" : "hidden"} on widget`;
+    if (before.url !== account.url) return `${account.label} URL updated`;
   }
+  const removed = previous.accounts.find((a) => !next.accounts.some((b) => b.id === a.id));
+  if (removed) return `${removed.label} removed`;
   const monitorVisibility: [keyof Settings, string][] = [
     ["showCpu", "CPU"], ["showRam", "RAM"], ["showGpu", "GPU"], ["showIgpu", "iGPU"],
     ["showCpuTemp", "CPU temperature"], ["showGpuTemp", "GPU temperature"],
@@ -895,9 +1039,6 @@ function settingsActivityMessage(previous: Settings, next: Settings): string {
   for (const [key, label] of monitorVisibility) {
     if (previous[key] !== next[key]) return `${label} monitor ${next[key] ? "shown" : "hidden"}`;
   }
-  if (previous.claudeUrl !== next.claudeUrl) return "Claude URL updated";
-  if (previous.codexUrl !== next.codexUrl) return "Codex 1 URL updated";
-  if (previous.codex1Url !== next.codex1Url) return "Codex 2 URL updated";
   if (previous.corner !== next.corner) return "Widget corner updated";
   if (previous.alwaysOnTop !== next.alwaysOnTop) return `Widget pin turned ${next.alwaysOnTop ? "on" : "off"}`;
   if (previous.providerColors !== next.providerColors || previous.monitorColors !== next.monitorColors || previous.colorScope !== next.colorScope || previous.baseOverrides !== next.baseOverrides) return "Colors updated";
@@ -999,19 +1140,19 @@ function tooltipLeftLabel(snapshot: UsageSnapshot) {
   return `${left}% left`;
 }
 
-function trayTooltipText(snapshots: Record<Provider, UsageSnapshot>) {
-  return [
-    `Claude: ${tooltipLeftLabel(snapshots.claude)}`,
-    `Codex 1: ${tooltipLeftLabel(snapshots.codex)}`,
-    `Codex 2: ${tooltipLeftLabel(snapshots["codex-1"])}`,
-  ].join("\n");
+function trayTooltipText(snapshots: Record<Provider, UsageSnapshot>, accounts: Account[]) {
+  const shownAccounts = accounts.filter((account) => account.shown);
+  if (!shownAccounts.length) return "UsageView — no shown accounts";
+  return shownAccounts
+    .map((account) => `${account.label}: ${tooltipLeftLabel(snapshots[account.id] ?? emptySnapshot(account.id))}`)
+    .join("\n");
 }
 
 const LIMITED_RESET_REFRESH_LEAD_MS = 2 * 60 * 1000;
 const LIMITED_FALLBACK_REFRESH_MS = 10 * 60 * 1000;
 
 function limitedThreshold(provider: Provider) {
-  return provider === "claude" ? 99 : 100;
+  return providerKind(provider) === "claude" ? 99 : 100;
 }
 
 function isProviderLimited(provider: Provider, snapshot: UsageSnapshot) {
@@ -1028,10 +1169,11 @@ function shouldAutoRefreshProvider(provider: Provider, snapshot: UsageSnapshot, 
 }
 
 function providerForLabel(label: string): Provider | null {
-  if (label === "provider_claude") return "claude";
-  if (label === "provider_codex") return "codex";
-  if (label === "provider_codex_1") return "codex-1";
-  return null;
+  // Mirror of provider_label in lib.rs: labels are `provider_<id with - turned into _>`. Account ids
+  // only ever use [a-z0-9-] (never _), so turning _ back into - recovers the id exactly.
+  if (!label.startsWith("provider_")) return null;
+  const id = label.slice("provider_".length).replace(/_/g, "-");
+  return /^[a-z0-9-]+$/.test(id) ? id : null;
 }
 
 function decodeSnapshot(provider: Provider, encoded: string): UsageSnapshot {
@@ -1052,7 +1194,7 @@ function decodeSnapshot(provider: Provider, encoded: string): UsageSnapshot {
 async function openProvider(provider: Provider, settings: Settings) {
   const url = providerUrl(provider, settings);
   localStorage.setItem(`usageview.providerTarget.${provider}`, url);
-  await invoke("open_provider_window", { provider, url });
+  await invoke("open_provider_window", { provider, url, displayLabel: providerLabel(provider) });
 }
 
 async function closeProvider(provider: Provider) {
@@ -1068,7 +1210,7 @@ function wait(ms: number) {
 }
 
 async function logoutProvider(provider: Provider, url: string) {
-  await invoke("logout_provider", { provider, url });
+  await invoke("logout_provider", { provider, url, displayLabel: providerLabel(provider) });
 }
 
 // Open in Chrome; fall back to the OS default browser if Chrome isn't installed. Used by the provider
@@ -1085,7 +1227,7 @@ async function openInChrome(url: string): Promise<"chrome" | "default"> {
 
 // One-off: discover the JSON usage endpoint the provider page calls, returned pretty-printed.
 async function discoverProviderApi(provider: Provider, url: string): Promise<string> {
-  const encoded = await invoke<string>("discover_provider_api", { provider, url });
+  const encoded = await invoke<string>("discover_provider_api", { provider, kind: providerKind(provider), url, displayLabel: providerLabel(provider) });
   try {
     return JSON.stringify(JSON.parse(decodeURIComponent(encoded)), null, 2);
   } catch {
@@ -1097,7 +1239,7 @@ type SnapshotCommitGuard = (snapshot: UsageSnapshot) => boolean;
 
 async function extractProvider(provider: Provider, url: string, shouldCommit: SnapshotCommitGuard = () => true): Promise<UsageSnapshot> {
   try {
-    const encoded = await invoke<string>("extract_provider", { provider, url });
+    const encoded = await invoke<string>("extract_provider", { provider, kind: providerKind(provider), url, displayLabel: providerLabel(provider) });
     const snapshot = retainLastGoodClaude(decodeSnapshot(provider, encoded));
     if (shouldCommit(snapshot)) saveSnapshot(snapshot);
     return snapshot;
@@ -1125,7 +1267,7 @@ async function refreshProviderFromUrl(provider: Provider, url: string, backgroun
   if (background) return extractProvider(provider, url, shouldCommit);
   try {
     await refreshProviderPage(provider, url, background);
-    await wait(provider === "claude" ? 2600 : 900);
+    await wait(providerKind(provider) === "claude" ? 2600 : 900);
   } catch {
     // If navigation fails, still try the extractor so the UI gets a useful error snapshot.
   }
@@ -1248,13 +1390,15 @@ function DetachedTileApp({ tileId }: { tileId: TileId }) {
 
   const provider = providerFromTile(tileId);
   const monitor = monitorFromTile(tileId);
+  const accent = provider ? providerAccent(provider, settings) : undefined;
   const snapshot = provider ? runtime.snapshot ?? emptySnapshot(provider) : null;
   const reading = monitor ? runtime.monitorReading ?? emptyReading(monitor) : null;
   const content = provider
     ? timer
-      ? <TimerView snapshot={snapshot!} onBack={() => setTimer(false)} paused={runtime.paused} />
+      ? <TimerView snapshot={snapshot!} accent={accent} onBack={() => setTimer(false)} paused={runtime.paused} />
       : <UsageBlock
           snapshot={snapshot!}
+          accent={accent}
           flash={runtime.flash}
           paused={runtime.paused}
           updatedAgo={formatAgo(runtime.freshAt)}
@@ -1281,7 +1425,7 @@ function DetachedTileApp({ tileId }: { tileId: TileId }) {
       }}
       onContextMenu={(event) => {
         event.preventDefault();
-        void invoke("show_detached_tile_context_menu", { tileId, x: event.clientX, y: event.clientY }).catch(() => undefined);
+        void invoke("show_detached_tile_context_menu", { tileId, displayLabel: tileDisplayLabel(tileId), x: event.clientX, y: event.clientY }).catch(() => undefined);
       }}
     >
       {content}
@@ -1411,18 +1555,18 @@ function OverlayScrollbar({ targetRef }: { targetRef: React.RefObject<HTMLElemen
 // localStorage and update when the widget saves a fresh read. Tester + Refresh route through the bus.
 function SettingsWindowApp() {
   const [settings, setSettings] = useState(loadSettings);
+  const settingsRef = useRef(settings);
+  useEffect(() => { syncAccountRegistry(settings.accounts); }, [settings.accounts]);
+  useEffect(() => { settingsRef.current = settings; }, [settings]);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
-  const [snapshots, setSnapshots] = useState<Record<Provider, UsageSnapshot>>({
-    claude: loadSnapshot("claude"),
-    codex: loadSnapshot("codex"),
-    "codex-1": loadSnapshot("codex-1"),
-  });
+  const [snapshots, setSnapshots] = useState<Record<Provider, UsageSnapshot>>(() => snapshotsForAccounts(loadSettings().accounts));
   const [discovery, setDiscovery] = useState<Partial<Record<Provider, string>>>({});
   const [busy, setBusy] = useState<Provider | `${Provider}-open` | `${Provider}-close` | `${Provider}-reload` | `${Provider}-logout` | `${Provider}-discover` | null>(null);
   const [activity, setActivity] = useState("Settings ready");
   const [commandErrors, setCommandErrors] = useState<Partial<Record<Provider, string>>>({});
   const [providerLifecycles, setProviderLifecycles] = useState<Partial<Record<Provider, ProviderLifecycle>>>({});
-  const [generalError, setGeneralError] = useState<string | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [pendingRemove, setPendingRemove] = useState<Account | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const refreshNonceRef = useRef<Partial<Record<Provider, string>>>({});
 
@@ -1431,11 +1575,12 @@ function SettingsWindowApp() {
       setSettings(loadSettings());
     }
     function reloadSnapshots() {
-      const nextSnapshots = { claude: loadSnapshot("claude"), codex: loadSnapshot("codex"), "codex-1": loadSnapshot("codex-1") };
+      const accounts = loadSettings().accounts;
+      const nextSnapshots = snapshotsForAccounts(accounts);
       setSnapshots(nextSnapshots);
       setCommandErrors((current) => {
         const next = { ...current };
-        for (const provider of SETTINGS_PROVIDER_ORDER) if (nextSnapshots[provider].status === "ok") delete next[provider];
+        for (const account of accounts) if (snapshotOf(nextSnapshots, account.id).status === "ok") delete next[account.id];
         return next;
       });
     }
@@ -1479,6 +1624,7 @@ function SettingsWindowApp() {
     let unlisten: (() => void) | undefined;
     void listen<ProviderLifecycle>(PROVIDER_LIFECYCLE_EVENT, ({ payload }) => {
       if (!payload?.provider) return;
+      if (!settingsRef.current.accounts.some((account) => account.id === payload.provider) && !payload.message?.endsWith(" removed")) return;
       setProviderLifecycles((current) => ({ ...current, [payload.provider]: payload }));
       // Settled phases must overwrite the activity line too, or it keeps announcing "Starting
       // Claude..." long after Claude went live.
@@ -1495,9 +1641,85 @@ function SettingsWindowApp() {
 
   function handleChange(next: Settings) {
     setActivity(settingsActivityMessage(settings, next));
+    settingsRef.current = next;
     setSettings(next);
     saveSettings(next);
     setSavedAt(new Date());
+  }
+
+  function addAccount(kind: AccountKind, label: string) {
+    const id = makeAccountId(kind, settings.accounts);
+    const account: Account = {
+      id,
+      kind,
+      label: normalizeAccountLabel(kind, label),
+      url: ACCOUNT_DEFAULT_URL[kind],
+      shown: true,
+    };
+    const next: Settings = { ...settings, aiUsageEnabled: true, accounts: [...settings.accounts, account] };
+    syncAccountRegistry(next.accounts);
+    handleChange(next);
+    // Show the login window straight away so the user can sign this account in.
+    setBusy(`${id}-open`);
+    setActivity(`Opening ${account.label} login`);
+    void openProvider(id, next)
+      .then(() => providerSucceeded(id, `${account.label} login window opened`))
+      .catch((error) => providerFailed(id, `${account.label} open failed: ${String(error)}`))
+      .finally(() => setBusy(null));
+  }
+
+  // Called after the in-app confirm modal, so no native confirm() here.
+  async function removeAccount(account: Account) {
+    const id = account.id;
+    setPendingRemove(null);
+    setBusy(`${id}-close`);
+    setActivity(`Removing ${account.label}`);
+    localStorage.setItem(providerRemovingKey(id), String(Date.now()));
+    try {
+      await invoke("remove_provider_account", { provider: id });
+    } catch (error) {
+      providerFailed(id, `${account.label} remove failed: ${String(error)}`);
+      localStorage.removeItem(providerRemovingKey(id));
+      setBusy(null);
+      return;
+    }
+    const currentSettings = settingsRef.current;
+    const providerColors = { ...currentSettings.providerColors };
+    delete providerColors[id];
+    const next: Settings = { ...currentSettings, accounts: currentSettings.accounts.filter((a) => a.id !== id), providerColors };
+    syncAccountRegistry(next.accounts);
+    handleChange(next);
+    localStorage.removeItem(`usageview.snapshot.${id}`);
+    localStorage.removeItem(`usageview.providerTarget.${id}`);
+    setSnapshots((current) => {
+      const updated = { ...current };
+      delete updated[id];
+      return updated;
+    });
+    setCommandErrors((current) => { const c = { ...current }; delete c[id]; return c; });
+    setDiscovery((current) => { const c = { ...current }; delete c[id]; return c; });
+    setProviderLifecycles((current) => { const c = { ...current }; delete c[id]; return c; });
+    delete refreshNonceRef.current[id];
+    setActivity(`${account.label} removed`);
+    // Distinct "removed" toast on the widget (Hide already shows "stopped"). Emit after settings
+    // are committed; Rust's removal tombstone already prevents any stale lifecycle retry recreating it.
+    void emitTo("widget", PROVIDER_REMOVED_EVENT, { id, label: account.label }).catch(() => undefined);
+    // Keep the short-lived marker through the cross-WebView settings event. It expires automatically
+    // after two minutes, while any refresh that was already in flight has finished.
+    setBusy(null);
+  }
+
+  function renameAccount(id: Provider, label: string) {
+    const account = settings.accounts.find((candidate) => candidate.id === id);
+    if (!account || !label.trim()) return;
+    const normalized = normalizeAccountLabel(account.kind, label);
+    const next: Settings = { ...settings, accounts: settings.accounts.map((a) => (a.id === id ? { ...a, label: normalized } : a)) };
+    syncAccountRegistry(next.accounts);
+    handleChange(next);
+    // The usage-block label comes from the registry inside a memoised component, so hand it fresh
+    // snapshot refs to force a re-render with the new name (the widget already refreshes via storage).
+    setSnapshots((current) => Object.fromEntries(Object.entries(current).map(([key, snap]) => [key, key === id ? { ...snap } : snap])));
+    void invoke("set_provider_window_title", { provider: id, displayLabel: normalized }).catch(() => undefined);
   }
 
   function providerSucceeded(provider: Provider, text: string) {
@@ -1566,42 +1788,25 @@ function SettingsWindowApp() {
     }
   }
 
-  async function resetWidgetPosition() {
-    try {
-      await invoke("reset_window_geometry");
-      postAppCommand({ nonce: newNonce(), type: "reset-window" });
-      setGeneralError(null);
-      setActivity("Widget position reset");
-    } catch (error) {
-      setGeneralError(`Reset position failed: ${String(error)}`);
-    }
-  }
-
-  const providerPercents: Partial<Record<Provider, number>> = {
-    claude: snapshotPercent(snapshots.claude),
-    codex: snapshotPercent(snapshots.codex),
-    "codex-1": snapshotPercent(snapshots["codex-1"]),
-  };
-  const providerFields: [Provider, keyof Settings, keyof Settings][] = [
-    ["claude", "claudeUrl", "showClaude"],
-    ["codex", "codexUrl", "showCodex"],
-    ["codex-1", "codex1Url", "showCodex1"],
-  ];
-  const activeProviders = SETTINGS_PROVIDER_ORDER.filter((provider) => providerEnabled(provider, settings));
-  const commandErrorProviders = settings.aiUsageEnabled ? SETTINGS_PROVIDER_ORDER.filter((provider) => commandErrors[provider]) : [];
+  const providerOrder = settings.accounts.map((account) => account.id);
+  const providerPercents: Partial<Record<Provider, number>> = Object.fromEntries(
+    settings.accounts.map((account) => [account.id, snapshotPercent(snapshotOf(snapshots, account.id))]),
+  );
+  const activeProviders = providerOrder.filter((provider) => providerEnabled(provider, settings));
+  const commandErrorProviders = settings.aiUsageEnabled ? providerOrder.filter((provider) => commandErrors[provider]) : [];
   const snapshotErrorProviders = activeProviders.filter((provider) =>
     !lifecycleIsTransitioning(providerLifecycles[provider])
-    && isProviderError(snapshots[provider].status)
+    && isProviderError(snapshotOf(snapshots, provider).status)
     && !commandErrors[provider],
   );
   const errorProviders = [...commandErrorProviders, ...snapshotErrorProviders];
-  const errorCount = errorProviders.length + (generalError ? 1 : 0);
+  const errorCount = errorProviders.length;
   const firstErrorProvider = errorProviders[0];
-  const firstError = generalError ?? (firstErrorProvider
-    ? commandErrors[firstErrorProvider] ?? `${providerLabel(firstErrorProvider)}: ${providerMessage(snapshots[firstErrorProvider])}`
-    : null);
-  const hasProviderWarning = activeProviders.some((provider) => snapshots[provider].status !== "ok");
-  const lifecycleActivity = SETTINGS_PROVIDER_ORDER
+  const firstError = firstErrorProvider
+    ? commandErrors[firstErrorProvider] ?? `${providerLabel(firstErrorProvider)}: ${providerMessage(snapshotOf(snapshots, firstErrorProvider))}`
+    : null;
+  const hasProviderWarning = activeProviders.some((provider) => snapshotOf(snapshots, provider).status !== "ok");
+  const lifecycleActivity = providerOrder
     .map((provider) => providerLifecycles[provider])
     .find((lifecycle) => lifecycle && lifecycle.phase !== "ready" && lifecycle.phase !== "stopped");
   const lifecycleError = lifecycleActivity?.phase === "error";
@@ -1615,46 +1820,68 @@ function SettingsWindowApp() {
     <main className={`control-shell ${themeClass(settings.theme)} ${panelScopeClasses(settings)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag}>
       <div ref={scrollRef} className="scale-shell">
         <header className="titlebar settings-titlebar">
-          <span className="settings-header-label">Settings</span>
+          <div className="settings-header-title"><strong>Widget settings</strong></div>
           <div className={`settings-header-status ${headerTone}`} title={headerMessage}>
             <span className="settings-health-dot" aria-hidden="true" />
             <span className="settings-header-message">{headerMessage}</span>
             <span className="settings-header-saved">{savedLabel}</span>
           </div>
-          <button className="window-control close settings-close" type="button" title="Close" aria-label="Close" onClick={() => void invoke("toggle_settings_window")}>x</button>
+          <button className="window-control close settings-close" type="button" title="Close" aria-label="Close" onClick={() => void invoke("toggle_settings_window")}><CloseIcon /></button>
         </header>
 
         <WidgetSettings
           settings={settings}
           onChange={handleChange}
-          accountPanels={providerFields.map(([provider, urlKey, showKey]) => (
-            <ProviderPanel
-              key={provider}
-              provider={provider}
-              url={settings[urlKey] as string}
-              snapshot={snapshots[provider]}
-              lifecycle={providerLifecycles[provider]}
-              busy={busy}
-              onOpen={() => void openInApp(provider)}
-              onReload={() => void reloadInApp(provider)}
-              onClose={() => void closeInApp(provider)}
-              onLogout={() => void logoutInApp(provider)}
-              onDiscover={() => void findApi(provider)}
-              discovery={discovery[provider]}
-              onExtract={() => void refresh(provider)}
-              onRetry={() => void emitTo("widget", PROVIDER_RETRY_EVENT, provider)}
-              onUrlChange={(url) => handleChange({ ...settings, [urlKey]: url })}
-              shownInWidget={settings[showKey] as boolean}
-              onToggleShown={() => handleChange({ ...settings, [showKey]: !(settings[showKey] as boolean) })}
-            />
-          ))}
+          accountPanels={
+            <>
+              {settings.accounts.map((account) => (
+                <ProviderPanel
+                  key={account.id}
+                  provider={account.id}
+                  accent={providerAccent(account.id, settings)}
+                  url={account.url}
+                  snapshot={snapshotOf(snapshots, account.id)}
+                  lifecycle={providerLifecycles[account.id]}
+                  busy={busy}
+                  onOpen={() => void openInApp(account.id)}
+                  onReload={() => void reloadInApp(account.id)}
+                  onClose={() => void closeInApp(account.id)}
+                  onLogout={() => void logoutInApp(account.id)}
+                  onDiscover={() => void findApi(account.id)}
+                  discovery={discovery[account.id]}
+                  onExtract={() => void refresh(account.id)}
+                  onRetry={() => void emitTo("widget", PROVIDER_RETRY_EVENT, account.id)}
+                  onUrlChange={(url) => handleChange({ ...settings, accounts: settings.accounts.map((a) => (a.id === account.id ? { ...a, url } : a)) })}
+                  shownInWidget={account.shown}
+                  onToggleShown={() => handleChange(setAccountShown(settings, account.id, !account.shown))}
+                  onRemove={() => setPendingRemove(account)}
+                  onRename={(label) => renameAccount(account.id, label)}
+                />
+              ))}
+              <button type="button" className="add-account-btn" onClick={() => setAddOpen(true)}>+ Add account</button>
+            </>
+          }
           onEffectPlay={(provider, from, to, driveBar) => postAppCommand({ nonce: newNonce(), type: "play", provider, from, to, driveBar })}
           onEffectRestore={() => postAppCommand({ nonce: newNonce(), type: "restore" })}
-          onResetWindow={() => void resetWidgetPosition()}
           providerPercents={providerPercents}
         />
       </div>
       <OverlayScrollbar targetRef={scrollRef} />
+      <Modal open={addOpen} onClose={() => setAddOpen(false)}>
+        <AddAccountForm onAdd={(kind, label) => { addAccount(kind, label); setAddOpen(false); }} onCancel={() => setAddOpen(false)} />
+      </Modal>
+      <Modal open={pendingRemove !== null} onClose={() => setPendingRemove(null)}>
+        {pendingRemove && (
+          <div className="modal-confirm">
+            <h2>Remove “{pendingRemove.label}”?</h2>
+            <p>This signs it out and deletes its saved login on this PC.</p>
+            <div className="daily-actions modal-actions">
+              <button type="button" onClick={() => setPendingRemove(null)}>Cancel</button>
+              <button type="button" className="account-remove" onClick={() => void removeAccount(pendingRemove)}>Remove</button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </main>
   );
 }
@@ -1696,24 +1923,23 @@ function WidgetApp() {
   // Don't persist auto-fit resize events until recoverVisibleWindow has applied the saved position,
   // otherwise startup work could overwrite it with the tauri.conf.json fallback corner.
   const hasRestoredGeometryRef = useRef(false);
-  const [snapshots, setSnapshots] = useState<Record<Provider, UsageSnapshot>>({
-    claude: loadSnapshot("claude"),
-    codex: loadSnapshot("codex"),
-    "codex-1": loadSnapshot("codex-1"),
-  });
+  const [snapshots, setSnapshots] = useState<Record<Provider, UsageSnapshot>>(() => snapshotsForAccounts(settings.accounts));
   const snapshotsRef = useRef(snapshots);
   const refreshInFlightRef = useRef<Partial<Record<Provider, { operation: Promise<UsageSnapshot>; generation: number }>>>({});
-  const [providerLifecycles, setProviderLifecycles] = useState<Record<Provider, ProviderLifecycle>>(() => ({
-    claude: { provider: "claude", phase: providerEnabled("claude", settings) ? "starting" : "stopped", generation: 0 },
-    codex: { provider: "codex", phase: providerEnabled("codex", settings) ? "starting" : "stopped", generation: 0 },
-    "codex-1": { provider: "codex-1", phase: providerEnabled("codex-1", settings) ? "starting" : "stopped", generation: 0 },
-  }));
+  const [providerLifecycles, setProviderLifecycles] = useState<Record<Provider, ProviderLifecycle>>(() =>
+    Object.fromEntries(settings.accounts.map((account) => [
+      account.id,
+      { provider: account.id, phase: providerEnabled(account.id, settings) ? "starting" : "stopped", generation: 0 } satisfies ProviderLifecycle,
+    ])),
+  );
   const providerLifecycleRef = useRef(providerLifecycles);
-  const providerGenerationRef = useRef<Record<Provider, number>>({ claude: 0, codex: 0, "codex-1": 0 });
+  const providerGenerationRef = useRef<Record<Provider, number>>(Object.fromEntries(settings.accounts.map((account) => [account.id, 0])));
   const providerDesiredRef = useRef<Partial<Record<Provider, boolean>>>({});
+  const knownAccountIdsRef = useRef(new Set(settings.accounts.map((account) => account.id)));
+  const removedAccountIdsRef = useRef(new Set<Provider>());
   const [providerNotices, setProviderNotices] = useState<Partial<Record<Provider, ProviderLifecycle>>>({});
   const providerNoticeTimersRef = useRef<Partial<Record<Provider, number>>>({});
-  const lastLimitedAutoRefreshRef = useRef<Record<Provider, number>>({ claude: 0, codex: 0, "codex-1": 0 });
+  const lastLimitedAutoRefreshRef = useRef<Record<Provider, number>>(Object.fromEntries(settings.accounts.map((account) => [account.id, 0])));
   const prevFlashTokenRef = useRef<Partial<Record<Provider, string>>>({});
   const prevEffectPercentRef = useRef<Partial<Record<Provider, number>>>({});
   const runtimeValidReadRef = useRef<Partial<Record<Provider, boolean>>>({});
@@ -1743,9 +1969,28 @@ function WidgetApp() {
     });
   }
 
+  // Keep the persisted order aligned with the dynamic account registry: append new account tiles and
+  // remove dead entries so a long Add/Remove session does not accumulate stale layout state.
+  useEffect(() => {
+    const validProviders = new Set(settings.accounts.map((account) => providerTileId(account.id)));
+    const current = tileLayoutRef.current;
+    const order = current.order.filter((tileId) => !providerFromTile(tileId) || validProviders.has(tileId));
+    const known = new Set(order);
+    for (const tileId of validProviders) {
+      if (!known.has(tileId)) order.push(tileId);
+    }
+    const detached = { ...current.detached };
+    const removedDetached = (Object.keys(detached) as TileId[]).filter((tileId) => Boolean(providerFromTile(tileId)) && !validProviders.has(tileId));
+    removedDetached.forEach((tileId) => delete detached[tileId]);
+    if (order.length !== current.order.length || order.some((tileId, index) => current.order[index] !== tileId) || removedDetached.length) {
+      commitTileLayout({ ...current, order, detached });
+      removedDetached.forEach((tileId) => { void invoke("close_detached_tile", { tileId }).catch(() => undefined); });
+    }
+  }, [settings.accounts]);
+
   function activateUsageEffects(effectPayloads: Partial<Record<Provider, UsageEffect>>) {
     if (!settingsRef.current.effectsEnabled) return;
-    const effectProviders = (["claude", "codex", "codex-1"] as Provider[]).filter((provider) => effectPayloads[provider]);
+    const effectProviders = Object.keys(effectPayloads) as Provider[];
     if (!effectProviders.length) return;
 
     for (const provider of effectProviders) {
@@ -1786,7 +2031,7 @@ function WidgetApp() {
     const f = clampP(from);
     const t = clampP(to);
     if (driveBar) {
-      const base = snapshotsRef.current[provider];
+      const base = snapshotOf(snapshotsRef.current, provider);
       const synthetic: UsageSnapshot = { ...base, provider, status: "ok", percentUsed: t, updatedAt: base.updatedAt };
       // Neutralize the auto-trigger for this synthetic write so our from->to wins (no double-fire).
       prevFlashTokenRef.current[provider] = flashToken(synthetic);
@@ -1803,11 +2048,15 @@ function WidgetApp() {
     }
     effectTimersRef.current = {};
     setActiveEffects({});
-    const providers = (["claude", "codex", "codex-1"] as Provider[]).filter((p) =>
+    const providers = accountIdsFrom(settingsRef.current).filter((p) =>
       providerEnabled(p, settingsRef.current) && lifecycleShowsTile(providerLifecycleRef.current[p]),
     );
     const results = await Promise.all(providers.map((p) => guardedRefresh(p, providerUrl(p, settingsRef.current), true)));
-    setSnapshots((current) => results.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), current));
+    const currentResults = results.filter((snapshot) =>
+      settingsRef.current.accounts.some((account) => account.id === snapshot.provider)
+      && !providerRemovalPending(snapshot.provider),
+    );
+    setSnapshots((current) => currentResults.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), current));
   }
 
   async function resetWindowPosition() {
@@ -1836,7 +2085,24 @@ function WidgetApp() {
     settingsRef.current = settings;
   }, [settings]);
 
+  // Keep the display registry and the snapshot map in step with the account list: a rename must show
+  // immediately, and a freshly added account needs a snapshot entry before its tile renders.
+  useEffect(() => {
+    const nextIds = new Set(settings.accounts.map((account) => account.id));
+    for (const provider of knownAccountIdsRef.current) {
+      if (!nextIds.has(provider)) invalidateRemovedProvider(provider);
+    }
+    knownAccountIdsRef.current = nextIds;
+    syncAccountRegistry(settings.accounts);
+    setSnapshots((current) => {
+      const next: Record<Provider, UsageSnapshot> = {};
+      for (const account of settings.accounts) next[account.id] = current[account.id] ?? loadSnapshot(account.id);
+      return next;
+    });
+  }, [settings.accounts]);
+
   function publishProviderLifecycle(next: ProviderLifecycle) {
+    if (removedAccountIdsRef.current.has(next.provider) && next.phase !== "stopped") return;
     providerLifecycleRef.current = { ...providerLifecycleRef.current, [next.provider]: next };
     setProviderLifecycles(providerLifecycleRef.current);
     setProviderNotices((current) => ({ ...current, [next.provider]: next }));
@@ -1849,10 +2115,40 @@ function WidgetApp() {
           delete updated[next.provider];
           return updated;
         });
+        if (removedAccountIdsRef.current.has(next.provider)) {
+          const lifecycles = { ...providerLifecycleRef.current };
+          delete lifecycles[next.provider];
+          providerLifecycleRef.current = lifecycles;
+          setProviderLifecycles(lifecycles);
+        }
         delete providerNoticeTimersRef.current[next.provider];
       }, 1800);
     }
     void emitTo("settings", PROVIDER_LIFECYCLE_EVENT, next).catch(() => undefined);
+  }
+
+  function invalidateRemovedProvider(provider: Provider): number {
+    if (removedAccountIdsRef.current.has(provider)) return providerGenerationRef.current[provider] ?? 0;
+    removedAccountIdsRef.current.add(provider);
+    providerDesiredRef.current[provider] = false;
+    const generation = (providerGenerationRef.current[provider] ?? 0) + 1;
+    providerGenerationRef.current[provider] = generation;
+
+    for (const timers of [flashTimersRef, effectTimersRef, providerNoticeTimersRef]) {
+      const timer = timers.current[provider];
+      if (timer !== undefined) window.clearTimeout(timer);
+      delete timers.current[provider];
+    }
+    setTimerSet((current) => { const next = new Set(current); next.delete(provider); return next; });
+    setFlashSet((current) => { const next = new Set(current); next.delete(provider); return next; });
+    setActiveEffects((current) => { const next = { ...current }; delete next[provider]; return next; });
+    setProviderNotices((current) => { const next = { ...current }; delete next[provider]; return next; });
+    setBusy((current) => current === provider ? null : current);
+
+    for (const values of [lastLimitedAutoRefreshRef, prevFlashTokenRef, prevEffectPercentRef, runtimeValidReadRef, lastFreshAtRef]) {
+      delete values.current[provider];
+    }
+    return generation;
   }
 
   const lifecycleCurrent = (provider: Provider, generation: number) =>
@@ -1981,17 +2277,16 @@ function WidgetApp() {
   }
 
   useEffect(() => {
-    const providers: Provider[] = ["claude", "codex", "codex-1"];
-    for (const provider of providers) {
+    for (const provider of accountIdsFrom(settings)) {
       const desired = providerEnabled(provider, settings);
       if (providerDesiredRef.current[provider] === desired) continue;
       providerDesiredRef.current[provider] = desired;
-      const generation = providerGenerationRef.current[provider] + 1;
+      const generation = (providerGenerationRef.current[provider] ?? 0) + 1;
       providerGenerationRef.current[provider] = generation;
       if (desired) void startProviderLifecycle(provider, generation);
       else void stopProviderLifecycle(provider, generation);
     }
-  }, [settings.aiUsageEnabled, settings.showClaude, settings.showCodex, settings.showCodex1]);
+  }, [settings.aiUsageEnabled, settings.accounts]);
 
   useEffect(() => {
     let disposed = false;
@@ -1999,9 +2294,14 @@ function WidgetApp() {
     const keep = (dispose: () => void) => { if (disposed) dispose(); else disposers.push(dispose); };
     void listen<string>(PROVIDER_RELEASED_EVENT, ({ payload: label }) => {
       const provider = providerForLabel(label);
-      if (!provider || providerDesiredRef.current[provider] !== false) return;
+      if (!provider || removedAccountIdsRef.current.has(provider) || providerDesiredRef.current[provider] !== false) return;
       const generation = providerGenerationRef.current[provider];
       publishProviderLifecycle({ provider, phase: "stopped", generation, message: `${providerLabel(provider)} stopped` });
+    }).then(keep);
+    void listen<{ id: string; label: string }>(PROVIDER_REMOVED_EVENT, ({ payload }) => {
+      if (!payload?.id) return;
+      const generation = invalidateRemovedProvider(payload.id);
+      publishProviderLifecycle({ provider: payload.id, phase: "stopped", generation, message: `${payload.label} removed` });
     }).then(keep);
     void listen(PROVIDER_LIFECYCLE_REQUEST_EVENT, () => {
       for (const lifecycle of Object.values(providerLifecycleRef.current)) {
@@ -2009,8 +2309,8 @@ function WidgetApp() {
       }
     }).then(keep);
     void listen<Provider>(PROVIDER_RETRY_EVENT, ({ payload: provider }) => {
-      if (!provider || providerDesiredRef.current[provider] !== true) return;
-      const generation = providerGenerationRef.current[provider] + 1;
+      if (!provider || !settingsRef.current.accounts.some((account) => account.id === provider) || providerDesiredRef.current[provider] !== true) return;
+      const generation = (providerGenerationRef.current[provider] ?? 0) + 1;
       providerGenerationRef.current[provider] = generation;
       void startProviderLifecycle(provider, generation);
     }).then(keep);
@@ -2018,13 +2318,12 @@ function WidgetApp() {
   }, []);
 
   useEffect(() => {
-    // Provider windows are pre-declared and hidden at startup, so put their renderers in WebView2's
-    // low-memory target without touching the extraction or refresh pipeline. Opening a provider
-    // switches it back to normal in Rust; a short delay lets the configured WebViews initialise.
+    // Provider windows are created on demand and already start on WebView2's low-memory target
+    // (get_or_create_provider_window sets it), so only the Settings renderer needs nudging here.
     const id = window.setTimeout(() => {
-      for (const label of ["provider_claude", "provider_codex", "provider_codex_1", "settings"]) {
-        void invoke("set_webview_memory_target_command", { label, low: true }).catch(() => undefined);
-      }
+      void invoke("set_webview_memory_target_command", { label: "settings", low: true }).catch(() => undefined);
+      // Sweep profiles left behind by an account whose delete-time cleanup lost the WebView2 lock race.
+      void invoke("prune_provider_profiles", { keep: accountIdsFrom(settingsRef.current) }).catch(() => undefined);
     }, 1200);
     return () => window.clearTimeout(id);
   }, []);
@@ -2236,8 +2535,8 @@ function WidgetApp() {
   }, [snapshots]);
 
   useEffect(() => {
-    void invoke("update_tray_tooltip", { text: trayTooltipText(snapshots) }).catch(() => undefined);
-  }, [snapshots]);
+    void invoke("update_tray_tooltip", { text: trayTooltipText(snapshots, settings.accounts) }).catch(() => undefined);
+  }, [snapshots, settings.accounts]);
 
   useEffect(() => {
     return () => {
@@ -2278,8 +2577,8 @@ function WidgetApp() {
 
   useEffect(() => {
     const effectPayloads: Partial<Record<Provider, UsageEffect>> = {};
-    for (const provider of ["claude", "codex", "codex-1"] as Provider[]) {
-      const percent = snapshotPercent(snapshotsRef.current[provider]);
+    for (const provider of accountIdsFrom(settingsRef.current)) {
+      const percent = snapshotPercent(snapshotOf(snapshotsRef.current, provider));
       if (typeof percent !== "number") continue;
       prevEffectPercentRef.current[provider] = percent;
       runtimeValidReadRef.current[provider] = true;
@@ -2293,8 +2592,9 @@ function WidgetApp() {
   // Retained Claude snapshots bump updatedAt but have an empty flashToken, so this stays put and
   // "updated ago" reflects real freshness instead of the retain time.
   useEffect(() => {
-    for (const p of ["claude", "codex", "codex-1"] as Provider[]) {
-      if (flashToken(snapshots[p])) lastFreshAtRef.current[p] = snapshots[p].updatedAt;
+    for (const p of accountIdsFrom(settingsRef.current)) {
+      const snap = snapshotOf(snapshots, p);
+      if (flashToken(snap)) lastFreshAtRef.current[p] = snap.updatedAt;
     }
   }, [snapshots]);
 
@@ -2308,8 +2608,11 @@ function WidgetApp() {
 
   useEffect(() => {
     function reloadLocal() {
-      setSettings(loadSettings());
-      setSnapshots({ claude: loadSnapshot("claude"), codex: loadSnapshot("codex"), "codex-1": loadSnapshot("codex-1") });
+      const next = loadSettings();
+      setSettings(next);
+      // Rebuild from the live account list — the old fixed-three reset wiped every added account's
+      // snapshot on any settings/storage change, which is why new tiles flickered/blanked.
+      setSnapshots(snapshotsForAccounts(next.accounts));
       setLastUpdated(new Date());
     }
     window.addEventListener("storage", reloadLocal);
@@ -2325,15 +2628,15 @@ function WidgetApp() {
     async function refreshOpenProviders(force = false) {
       const now = Date.now();
       const currentSnapshots = snapshotsRef.current;
-      const providers: Provider[] = (["claude", "codex", "codex-1"] as Provider[])
+      const providers: Provider[] = accountIdsFrom(settings)
         .filter((provider) => providerEnabled(provider, settings) && lifecycleShowsTile(providerLifecycleRef.current[provider]))
         .filter((provider) =>
-        force || shouldAutoRefreshProvider(provider, currentSnapshots[provider], now, lastLimitedAutoRefreshRef.current)
+        force || shouldAutoRefreshProvider(provider, snapshotOf(currentSnapshots, provider), now, lastLimitedAutoRefreshRef.current)
       );
       if (!providers.length) return;
 
       for (const provider of providers) {
-        if (isProviderLimited(provider, currentSnapshots[provider]) && parseResetMs(currentSnapshots[provider].resetLabel) === null) {
+        if (isProviderLimited(provider, snapshotOf(currentSnapshots, provider)) && parseResetMs(snapshotOf(currentSnapshots, provider).resetLabel) === null) {
           lastLimitedAutoRefreshRef.current[provider] = now;
         }
       }
@@ -2342,7 +2645,11 @@ function WidgetApp() {
         providers.map((provider) => guardedRefresh(provider, providerUrl(provider, settings), true)),
       );
       if (!cancelled) {
-        setSnapshots((current) => results.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), current));
+        const currentResults = results.filter((snapshot) =>
+          settingsRef.current.accounts.some((account) => account.id === snapshot.provider)
+          && !providerRemovalPending(snapshot.provider),
+        );
+        setSnapshots((current) => currentResults.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), current));
         setLastUpdated(new Date());
       }
     }
@@ -2353,11 +2660,11 @@ function WidgetApp() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [settings.aiUsageEnabled, settings.showClaude, settings.showCodex, settings.showCodex1, settings.refreshIntervalSec, settings.claudeUrl, settings.codexUrl, settings.codex1Url]);
+  }, [settings.aiUsageEnabled, settings.accounts, settings.refreshIntervalSec]);
 
   const shown = useMemo(() => {
-    return (["claude", "codex", "codex-1"] as Provider[]).filter((provider) => providerEnabled(provider, settings));
-  }, [settings.aiUsageEnabled, settings.showClaude, settings.showCodex, settings.showCodex1]);
+    return accountIdsFrom(settings).filter((provider) => providerEnabled(provider, settings));
+  }, [settings.aiUsageEnabled, settings.accounts]);
   const providerLifecyclePending = shown.some((provider) => !lifecycleShowsTile(providerLifecycles[provider]));
 
   const shownMonitors = useMemo(
@@ -2418,7 +2725,8 @@ function WidgetApp() {
     () => [
       settings.alwaysOnTop ? "1" : "0",
       settings.uiScale,
-      ...ALL_TILE_IDS.map((tileId) => `${runtimeTileActive(tileId, settings) ? "1" : "0"}${tileConfigured(tileId, settings) ? "1" : "0"}`),
+      ...settings.accounts.map((account) => `${account.id}:${account.label}`),
+      ...allTileIds(settings).map((tileId) => `${runtimeTileActive(tileId, settings) ? "1" : "0"}${tileConfigured(tileId, settings) ? "1" : "0"}`),
     ].join("|"),
     [settings, providerLifecycles],
   );
@@ -2442,7 +2750,7 @@ function WidgetApp() {
         continue;
       }
       void normalizeDetachedTilePosition(savedPosition, settings.uiScale).then((position) =>
-        invoke("open_detached_tile", { tileId, position, pinned: settings.alwaysOnTop, scale: settings.uiScale }),
+        invoke("open_detached_tile", { tileId, displayLabel: tileDisplayLabel(tileId), position, pinned: settings.alwaysOnTop, scale: settings.uiScale }),
       ).catch(() => undefined);
     }
     void invoke("set_detached_tiles_pinned", { pinned: settings.alwaysOnTop }).catch(() => undefined);
@@ -2458,10 +2766,10 @@ function WidgetApp() {
       const monitor = monitorFromTile(tileId);
       const state: DetachedRuntimeState = provider
         ? {
-            snapshot: snapshots[provider],
+            snapshot: snapshotOf(snapshots, provider),
             activeEffect: settings.effectsEnabled ? activeEffects[provider] : undefined,
             flash: flashSet.has(provider),
-            paused: !shouldAutoRefreshProvider(provider, snapshots[provider], now, lastLimitedAutoRefreshRef.current),
+            paused: !shouldAutoRefreshProvider(provider, snapshotOf(snapshots, provider), now, lastLimitedAutoRefreshRef.current),
             freshAt: lastFreshAtRef.current[provider],
           }
         : {
@@ -2553,15 +2861,20 @@ function WidgetApp() {
     url: string,
     background: boolean,
     shouldCommit?: SnapshotCommitGuard,
-    generation = providerGenerationRef.current[provider],
+    generation = providerGenerationRef.current[provider] ?? 0,
   ): Promise<UsageSnapshot> {
     const existing = refreshInFlightRef.current[provider];
     if (existing) {
       if (existing.generation === generation) return existing.operation;
       await existing.operation.catch(() => undefined);
-      if (providerGenerationRef.current[provider] !== generation) return snapshotsRef.current[provider];
+      if (providerGenerationRef.current[provider] !== generation) return snapshotOf(snapshotsRef.current, provider);
     }
-    const entry = { operation: refreshProviderFromUrl(provider, url, background, shouldCommit), generation };
+    const commit = (snapshot: UsageSnapshot) =>
+      settingsRef.current.accounts.some((account) => account.id === provider)
+      && !providerRemovalPending(provider)
+      && providerGenerationRef.current[provider] === generation
+      && (shouldCommit ? shouldCommit(snapshot) : true);
+    const entry = { operation: refreshProviderFromUrl(provider, url, background, commit), generation };
     refreshInFlightRef.current[provider] = entry;
     const release = () => { if (refreshInFlightRef.current[provider] === entry) delete refreshInFlightRef.current[provider]; };
     void entry.operation.then(release, release);
@@ -2578,13 +2891,14 @@ function WidgetApp() {
   }
 
 async function refresh(provider: Provider, requestNonce: string) {
+    if (!settingsRef.current.accounts.some((account) => account.id === provider) || providerRemovalPending(provider)) return;
     // The widget owns the lifecycle, so it — not the Settings button's disabled state — is what
     // decides a manual read is safe. Settings can miss the transition (its window may have opened
     // after the phase event), and a manual read started mid-STARTING carries no commit guard: the
     // lifecycle's own retry would then adopt that promise and write `page_unavailable` over a
     // healthy snapshot. Answer with what we already have and let the lifecycle finish.
     if (lifecycleIsTransitioning(providerLifecycleRef.current[provider])) {
-      const current = snapshotsRef.current[provider];
+      const current = snapshotOf(snapshotsRef.current, provider);
       await emitTo("settings", "usageview-refresh-result", {
         nonce: requestNonce,
         provider,
@@ -2593,9 +2907,10 @@ async function refresh(provider: Provider, requestNonce: string) {
       } satisfies RefreshResult).catch(() => undefined);
       return;
     }
-    setBusy(provider);
+      setBusy(provider);
     try {
       const snapshot = await guardedRefresh(provider, providerUrl(provider, settingsRef.current), false);
+      if (!settingsRef.current.accounts.some((account) => account.id === provider) || providerRemovalPending(provider)) return;
       triggerManualReplay(provider, snapshot);
       setSnapshots((currentSnapshots) => ({ ...currentSnapshots, [provider]: snapshot }));
       setLastUpdated(new Date());
@@ -2622,8 +2937,8 @@ async function refresh(provider: Provider, requestNonce: string) {
     setTimerSet((prev) => {
       const next = new Set(prev);
       let changed = false;
-      for (const p of ["claude", "codex", "codex-1"] as Provider[]) {
-        if (isProviderLimited(p, snapshots[p]) && !next.has(p)) {
+      for (const p of accountIdsFrom(settingsRef.current)) {
+        if (isProviderLimited(p, snapshotOf(snapshots, p)) && !next.has(p)) {
           next.add(p);
           changed = true;
         }
@@ -2635,11 +2950,12 @@ async function refresh(provider: Provider, requestNonce: string) {
   useEffect(() => {
     const newly: Provider[] = [];
     const effectPayloads: Partial<Record<Provider, UsageEffect>> = {};
-    for (const p of ["claude", "codex", "codex-1"] as Provider[]) {
-      const token = flashToken(snapshots[p]);
+    for (const p of accountIdsFrom(settingsRef.current)) {
+      const snap = snapshotOf(snapshots, p);
+      const token = flashToken(snap);
       const previousToken = prevFlashTokenRef.current[p];
       const previousPercent = prevEffectPercentRef.current[p];
-      const nextPercent = snapshotPercent(snapshots[p]);
+      const nextPercent = snapshotPercent(snap);
       const hasRuntimeValidRead = runtimeValidReadRef.current[p] === true;
       prevFlashTokenRef.current[p] = token;
       if (previousToken !== undefined && token && token !== previousToken) {
@@ -2691,8 +3007,8 @@ async function refresh(provider: Provider, requestNonce: string) {
       next.has(provider) ? next.delete(provider) : next.add(provider);
       return next;
     });
-    return { claude: make("claude"), codex: make("codex"), "codex-1": make("codex-1") } as Record<Provider, () => void>;
-  }, []);
+    return Object.fromEntries(accountIdsFrom(settings).map((id) => [id, make(id)])) as Record<Provider, () => void>;
+  }, [settings.accounts]);
 
   // Execute commands posted by the detached Settings window (single engine owner lives here).
   useEffect(() => {
@@ -2703,7 +3019,7 @@ async function refresh(provider: Provider, requestNonce: string) {
       try { command = JSON.parse(event.newValue) as AppCommand; } catch { return; }
       if (!command?.nonce || command.nonce === lastCmdNonceRef.current) return;
       lastCmdNonceRef.current = command.nonce;
-      if (command.type === "play") playTestEffect(command.provider, command.from, command.to, command.driveBar);
+      if (command.type === "play" && settingsRef.current.accounts.some((account) => account.id === command.provider)) playTestEffect(command.provider, command.from, command.to, command.driveBar);
       else if (command.type === "restore") void restoreTestEffect();
       else if (command.type === "refresh") void refresh(command.provider, command.nonce);
       else if (command.type === "reset-window") void resetWindowPosition();
@@ -2711,6 +3027,7 @@ async function refresh(provider: Provider, requestNonce: string) {
     window.addEventListener("storage", onStorage);
     void listen<RefreshRequest>("usageview-refresh-request", ({ payload }) => {
       if (!payload?.nonce || payload.nonce === lastCmdNonceRef.current) return;
+      if (!settingsRef.current.accounts.some((account) => account.id === payload.provider)) return;
       lastCmdNonceRef.current = payload.nonce;
       void refresh(payload.provider, payload.nonce);
     }).then((dispose) => { unlistenRefresh = dispose; });
@@ -2721,7 +3038,7 @@ async function refresh(provider: Provider, requestNonce: string) {
   }, []);
 
   async function refreshAll() {
-    const providers = (["claude", "codex", "codex-1"] as Provider[]).filter((provider) =>
+    const providers = accountIdsFrom(settings).filter((provider) =>
       providerEnabled(provider, settings) && lifecycleShowsTile(providerLifecycleRef.current[provider]),
     );
     if (!providers.length) return;
@@ -2729,8 +3046,12 @@ async function refresh(provider: Provider, requestNonce: string) {
     const results = await Promise.all(
       providers.map((provider) => guardedRefresh(provider, providerUrl(provider, settings), false)),
     );
-    results.forEach((snapshot) => triggerManualReplay(snapshot.provider, snapshot));
-    setSnapshots((currentSnapshots) => results.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), currentSnapshots));
+    const currentResults = results.filter((snapshot) =>
+      settingsRef.current.accounts.some((account) => account.id === snapshot.provider)
+      && !providerRemovalPending(snapshot.provider),
+    );
+    currentResults.forEach((snapshot) => triggerManualReplay(snapshot.provider, snapshot));
+    setSnapshots((currentSnapshots) => currentResults.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), currentSnapshots));
     setLastUpdated(new Date());
     setBusy(null);
   }
@@ -2789,15 +3110,19 @@ async function refresh(provider: Provider, requestNonce: string) {
 
   const now = Date.now();
   const isPaused = (p: Provider) =>
-    !shouldAutoRefreshProvider(p, snapshots[p], now, lastLimitedAutoRefreshRef.current);
+    !shouldAutoRefreshProvider(p, snapshotOf(snapshots, p), now, lastLimitedAutoRefreshRef.current);
   const agoFor = (p: Provider) => formatAgo(lastFreshAtRef.current[p]);
 
   function renderFullTile(tileId: TileId) {
     const provider = providerFromTile(tileId);
     if (provider) {
+      // A just-added account's tile can render a frame before its snapshot entry lands, so read
+      // through snapshotOf (never a raw snapshots[id] that could be undefined).
+      const snap = snapshotOf(snapshots, provider);
+      const accent = providerAccent(provider, settings);
       return timerSet.has(provider)
-        ? <TimerView snapshot={snapshots[provider]} onBack={timerToggles[provider]} paused={isPaused(provider)} />
-        : <UsageBlock snapshot={snapshots[provider]} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} onFlip={timerToggles[provider]} />;
+        ? <TimerView snapshot={snap} accent={accent} onBack={timerToggles[provider]} paused={isPaused(provider)} />
+        : <UsageBlock snapshot={snap} accent={accent} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} onFlip={timerToggles[provider]} />;
     }
     const monitor = monitorFromTile(tileId);
     return monitor ? <MonitorBlock reading={monitorReadings[monitor]} tone={monitorTone(settings, monitorReadings[monitor])} /> : null;
@@ -2806,9 +3131,11 @@ async function refresh(provider: Provider, requestNonce: string) {
   function renderMiniTile(tileId: TileId) {
     const provider = providerFromTile(tileId);
     if (provider) {
+      const snap = snapshotOf(snapshots, provider);
+      const accent = providerAccent(provider, settings);
       return timerSet.has(provider)
-        ? <MiniTimerRow snapshot={snapshots[provider]} onBack={timerToggles[provider]} paused={isPaused(provider)} />
-        : <MiniUsageRow snapshot={snapshots[provider]} paused={isPaused(provider)} updatedAgo={agoFor(provider)} flash={flashSet.has(provider)} onFlip={timerToggles[provider]} />;
+        ? <MiniTimerRow snapshot={snap} accent={accent} onBack={timerToggles[provider]} paused={isPaused(provider)} />
+        : <MiniUsageRow snapshot={snap} accent={accent} paused={isPaused(provider)} updatedAgo={agoFor(provider)} flash={flashSet.has(provider)} onFlip={timerToggles[provider]} />;
     }
     const monitor = monitorFromTile(tileId);
     return monitor ? <MonitorMiniRow reading={monitorReadings[monitor]} tone={monitorTone(settings, monitorReadings[monitor])} /> : null;
@@ -2872,7 +3199,7 @@ async function refresh(provider: Provider, requestNonce: string) {
       saveTileLayout(tileLayoutRef.current);
       return;
     }
-    void invoke<WindowPosition>("open_detached_tile", { tileId: drag.tileId, position: null, pinned: settingsRef.current.alwaysOnTop, scale: settingsRef.current.uiScale })
+    void invoke<WindowPosition>("open_detached_tile", { tileId: drag.tileId, displayLabel: tileDisplayLabel(drag.tileId), position: null, pinned: settingsRef.current.alwaysOnTop, scale: settingsRef.current.uiScale })
       .then((position) => commitTileLayout((layout) => ({ ...layout, detached: { ...layout.detached, [drag.tileId]: position } })))
       .catch(() => saveTileLayout(tileLayoutRef.current));
   }
@@ -3005,6 +3332,48 @@ function MiniIcon() {
   );
 }
 
+function CloseIcon() {
+  return (
+    <svg className="close-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5 5l14 14M19 5 5 19" />
+    </svg>
+  );
+}
+
+function DisclosureChevron() {
+  return (
+    <svg className="disclosure-chevron" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9 6l6 6-6 6" />
+    </svg>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+    </svg>
+  );
+}
+
+// Shared in-app modal — inherits the window's theme (Pixel/Glass) so it never falls back to the raw
+// tauri.localhost confirm() box. Closes on backdrop click or Escape.
+function Modal({ open, onClose, children }: { open: boolean; onClose: () => void; children: ReactNode }) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+  if (!open) return null;
+  return (
+    <div className="app-modal" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <div className="app-modal-card mini-card" role="dialog" aria-modal="true">{children}</div>
+    </div>
+  );
+}
+
 function ProviderLoginApp({ provider }: { provider: Provider }) {
   const settings = loadSettings();
   const targetUrl = localStorage.getItem(`usageview.providerTarget.${provider}`) || providerUrl(provider, settings);
@@ -3052,6 +3421,7 @@ function ProviderLoginApp({ provider }: { provider: Provider }) {
 
 function ProviderPanel({
   provider,
+  accent,
   url,
   snapshot,
   lifecycle,
@@ -3067,8 +3437,11 @@ function ProviderPanel({
   onUrlChange,
   shownInWidget,
   onToggleShown,
+  onRemove,
+  onRename,
 }: {
   provider: Provider;
+  accent?: string;
   url: string;
   snapshot: UsageSnapshot;
   lifecycle?: ProviderLifecycle;
@@ -3084,7 +3457,17 @@ function ProviderPanel({
   onUrlChange: (url: string) => void;
   shownInWidget: boolean;
   onToggleShown: () => void;
+  onRemove: () => void;
+  onRename: (label: string) => void;
 }) {
+  const [editing, setEditing] = useState(false);
+  const [draftLabel, setDraftLabel] = useState("");
+  const cancelEditRef = useRef(false);
+  function beginEdit() { cancelEditRef.current = false; setDraftLabel(providerLabel(provider)); setEditing(true); }
+  function commitEdit() {
+    if (cancelEditRef.current) { cancelEditRef.current = false; return; }
+    if (editing) { onRename(draftLabel); setEditing(false); }
+  }
   const transitioning = lifecycleIsTransitioning(lifecycle);
   const providerCommandBusy = busy === provider || (["open", "close", "reload", "logout", "discover"] as const).some((suffix) => busy === `${provider}-${suffix}`);
   const lifecycleActive = lifecycle && lifecycle.phase !== "ready";
@@ -3098,15 +3481,35 @@ function ProviderPanel({
         ? "Retry"
       : shownInWidget ? "Hide widget" : "Show widget";
   return (
-    <section className={`mini-card ${provider}${lifecycle?.phase === "stopped" ? " provider-stopped" : ""}`}>
+    <section className={`mini-card ${providerKind(provider)}${lifecycle?.phase === "stopped" ? " provider-stopped" : ""}`} style={providerAccentStyle(accent)}>
       <div className="mini-head">
         <div>
-          <h2><ProviderMark provider={provider} />{providerLabel(provider)}</h2>
-          <p>{provider === "claude" ? "Claude account session." : provider === "codex-1" ? "Codex account 2 (isolated session)." : "Codex account session."}</p>
+          <h2>
+            <ProviderMark provider={provider} />
+            {editing ? (
+              <input
+                className="account-name-edit"
+                autoFocus
+                value={draftLabel}
+                onChange={(event) => setDraftLabel(event.target.value.toLocaleUpperCase())}
+                onBlur={commitEdit}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") commitEdit();
+                  else if (event.key === "Escape") { cancelEditRef.current = true; setEditing(false); }
+                }}
+              />
+            ) : (
+              <>
+                {providerLabel(provider)}
+                <button type="button" className="account-rename" title="Rename account" aria-label="Rename account" onClick={beginEdit}><PencilIcon /></button>
+              </>
+            )}
+          </h2>
+          <p className="account-visibility">{shownInWidget ? "Shown in widget" : "Hidden from widget"}</p>
         </div>
         <StatusPill status={pillStatus} label={pillLabel} />
       </div>
-      <UsageBlock snapshot={snapshot} />
+      <UsageBlock snapshot={snapshot} accent={accent} />
       <div className="daily-actions">
         <button className="primary" onClick={onOpen} disabled={busy === `${provider}-open`}>{busy === `${provider}-open` ? "Opening" : "Login"}</button>
         <button onClick={onExtract} disabled={busy === provider || transitioning}>{busy === provider ? "Refreshing" : "Refresh now"}</button>
@@ -3114,16 +3517,17 @@ function ProviderPanel({
       </div>
       <div className="daily-actions secondary-actions">
         <button onClick={onLogout} disabled={busy === `${provider}-logout`}>{busy === `${provider}-logout` ? "Signing out" : "Log out"}</button>
+        <button className="account-remove" onClick={onRemove} disabled={providerCommandBusy}>Remove</button>
       </div>
       <details className="advanced-tools">
-        <summary>Advanced</summary>
+        <summary><span className="summary-left"><DisclosureChevron /><span>More options</span></span></summary>
         <label className="url-field">Login / usage link<input value={url} onChange={(event) => onUrlChange(event.target.value)} /></label>
         <div className="button-grid">
           <button onClick={onReload} disabled={busy === `${provider}-reload`}>Reload page</button>
           <button onClick={onClose} disabled={busy === `${provider}-close`}>Hide window</button>
           <button onClick={onDiscover} disabled={busy === `${provider}-discover`}>{busy === `${provider}-discover` ? "Finding API..." : "Find API"}</button>
         </div>
-        <p className="hint">Log out clears the shared in-app browser session for both providers.</p>
+        <p className="hint">Log out clears only this account's isolated in-app session.</p>
       {discovery && (
         <details className="debug-text" open>
           <summary>Discovered API</summary>
@@ -3389,8 +3793,8 @@ function ColorPicker({ value, onChange, onClose }: { value: string; onChange: (h
 }
 
 function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: Partial<Settings>) => void }) {
-  type ColorTarget = { kind: "accent"; provider: keyof ProviderColors } | { kind: "monitor"; monitor: MonitorKind };
-  type PickerTarget = { kind: "accent"; provider: keyof ProviderColors } | { kind: "monitor"; monitor: MonitorKind; level: MonitorLevel } | { kind: "base"; field: "bg" | "surface" | "text" };
+  type ColorTarget = { kind: "accent"; provider: Provider } | { kind: "monitor"; monitor: MonitorKind };
+  type PickerTarget = { kind: "accent"; provider: Provider } | { kind: "monitor"; monitor: MonitorKind; level: MonitorLevel } | { kind: "base"; field: "bg" | "surface" | "text" };
   const [selectedTarget, setSelectedTarget] = useState<ColorTarget | null>(null);
   const [picker, setPicker] = useState<PickerTarget | null>(null);
   const [monitorLevel, setMonitorLevel] = useState<MonitorLevel>("low");
@@ -3398,11 +3802,16 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
   const mode = baseModeOf(themeKey);
   const base = settings.baseOverrides[themeKey] ?? {};
   const resolvedBase = resolveBaseTokens(themeKey, base) ?? DEFAULT_BASE[themeKey];
-  const providers: [keyof ProviderColors, string, string][] = [["claude", "Claude", "#c46f42"], ["codex", "Codex", "#7b8cff"], ["codex-1", "Codex 2", "#7b8cff"]];
+  const providers = settings.accounts.map((account) => ({ ...account, brand: accountBrandColor(account.kind, settings.theme) }));
   const monitorLevels: [MonitorLevel, string][] = [["low", "Low"], ["medium", "Medium"], ["high", "High"]];
   const baseFieldValue = (field: "bg" | "surface" | "text") => field === "text" ? resolvedBase.fg : resolvedBase[field];
 
-  const setProviderColor = (p: keyof ProviderColors, color: string | null) => patch({ providerColors: { ...settings.providerColors, [p]: color } });
+  const setProviderColor = (provider: Provider, color: string | null) => {
+    const providerColors = { ...settings.providerColors };
+    if (color) providerColors[provider] = color;
+    else delete providerColors[provider];
+    patch({ providerColors });
+  };
   const setMonitorColor = (m: MonitorKind, level: MonitorLevel, color: string) => patch({ monitorColors: { ...settings.monitorColors, [m]: { ...settings.monitorColors[m], [level]: color } } });
   const setScope = (key: keyof ColorScope, val: boolean) => patch({ colorScope: { ...settings.colorScope, [key]: val } });
   const setBase = (next: Partial<BaseOverride>) => patch({ baseOverrides: { ...settings.baseOverrides, [themeKey]: { ...base, ...next } } });
@@ -3435,9 +3844,15 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
     setPicker(pickerMatches(pickerTarget) ? null : pickerTarget);
   };
   const selectedLabel = selectedTarget?.kind === "accent"
-    ? providers.find(([provider]) => provider === selectedTarget.provider)?.[1]
+    ? providers.find((account) => account.id === selectedTarget.provider)?.label
     : selectedTarget ? MONITOR_LABELS[selectedTarget.monitor] : undefined;
   const selectedMonitorPalette = selectedTarget?.kind === "monitor" ? settings.monitorColors[selectedTarget.monitor] : null;
+
+  useEffect(() => {
+    if (selectedTarget?.kind !== "accent" || settings.accounts.some((account) => account.id === selectedTarget.provider)) return;
+    setSelectedTarget(null);
+    setPicker(null);
+  }, [selectedTarget, settings.accounts]);
 
   return (
     <div className="effect-settings colors-settings">
@@ -3446,16 +3861,19 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
       <div className="color-target-group">
         <span className="color-group-label">Providers</span>
         <div className="color-target-grid">
-          {providers.map(([provider, label, brand]) => {
+          {providers.map((account) => {
+            const provider = account.id;
+            const color = settings.providerColors[provider] ?? account.brand;
             const target: ColorTarget = { kind: "accent", provider };
             return (
-              <button type="button" className={`color-target${targetIsSelected(target) ? " is-selected" : ""}`} style={{ "--tone": settings.providerColors[provider] ?? brand } as React.CSSProperties} key={provider} onClick={() => chooseTarget(target)} aria-expanded={targetIsSelected(target)}>
-                <ProviderMark provider={provider === "codex-1" ? "codex-1" : provider} />
-                <span className="color-target-name">{label}</span>
-                <span className="color-target-preview"><i style={{ background: settings.providerColors[provider] ?? brand }} /></span>
+              <button type="button" className={`color-target${targetIsSelected(target) ? " is-selected" : ""}`} style={{ "--tone": color } as React.CSSProperties} key={provider} onClick={() => chooseTarget(target)} aria-expanded={targetIsSelected(target)}>
+                <ProviderMark provider={provider} />
+                <span className="color-target-copy"><span className="color-target-name">{account.label}</span><small>{account.kind}</small></span>
+                <span className="color-target-preview"><i style={{ background: color }} /></span>
               </button>
             );
           })}
+          {!providers.length && <span className="color-empty">No accounts added</span>}
         </div>
       </div>
 
@@ -3488,7 +3906,7 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
           </div>
           {selectedTarget.kind === "accent" && (() => {
             const provider = selectedTarget.provider;
-            const brand = providers.find(([p]) => p === provider)?.[2] ?? "#7b8cff";
+            const brand = providers.find((account) => account.id === provider)?.brand ?? "#7b8cff";
             const target: ColorTarget = { kind: "accent", provider };
             const pickerTarget: PickerTarget = target;
             const current = settings.providerColors[provider] ?? brand;
@@ -3528,7 +3946,7 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
       )}
 
       <details className="colors-advanced">
-        <summary>Advanced styling</summary>
+        <summary><span className="summary-left"><DisclosureChevron /><span>Advanced styling</span></span></summary>
         <div className="color-row">
           <span className="seg-label">Apply accent to</span>
           <div className="scope-checks">
@@ -3631,13 +4049,12 @@ function SensorServiceSettings() {
   );
 }
 
-function WidgetSettings({ settings, onChange, accountPanels, onEffectPlay, onEffectRestore, onResetWindow, providerPercents }: {
+function WidgetSettings({ settings, onChange, accountPanels, onEffectPlay, onEffectRestore, providerPercents }: {
   settings: Settings;
   onChange: (settings: Settings) => void;
   accountPanels: ReactNode;
   onEffectPlay: (provider: Provider, from: number, to: number, driveBar: boolean) => void;
   onEffectRestore: () => void;
-  onResetWindow: () => void;
   providerPercents: Partial<Record<Provider, number>>;
 }) {
   function patch(next: Partial<Settings>) {
@@ -3645,7 +4062,7 @@ function WidgetSettings({ settings, onChange, accountPanels, onEffectPlay, onEff
   }
 
   // Effect tester local state. Fields walk upward as you click Step so you can eyeball 1->2->3->4...
-  const [testProvider, setTestProvider] = useState<Provider>("codex");
+  const [testProvider, setTestProvider] = useState<Provider>(() => settings.accounts[0]?.id ?? "");
   const [testFrom, setTestFrom] = useState(36);
   const [testTo, setTestTo] = useState(37);
   const [driveBar, setDriveBar] = useState(false);
@@ -3710,9 +4127,9 @@ function WidgetSettings({ settings, onChange, accountPanels, onEffectPlay, onEff
   return (
     <section className="settings-section mini-card settings-card">
       <div className="mini-head">
-        <div>
+        <div className="settings-card-title">
           <h2>Widget</h2>
-          <p>Auto-saves when changed.</p>
+          <span>Auto-saves when changed.</span>
         </div>
       </div>
       <div className="settings-row">
@@ -3762,12 +4179,6 @@ function WidgetSettings({ settings, onChange, accountPanels, onEffectPlay, onEff
           <input type="range" min="0.45" max="1" step="0.01" value={settings.opacity} onChange={(event) => patch({ opacity: Number(event.target.value) })} />
         </div>
       </div>
-      <div className="settings-row">
-        <div className="seg-field">
-          <span className="seg-label">Window position</span>
-          <button type="button" onClick={onResetWindow}>Reset position</button>
-        </div>
-      </div>
       {pendingLow !== null && (
         <div className="settings-warn">
           <span>Under 60s refreshes more often — costs more resources and may get rate-limited. Apply {pendingLow}s anyway?</span>
@@ -3794,9 +4205,7 @@ function WidgetSettings({ settings, onChange, accountPanels, onEffectPlay, onEff
               <div className="effect-tester-body">
                 <div className="effect-tester-row">
                   <label>Account<select value={testProvider} onChange={(event) => setTestProvider(event.target.value as Provider)}>
-                    <option value="claude">Claude</option>
-                    <option value="codex">Codex</option>
-                    <option value="codex-1">Codex 2</option>
+                    {settings.accounts.map((account) => <option key={account.id} value={account.id}>{account.label}</option>)}
                   </select></label>
                   <label>From<input type="number" min="0" max="100" value={testFrom} onChange={(event) => setTestFrom(Number(event.target.value))} /></label>
                   <label>To<input type="number" min="0" max="100" value={testTo} onChange={(event) => setTestTo(Number(event.target.value))} /></label>
@@ -3865,9 +4274,35 @@ function WidgetSettings({ settings, onChange, accountPanels, onEffectPlay, onEff
 function EmptyProviderState() {
   return (
     <article className="empty-state">
-      <strong>No providers shown</strong>
-      <span>Open Settings to show Claude or Codex in the widget.</span>
+      <strong>No accounts yet</strong>
+      <span>Open Settings and use “Add account” to add a Claude or Codex login.</span>
     </article>
+  );
+}
+
+function AddAccountForm({ onAdd, onCancel }: { onAdd: (kind: AccountKind, label: string) => void; onCancel: () => void }) {
+  const [kind, setKind] = useState<AccountKind>("claude");
+  const [label, setLabel] = useState("");
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => { inputRef.current?.focus(); }, []);
+  return (
+    <div className="add-account-form">
+      <div className="mini-head"><div><h2>Add account</h2><p>Pick a service, name it, then sign in.</p></div></div>
+      <div className="seg-field">
+        <span className="seg-label">Service</span>
+        <div className="seg" role="group" aria-label="Account type">
+          <button type="button" className={`seg-btn${kind === "claude" ? " active" : ""}`} onClick={() => setKind("claude")}>Claude</button>
+          <button type="button" className={`seg-btn${kind === "codex" ? " active" : ""}`} onClick={() => setKind("codex")}>Codex</button>
+        </div>
+      </div>
+      <label className="url-field">Account name
+        <input ref={inputRef} value={label} placeholder={kind === "claude" ? "e.g. Claude work" : "e.g. Codex personal"} onChange={(event) => setLabel(event.target.value.toLocaleUpperCase())} onKeyDown={(event) => { if (event.key === "Enter") onAdd(kind, label); }} />
+      </label>
+      <div className="daily-actions modal-actions">
+        <button onClick={onCancel}>Cancel</button>
+        <button className="primary" onClick={() => onAdd(kind, label)}>Add &amp; sign in</button>
+      </div>
+    </div>
   );
 }
 
@@ -3911,7 +4346,7 @@ function CountdownFace({ resetMs, fallback }: { resetMs: number | null; fallback
   );
 }
 
-function TimerView({ snapshot, onBack, paused = false }: { snapshot: UsageSnapshot; onBack: () => void; paused?: boolean }) {
+function TimerView({ snapshot, accent, onBack, paused = false }: { snapshot: UsageSnapshot; accent?: string; onBack: () => void; paused?: boolean }) {
   const [, setTick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 1000);
@@ -3919,7 +4354,7 @@ function TimerView({ snapshot, onBack, paused = false }: { snapshot: UsageSnapsh
   }, []);
   const resetMs = parseResetMs(snapshot.resetLabel);
   return (
-    <article className={`usage compact provider-tile ${snapshot.provider} timer-view flippable${paused ? " mark-paused" : ""}`} onClick={onBack} title="Tap to dismiss">
+    <article className={`usage compact provider-tile ${providerKind(snapshot.provider)} timer-view flippable${paused ? " mark-paused" : ""}`} style={providerAccentStyle(accent)} onClick={onBack} title="Tap to dismiss">
       <div className="usage-top">
         <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
         <span className="timer-label">reset in</span>
@@ -4139,29 +4574,27 @@ const MONITOR_SHOW_KEY: Record<MonitorKind, keyof Settings> = {
   gputemp: "showGpuTemp",
 };
 
-const PROVIDER_SHOW_KEY: Record<Provider, keyof Settings> = {
-  claude: "showClaude",
-  codex: "showCodex",
-  "codex-1": "showCodex1",
-};
-
 function tileConfigured(tileId: TileId, settings: Settings) {
   const provider = providerFromTile(tileId);
-  if (provider) return Boolean(settings[PROVIDER_SHOW_KEY[provider]]);
+  if (provider) return settings.accounts.some((a) => a.id === provider && a.shown);
   const monitor = monitorFromTile(tileId);
   return monitor ? Boolean(settings[MONITOR_SHOW_KEY[monitor]]) : false;
 }
 
 function tileActive(tileId: TileId, settings: Settings) {
   const provider = providerFromTile(tileId);
-  if (provider) return settings.aiUsageEnabled && Boolean(settings[PROVIDER_SHOW_KEY[provider]]);
+  if (provider) return settings.aiUsageEnabled && settings.accounts.some((a) => a.id === provider && a.shown);
   const monitor = monitorFromTile(tileId);
   return monitor ? settings.systemMonitorsEnabled && Boolean(settings[MONITOR_SHOW_KEY[monitor]]) : false;
 }
 
+function setAccountShown(settings: Settings, id: Provider, shown: boolean): Settings {
+  return { ...settings, accounts: settings.accounts.map((a) => (a.id === id ? { ...a, shown } : a)) };
+}
+
 function hideTileInSettings(tileId: TileId, settings: Settings): Settings {
   const provider = providerFromTile(tileId);
-  if (provider) return { ...settings, [PROVIDER_SHOW_KEY[provider]]: false };
+  if (provider) return setAccountShown(settings, provider, false);
   const monitor = monitorFromTile(tileId);
   return monitor ? { ...settings, [MONITOR_SHOW_KEY[monitor]]: false } : settings;
 }
@@ -4450,7 +4883,7 @@ const MonitorMiniRow = React.memo(function MonitorMiniRow({ reading, tone }: { r
   );
 });
 
-const MiniUsageRow = React.memo(function MiniUsageRow({ snapshot, paused = false, updatedAgo, flash = false, onFlip }: { snapshot: UsageSnapshot; paused?: boolean; updatedAgo?: string; flash?: boolean; onFlip?: () => void }) {
+const MiniUsageRow = React.memo(function MiniUsageRow({ snapshot, accent, paused = false, updatedAgo, flash = false, onFlip }: { snapshot: UsageSnapshot; accent?: string; paused?: boolean; updatedAgo?: string; flash?: boolean; onFlip?: () => void }) {
   const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
   const stale = isStale(snapshot);
   const state = stale ? "stale" : snapshot.status !== "ok" ? "warn" : paused ? "paused" : "ok";
@@ -4459,7 +4892,7 @@ const MiniUsageRow = React.memo(function MiniUsageRow({ snapshot, paused = false
   const resetLabel = resetCountdown === "resetting soon" ? "soon" : resetCountdown?.replace(/^resets?\s+in\s+/i, "") ?? "--";
   const freshnessLabel = (updatedAgo ?? formatAgo(snapshot.updatedAt) ?? "--").replace(/^just now$/i, "now");
   return (
-    <article className={`mini-usage provider-tile ${snapshot.provider}${flash ? " mark-flash" : ""}${paused ? " mark-paused" : ""}`}>
+    <article className={`mini-usage provider-tile ${providerKind(snapshot.provider)}${flash ? " mark-flash" : ""}${paused ? " mark-paused" : ""}`} style={providerAccentStyle(accent)}>
       <span className={`mini-status ${state}`} aria-label={state} />
       <MiniMarkButton provider={snapshot.provider} onClick={onFlip} title="Tap for reset countdown" />
       <span className="mini-provider">{providerLabel(snapshot.provider)}</span>
@@ -4475,7 +4908,7 @@ const MiniUsageRow = React.memo(function MiniUsageRow({ snapshot, paused = false
   );
 });
 
-function MiniTimerRow({ snapshot, onBack, paused = false }: { snapshot: UsageSnapshot; onBack: () => void; paused?: boolean }) {
+function MiniTimerRow({ snapshot, accent, onBack, paused = false }: { snapshot: UsageSnapshot; accent?: string; onBack: () => void; paused?: boolean }) {
   const [, setTick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => setTick((t) => t + 1), 1000);
@@ -4483,7 +4916,7 @@ function MiniTimerRow({ snapshot, onBack, paused = false }: { snapshot: UsageSna
   }, []);
   const resetMs = parseResetMs(snapshot.resetLabel);
   return (
-    <article className={`mini-usage mini-timer provider-tile ${snapshot.provider}${paused ? " mark-paused" : ""}`}>
+    <article className={`mini-usage mini-timer provider-tile ${providerKind(snapshot.provider)}${paused ? " mark-paused" : ""}`} style={providerAccentStyle(accent)}>
       <MiniMarkButton provider={snapshot.provider} onClick={onBack} title="Tap to dismiss" />
       <strong className="mini-timer-clock"><CountdownFace resetMs={resetMs} fallback={snapshot.resetLabel ? "soon" : "--"} /></strong>
     </article>
@@ -4492,14 +4925,14 @@ function MiniTimerRow({ snapshot, onBack, paused = false }: { snapshot: UsageSna
 // Memoised: a system-monitor poll lands as often as once a second and re-renders the widget, but
 // nothing about an AI tile changed — without this every poll rebuilt each tile's bar cells and its
 // eleven liquid layers. Same reasoning for the other tiles below.
-const UsageBlock = React.memo(function UsageBlock({ snapshot, flash = false, paused = false, updatedAgo, effect, dropCell = false, onFlip }: { snapshot: UsageSnapshot; flash?: boolean; paused?: boolean; updatedAgo?: string; effect?: UsageEffect; dropCell?: boolean; onFlip?: () => void }) {
+const UsageBlock = React.memo(function UsageBlock({ snapshot, accent, flash = false, paused = false, updatedAgo, effect, dropCell = false, onFlip }: { snapshot: UsageSnapshot; accent?: string; flash?: boolean; paused?: boolean; updatedAgo?: string; effect?: UsageEffect; dropCell?: boolean; onFlip?: () => void }) {
   const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
   const stale = isStale(snapshot);
   const sourceState = stale ? "stale" : snapshot.status !== "ok" ? snapshot.status : paused ? "paused" : "ok";
    const metaLeft = usageMetaLeft(snapshot);
   const metaRight = usageMetaRight(snapshot);
   return (
-    <article className={`usage compact provider-tile ${snapshot.provider}${flash ? " mark-flash" : ""}${paused ? " mark-paused" : ""}${onFlip ? " flippable" : ""}`} onClick={onFlip} title={onFlip ? "Tap for reset countdown" : undefined}>
+    <article className={`usage compact provider-tile ${providerKind(snapshot.provider)}${flash ? " mark-flash" : ""}${paused ? " mark-paused" : ""}${onFlip ? " flippable" : ""}`} style={providerAccentStyle(accent)} onClick={onFlip} title={onFlip ? "Tap for reset countdown" : undefined}>
       <div className="usage-top">
         <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
         <span className="tile-status">
@@ -4529,9 +4962,8 @@ function StatusPill({ status, label }: { status: UsageStatus | "warn"; label?: s
 }
 
 function ProviderLifecycleToasts({ notices }: { notices: Partial<Record<Provider, ProviderLifecycle>> }) {
-  const rows = (['claude', 'codex', 'codex-1'] as Provider[])
-    .map((provider) => notices[provider])
-    .filter((lifecycle): lifecycle is ProviderLifecycle => Boolean(lifecycle));
+  // Every account, not a fixed three — a freshly added provider must toast on the widget too.
+  const rows = Object.values(notices).filter((lifecycle): lifecycle is ProviderLifecycle => Boolean(lifecycle));
   if (!rows.length) return null;
   return (
     <div className="provider-lifecycle-toasts" aria-live="polite" aria-atomic="false">
@@ -4546,7 +4978,8 @@ function ProviderLifecycleToasts({ notices }: { notices: Partial<Record<Provider
 }
 
 function ProviderMark({ provider }: { provider: Provider }) {
-  if (provider === "claude") {
+  // `provider` may be an account id or, from the colour editor, a literal kind. Both resolve here.
+  if (provider === "claude" || accountRegistry[provider]?.kind === "claude") {
     return (
       <span className="mark pixel-claude-mark" aria-hidden="true">
         <svg viewBox="0 0 16 16">
