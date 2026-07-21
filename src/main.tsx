@@ -78,6 +78,7 @@ type ProviderLifecycle = {
   attempt?: number;
   message?: string;
 };
+type MonitorToast = { id: number; text: string; tone: string };
 
 // --- System monitors (RAM/CPU/GPU/temperatures) ---------------------------------
 // A fully parallel model to UsageSnapshot: these are live local-hardware readings, not
@@ -194,8 +195,16 @@ type BaseOverride = { preset?: string; bg?: string; surface?: string; text?: str
 
 const DEFAULT_MONITOR_PALETTE: MonitorPalette = { low: "#4faa62", medium: "#e0913d", high: "#e5484d" };
 const EFFECT_DURATION_MS = 4000;
-const EFFECT_IMPACT_BRIGHTNESS = 1.25;
-const EFFECT_DELTA_BRIGHTNESS = 2;
+const PIXEL_INSERT_SHIFT_MS = 300;
+const PIXEL_INSERT_DROP_START_MS = 420;
+const PIXEL_INSERT_DROP_DURATION_MS = 430;
+const PIXEL_INSERT_DROP_STAGGER_MS = 45;
+const PIXEL_INSERT_MS_PER_PERCENT = 26;
+const PIXEL_INSERT_BEAM_FADE_MS = 150;
+const PIXEL_INSERT_HOP_MIN_MS = 420;
+const PIXEL_INSERT_HOP_MAX_MS = 480;
+const PIXEL_INSERT_HOP_PEAK = 0.42;
+const PIXEL_INSERT_HANDOFF_MS = 200;
 
 function makeDefaultMonitorColors(): MonitorColors {
   return {
@@ -454,20 +463,38 @@ function saveMode(mode: AppMode) {
   if (mode === "widget" || mode === "mini") localStorage.setItem(MODE_KEY, mode);
 }
 
-type EffectParticle = {
-  x: number;
-  y: number;
-  size: number;
-  delay: number;
-  position: number;
-};
-
 type UsageEffect = {
   id: number;
   from: number;
   to: number;
-  particles: EffectParticle[];
 };
+
+function pixelInsertDynamics(effect: Pick<UsageEffect, "from" | "to">) {
+  const delta = Math.max(0, Math.min(100, effect.to) - Math.max(0, effect.from));
+  const strength = Math.sqrt(delta / 100);
+  const hopMs = PIXEL_INSERT_HOP_MIN_MS + (PIXEL_INSERT_HOP_MAX_MS - PIXEL_INSERT_HOP_MIN_MS) * strength;
+  return { delta, strength, hopMs };
+}
+
+function pixelInsertStart(from: number) {
+  const clamped = Math.max(0, Math.min(100, from));
+  const midpoint = clamped / 2;
+  const lower = Math.floor(midpoint / 10) * 10;
+  const upper = Math.min(clamped, Math.ceil(midpoint / 10) * 10);
+  return midpoint - lower <= upper - midpoint ? lower : upper;
+}
+
+function pixelInsertTiming(effect: Pick<UsageEffect, "from" | "to">) {
+  const { delta, hopMs } = pixelInsertDynamics(effect);
+  const from = Math.max(0, Math.min(100, effect.from));
+  const to = Math.max(0, Math.min(100, effect.to));
+  const impactCenter = pixelInsertStart(from) + delta / 2;
+  const waveMs = Math.max(impactCenter, to - impactCenter) * PIXEL_INSERT_MS_PER_PERCENT;
+  const pieceCount = Math.max(1, Math.ceil(delta / 10));
+  const impactMs = PIXEL_INSERT_DROP_START_MS + PIXEL_INSERT_DROP_DURATION_MS + (pieceCount - 1) * PIXEL_INSERT_DROP_STAGGER_MS;
+  const handoffMs = impactMs + waveMs + hopMs;
+  return { pieceCount, impactMs, waveMs, handoffMs, durationMs: handoffMs + PIXEL_INSERT_HANDOFF_MS };
+}
 
 const emptySnapshot = (provider: Provider): UsageSnapshot => ({
   provider,
@@ -641,14 +668,9 @@ function resolveBaseTokens(theme: ThemeKey, base: BaseOverride | undefined) {
 }
 
 function panelStyle(settings: Settings): React.CSSProperties {
-  const impactDurationMs = Math.min(900, EFFECT_DURATION_MS * 0.46);
   const style: Record<string, string | number> = {
     "--panel-opacity-pct": `${Math.round(settings.opacity * 100)}%`,
     "--effect-duration": `${EFFECT_DURATION_MS}ms`,
-    "--effect-impact-duration": `${impactDurationMs}ms`,
-    "--effect-impact-delay": `${impactDurationMs * 0.58}ms`,
-    "--effect-bar-brightness": EFFECT_IMPACT_BRIGHTNESS,
-    "--effect-delta-brightness": EFFECT_DELTA_BRIGHTNESS,
   };
   if (settings.colorsEnabled) {
     const base = resolveBaseTokens(settings.theme, settings.baseOverrides[settings.theme]);
@@ -2095,16 +2117,35 @@ function WidgetApp() {
   const removedAccountIdsRef = useRef(new Set<Provider>());
   const [providerNotices, setProviderNotices] = useState<Partial<Record<Provider, ProviderLifecycle>>>({});
   const providerNoticeTimersRef = useRef<Partial<Record<Provider, number>>>({});
-  const [monitorToasts, setMonitorToasts] = useState<{ id: number; text: string; tone: string }[]>([]);
+  const [monitorToasts, setMonitorToasts] = useState<MonitorToast[]>([]);
+  const monitorToastSequenceRef = useRef(0);
+  const monitorToastTimersRef = useRef<Record<number, number>>({});
+  const monitorToastTextsRef = useRef(new Set<string>());
+  const initialMonitorToastsDoneRef = useRef(false);
+  const widgetDisposedRef = useRef(false);
+
+  function pushMonitorToast(text: string, tone: string) {
+    if (monitorToastTextsRef.current.has(text)) return;
+    monitorToastTextsRef.current.add(text);
+    const id = ++monitorToastSequenceRef.current;
+    setMonitorToasts((current) => [...current, { id, text, tone }]);
+    monitorToastTimersRef.current[id] = window.setTimeout(() => {
+      setMonitorToasts((current) => current.filter((toast) => toast.id !== id));
+      monitorToastTextsRef.current.delete(text);
+      delete monitorToastTimersRef.current[id];
+    }, 2500);
+  }
 
   useEffect(() => {
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen<{ label: string; shown: boolean }>("usageview-monitor-toast", ({ payload }) => {
-      const id = Date.now() + Math.random();
-      setMonitorToasts((current) => [...current, { id, text: `${payload.label} ${payload.shown ? "shown" : "hidden"}`, tone: payload.shown ? "ok" : "warn" }]);
-      window.setTimeout(() => setMonitorToasts((current) => current.filter((toast) => toast.id !== id)), 2500);
-    }).then((dispose) => { unlisten = dispose; });
-    return () => unlisten?.();
+      pushMonitorToast(`${payload.label} ${payload.shown ? "shown" : "hidden"}`, payload.shown ? "ok" : "warn");
+    }).then((dispose) => {
+      if (disposed) dispose();
+      else unlisten = dispose;
+    });
+    return () => { disposed = true; unlisten?.(); };
   }, []);
   const lastLimitedAutoRefreshRef = useRef<Record<Provider, number>>(Object.fromEntries(settings.accounts.map((account) => [account.id, 0])));
   const prevFlashTokenRef = useRef<Partial<Record<Provider, string>>>({});
@@ -2182,8 +2223,11 @@ function WidgetApp() {
     }
 
     setActiveEffects((prev) => ({ ...prev, ...effectPayloads }));
-    const duration = EFFECT_DURATION_MS + 900;
     for (const provider of effectProviders) {
+      const effect = effectPayloads[provider];
+      const duration = themeStyle(settingsRef.current.theme) === "glass" || !effect
+        ? EFFECT_DURATION_MS + 900
+        : pixelInsertTiming(effect).durationMs + 100;
       effectTimersRef.current[provider] = window.setTimeout(() => {
         setActiveEffects((prev) => {
           const next = { ...prev };
@@ -2222,6 +2266,17 @@ function WidgetApp() {
       runtimeValidReadRef.current[provider] = true;
       setSnapshots((current) => ({ ...current, [provider]: synthetic }));
     }
+    if (t <= f) {
+      const timer = effectTimersRef.current[provider];
+      if (timer !== undefined) window.clearTimeout(timer);
+      delete effectTimersRef.current[provider];
+      setActiveEffects((current) => {
+        const next = { ...current };
+        delete next[provider];
+        return next;
+      });
+      return;
+    }
     activateUsageEffects({ [provider]: makeUsageEffect(f, t) });
   }
 
@@ -2240,6 +2295,13 @@ function WidgetApp() {
       && !providerRemovalPending(snapshot.provider),
     );
     setSnapshots((current) => currentResults.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), current));
+    setTimerSet((current) => {
+      const next = new Set(current);
+      currentResults.forEach((snapshot) => {
+        if (!isProviderLimited(snapshot.provider, snapshot)) next.delete(snapshot.provider);
+      });
+      return next;
+    });
   }
 
   function restoreMonitorTestEffect() {
@@ -2280,6 +2342,14 @@ function WidgetApp() {
     if (initialRevealDoneRef.current || !initialPositionRestoredRef.current || !initialLayoutCommittedRef.current) return;
     initialRevealDoneRef.current = true;
     await invoke("open_widget_window").catch(() => undefined);
+    if (widgetDisposedRef.current) return;
+    if (initialMonitorToastsDoneRef.current) return;
+    initialMonitorToastsDoneRef.current = true;
+    const current = settingsRef.current;
+    if (!current.systemMonitorsEnabled) return;
+    for (const kind of MONITOR_ORDER) {
+      if (current[MONITOR_SHOW_KEY[kind]]) pushMonitorToast(`${MONITOR_LABELS[kind]} shown`, "ok");
+    }
   }
 
   useEffect(() => {
@@ -2749,6 +2819,7 @@ function WidgetApp() {
 
   useEffect(() => {
     return () => {
+      widgetDisposedRef.current = true;
       for (const timer of Object.values(flashTimersRef.current)) {
         if (timer !== undefined) window.clearTimeout(timer);
       }
@@ -2758,6 +2829,8 @@ function WidgetApp() {
       for (const timer of Object.values(providerNoticeTimersRef.current)) {
         if (timer !== undefined) window.clearTimeout(timer);
       }
+      for (const timer of Object.values(monitorToastTimersRef.current)) window.clearTimeout(timer);
+      monitorToastTextsRef.current.clear();
     };
   }, []);
 
@@ -2769,6 +2842,14 @@ function WidgetApp() {
     effectTimersRef.current = {};
     setActiveEffects({});
   }, [settings.effectsEnabled]);
+
+  useLayoutEffect(() => {
+    for (const timer of Object.values(effectTimersRef.current)) {
+      if (timer !== undefined) window.clearTimeout(timer);
+    }
+    effectTimersRef.current = {};
+    setActiveEffects({});
+  }, [settings.theme]);
 
   useEffect(() => {
     if (settings.aiUsageEnabled) return;
@@ -3156,7 +3237,7 @@ async function refresh(provider: Provider, requestNonce: string) {
     });
   }, [snapshots]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const newly: Provider[] = [];
     const effectPayloads: Partial<Record<Provider, UsageEffect>> = {};
     for (const p of accountIdsFrom(settingsRef.current)) {
@@ -3331,9 +3412,11 @@ async function refresh(provider: Provider, requestNonce: string) {
       // through snapshotOf (never a raw snapshots[id] that could be undefined).
       const snap = snapshotOf(snapshots, provider);
       const accent = providerAccent(provider, settings);
-      return timerSet.has(provider)
+      const activeEffect = settings.effectsEnabled ? activeEffects[provider] : undefined;
+      const deferTimer = timerSet.has(provider) && activeEffect !== undefined && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      return timerSet.has(provider) && !deferTimer
         ? <TimerView snapshot={snap} accent={accent} onBack={timerToggles[provider]} paused={isPaused(provider)} />
-        : <UsageBlock snapshot={snap} accent={accent} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} glass={themeStyle(settings.theme) === "glass"} effectsEnabled={settings.effectsEnabled} onFlip={timerToggles[provider]} />;
+        : <UsageBlock snapshot={snap} accent={accent} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={activeEffect} dropCell={settings.effectDropCell} glass={themeStyle(settings.theme) === "glass"} effectsEnabled={settings.effectsEnabled} onFlip={deferTimer ? undefined : timerToggles[provider]} />;
     }
     const monitor = monitorFromTile(tileId);
     const reading = monitor ? monitorReadingsForRender[monitor] : null;
@@ -3419,8 +3502,7 @@ async function refresh(provider: Provider, requestNonce: string) {
   if (mode === "mini") {
     return (
       <main className={`compact-widget mini-widget ${themeClass(settings.theme)} ${panelScopeClasses(settings)}`} style={panelStyle(settings)} onMouseDown={prepareCompactDrag} onMouseMove={maybeStartCompactDrag} onContextMenu={openCompactMenu}>
-        <ProviderLifecycleToasts notices={providerNotices} />
-        <MonitorToasts toasts={monitorToasts} />
+        <WidgetToasts notices={providerNotices} monitorToasts={monitorToasts} />
         <div ref={compactProvidersRef} className="mini-providers">
           {attachedTileIds.map((tileId) => (
             <div
@@ -3451,8 +3533,7 @@ async function refresh(provider: Provider, requestNonce: string) {
 
   return (
     <main ref={widgetRef} className={`widget ${themeClass(settings.theme)} ${panelScopeClasses(settings)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag}>
-      <ProviderLifecycleToasts notices={providerNotices} />
-      <MonitorToasts toasts={monitorToasts} />
+      <WidgetToasts notices={providerNotices} monitorToasts={monitorToasts} />
       <div className="scale-shell">
       <div ref={widgetHeaderRef} className="widget-header">
         <div className="window-title">
@@ -4792,23 +4873,7 @@ function snapshotPercent(snapshot: UsageSnapshot): number | undefined {
 let usageEffectSequence = 0;
 
 function makeUsageEffect(from: number, to: number): UsageEffect {
-  return { id: ++usageEffectSequence, from, to, particles: makeEffectParticles(from, to) };
-}
-
-function makeEffectParticles(from: number, to: number): EffectParticle[] {
-  const delta = Math.abs(to - from);
-  const count = 10 + Math.ceil(delta * 0.65);
-  return Array.from({ length: count }, (_, index) => {
-    const angle = index * 2.39996 + (Math.random() - 0.5) * 0.45;
-    const distance = 26 + Math.random() * 46;
-    return {
-      x: Math.round(Math.cos(angle) * distance * 0.65 + (Math.random() - 0.5) * 8),
-      y: Math.round(Math.sin(angle) * distance * 1.15 + (Math.random() - 0.5) * 10),
-      size: Math.random() > 0.72 ? 5 : Math.random() > 0.35 ? 4 : 3,
-      delay: Math.round(Math.random() * 150),
-      position: delta <= 1 ? 1 : Math.max(0, Math.min(1, (index + Math.random()) / count)),
-    };
-  });
+  return { id: ++usageEffectSequence, from, to };
 }
 
 const GLASS_WAVE_WIDTH = 180;
@@ -4820,6 +4885,8 @@ const GLASS_MONITOR_WAVE_SUPPORT = 76;
 const GLASS_UNDERLIGHT_AURA_SUPPORT = 0.78;
 const GLASS_MONITOR_UNDERLIGHT_HALF_RATIO = GLASS_MONITOR_WAVE_SUPPORT * GLASS_UNDERLIGHT_AURA_SUPPORT / GLASS_WAVE_WIDTH;
 const GLASS_AI_UNDERLIGHT_HALF_RATIO = GLASS_AI_WAVE_SUPPORT * GLASS_UNDERLIGHT_AURA_SUPPORT / GLASS_WAVE_WIDTH;
+const PIXEL_MONITOR_NUMBER_LIGHT_LAG_MS = 180;
+const GLASS_MONITOR_NUMBER_LIGHT_LAG_MS = 350;
 
 type GlassWaveDraw = (timestamp: number) => boolean;
 
@@ -5287,14 +5354,14 @@ const GlassMonitorWave = React.memo(function GlassMonitorWave({ fill, colorToken
 function effectStyle(effect: UsageEffect | undefined, fallbackPercent: number | undefined): React.CSSProperties {
   const from = effect ? Math.max(0, Math.min(100, effect.from)) : fallbackPercent ?? 0;
   const to = effect ? Math.max(0, Math.min(100, effect.to)) : fallbackPercent ?? 0;
-  const start = Math.min(from, to);
   const width = Math.abs(to - from);
-  const dropMinWidth = 8;
-  const dropWidth = width > 0 ? `max(${dropMinWidth}px, ${width}%)` : `${dropMinWidth}px`;
+  const insertDelta = Math.max(0, to - from);
+  const insertStart = pixelInsertStart(from);
+  const dynamics = pixelInsertDynamics({ from, to });
+  const pixelTiming = pixelInsertTiming({ from, to });
 
   // Glass liquid variables — mirror the prototype's barShell() math (redesign/interactive-prototype).
-  // These drive glass-effect.css; the Pixel effect ignores them. `--gl-drop-left/-width` are kept
-  // separate from the Pixel `--drop-left/-width` above so glass never shifts the Pixel drop-cell.
+  // These drive glass-effect.css; the Pixel insertion geometry above is intentionally independent.
   const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
   const target = Math.max(from, to);
   const glDropLeft = from <= 0 ? target / 2 : from / 2;
@@ -5315,12 +5382,25 @@ function effectStyle(effect: UsageEffect | undefined, fallbackPercent: number | 
   const glDropWidth = `max(${glDropMinWidth}px, ${flowWidth || 2}%)`;
 
   return {
-    "--delta-start": `${start}%`,
-    "--delta-width": `${width}%`,
-    "--delta-edge": `${to}%`,
-    "--drop-left": `${start + width / 2}%`,
-    "--drop-width": dropWidth,
-    "--pixel-impact-strength": impactStrength,
+    "--pixel-gap-start": `${insertStart}%`,
+    "--pixel-gap-end": `${insertStart + insertDelta}%`,
+    "--pixel-insert-width": `${insertDelta}%`,
+    "--pixel-target-fill": `${to}%`,
+    "--pixel-shift-duration": `${PIXEL_INSERT_SHIFT_MS}ms`,
+    "--pixel-wave-duration": `${pixelTiming.waveMs}ms`,
+    "--pixel-hop-duration": `${dynamics.hopMs}ms`,
+    "--pixel-cell-rise": `${-(2 + dynamics.strength * 5)}px`,
+    "--pixel-cell-glow-opacity": 0.28 + dynamics.strength * 0.58,
+    "--pixel-contact-opacity": 0.2 + dynamics.strength * 0.48,
+    "--pixel-impact-spread-x": 1.025 + dynamics.strength * 0.055,
+    "--pixel-impact-spread-y": 1.18 + dynamics.strength * 0.42,
+    "--pixel-bar-recoil": `${0.45 + dynamics.strength * 1.55}px`,
+    "--pixel-bar-rebound": `${-(0.14 + dynamics.strength * 0.5)}px`,
+    "--pixel-beam-glow-blur": `${6 + dynamics.strength * 6}px`,
+    "--pixel-beam-glow-alpha": `${34 + dynamics.strength * 30}%`,
+    "--pixel-final-impact-delay": `${pixelTiming.impactMs}ms`,
+    "--pixel-handoff-delay": `${pixelTiming.handoffMs}ms`,
+    "--pixel-handoff-duration": `${PIXEL_INSERT_HANDOFF_MS}ms`,
     // Glass fill + liquid drivers (real prototype variable names).
     "--bar-fill": `${to}%`,
     "--gl-drop-left": `${glDropLeft}%`,
@@ -5355,31 +5435,132 @@ const LiquidLayers = React.memo(function LiquidLayers({ waveStrength, waveFill, 
   );
 });
 
-function EffectOverlays({ effect, dropCell }: { effect?: UsageEffect; dropCell: boolean }) {
-  if (!effect) return null;
+type PixelInsertSegment = {
+  start: number;
+  width: number;
+  gapLeft: boolean;
+  gapRight: boolean;
+  hopDelay: number;
+};
+
+function pixelInsertSegments(start: number, end: number, shift: number, impactMs: number, insertStart: number, delta: number, hopMs: number): PixelInsertSegment[] {
+  const segments: PixelInsertSegment[] = [];
+  const impactCenter = insertStart + delta / 2;
+  for (let cell = Math.floor(start / 10); cell < 10; cell += 1) {
+    const cellStart = cell * 10;
+    const cellEnd = cellStart + 10;
+    const segmentStart = Math.max(start, cellStart);
+    const segmentEnd = Math.min(end, cellEnd);
+    if (segmentEnd - segmentStart <= 0.001) continue;
+    const finalCenter = (segmentStart + segmentEnd) / 2 + shift;
+    const beamCenterMs = Math.abs(finalCenter - impactCenter) * PIXEL_INSERT_MS_PER_PERCENT;
+    segments.push({
+      start: segmentStart,
+      width: segmentEnd - segmentStart,
+      gapLeft: Math.abs(segmentStart - cellStart) < 0.001 && cellStart > 0,
+      gapRight: Math.abs(segmentEnd - cellEnd) < 0.001 && cellEnd < 100,
+      hopDelay: Math.max(impactMs, Math.round(impactMs + beamCenterMs - hopMs * PIXEL_INSERT_HOP_PEAK)),
+    });
+  }
+  return segments;
+}
+
+type PixelDropPiece = {
+  start: number;
+  width: number;
+  gapLeft: boolean;
+  gapRight: boolean;
+  delay: number;
+};
+
+function pixelDropPieces(start: number, delta: number): PixelDropPiece[] {
+  const pieces: PixelDropPiece[] = [];
+  for (let offset = 0, index = 0; offset < delta - 0.001; offset += 10, index += 1) {
+    const width = Math.min(10, delta - offset);
+    pieces.push({
+      start: start + offset,
+      width,
+      gapLeft: index > 0,
+      gapRight: offset + width < delta - 0.001,
+      delay: PIXEL_INSERT_DROP_START_MS + index * PIXEL_INSERT_DROP_STAGGER_MS,
+    });
+  }
+  return pieces;
+}
+
+const PixelInsertionScene = React.memo(function PixelInsertionScene({
+  effect,
+  leftBeamRef,
+  rightBeamRef,
+}: {
+  effect: UsageEffect;
+  leftBeamRef: React.RefObject<HTMLSpanElement | null>;
+  rightBeamRef: React.RefObject<HTMLSpanElement | null>;
+}) {
+  const from = Math.max(0, Math.min(100, effect.from));
+  const to = Math.max(0, Math.min(100, effect.to));
+  const delta = Math.max(0, to - from);
+  if (delta <= 0.001) return null;
+  const split = pixelInsertStart(from);
+  const dynamics = pixelInsertDynamics(effect);
+  const timing = pixelInsertTiming(effect);
+  const leftSegments = pixelInsertSegments(0, split, 0, timing.impactMs, split, delta, dynamics.hopMs);
+  const rightSegments = pixelInsertSegments(split, from, delta, timing.impactMs, split, delta, dynamics.hopMs);
+  const dropPieces = pixelDropPieces(split, delta);
+  const segmentStyle = (segment: PixelInsertSegment, groupStart: number, groupWidth: number) => ({
+    "--pixel-unit-left": `${(segment.start - groupStart) / groupWidth * 100}%`,
+    "--pixel-unit-width": `${segment.width / groupWidth * 100}%`,
+    "--pixel-unit-gap-left": segment.gapLeft ? "calc(var(--bar-gap) / 2)" : "0px",
+    "--pixel-unit-gap-right": segment.gapRight ? "calc(var(--bar-gap) / 2)" : "0px",
+    "--pixel-hop-delay": `${segment.hopDelay}ms`,
+  } as React.CSSProperties);
+  const rightWidth = from - split;
   return (
-    <>
-      <span className="effect-delta-range" aria-hidden="true" />
-      <span className="effect-edge-glow" aria-hidden="true" />
-      <span className="effect-ripple" aria-hidden="true" />
-      {dropCell && <span className="effect-drop-cell" aria-hidden="true" />}
-      {effect.particles.map((particle, index) => (
+    <span className="pixel-insert-scene" aria-hidden="true">
+      <span className="pixel-insert-track">
+        {Array.from({ length: 10 }, (_, index) => <span key={index} />)}
+      </span>
+      {split > 0.001 && <>
+        <span className="pixel-insert-old-group pixel-insert-old-left" style={{ width: `${split}%` }}>
+          {leftSegments.map((segment, index) => <span key={index} className="pixel-insert-unit" style={segmentStyle(segment, 0, split)} />)}
+        </span>
+      </>}
+      {rightWidth > 0.001 && <>
+        <span
+          className="pixel-insert-old-group pixel-insert-old-right"
+          style={{
+            left: `${split}%`,
+            width: `${rightWidth}%`,
+            "--pixel-right-shift": `${delta / rightWidth * 100}%`,
+          } as React.CSSProperties}
+        >
+          {rightSegments.map((segment, index) => <span key={index} className="pixel-insert-unit" style={segmentStyle(segment, split, rightWidth)} />)}
+        </span>
+      </>}
+      {dropPieces.map((piece, index) => (
         <span
           key={index}
-          className="effect-particle"
+          className="pixel-insert-drop-piece"
           style={{
-            "--particle-x": `${particle.x}px`,
-            "--particle-y": `${particle.y}px`,
-            "--particle-size": `${particle.size}px`,
-            "--particle-delay": `${particle.delay}ms`,
-            "--particle-left": `${Math.min(effect.from, effect.to) + Math.abs(effect.to - effect.from) * particle.position}%`,
+            "--pixel-piece-left": `${piece.start}%`,
+            "--pixel-piece-width": `${piece.width}%`,
+            "--pixel-piece-gap-left": piece.gapLeft ? "calc(var(--bar-gap) / 2)" : "0px",
+            "--pixel-piece-gap-right": piece.gapRight ? "calc(var(--bar-gap) / 2)" : "0px",
+            "--pixel-drop-delay": `${piece.delay}ms`,
+            "--pixel-drop-impact-delay": `${piece.delay + PIXEL_INSERT_DROP_DURATION_MS}ms`,
           } as React.CSSProperties}
-          aria-hidden="true"
-        />
+        >
+          <span />
+        </span>
       ))}
-    </>
+      <span className="pixel-insert-impact" />
+      <span className="pixel-insert-beam-clip">
+        <span ref={leftBeamRef} className="pixel-insert-beam pixel-insert-beam-left" />
+        <span ref={rightBeamRef} className="pixel-insert-beam pixel-insert-beam-right" />
+      </span>
+    </span>
   );
-}
+});
 
 function buildUsageCells(percent: number | undefined, cellCount: number, effect?: UsageEffect): ReactNode[] {
   const normalized = Math.max(0, Math.min(100, Number(percent ?? 0)));
@@ -5764,8 +5945,10 @@ function useMonitorNumberLight({
     let disposed = false;
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
     const duration = glass ? 3300 : 2200;
-    const centerStart = glass ? -0.422222 : -0.27;
     const centerRate = glass ? 1.844444 : 1.665015;
+    const numberLightLag = glass ? GLASS_MONITOR_NUMBER_LIGHT_LAG_MS : PIXEL_MONITOR_NUMBER_LIGHT_LAG_MS;
+    const fadeInLag = numberLightLag / duration;
+    const centerStart = glass ? -0.422222 : -0.27;
     const beamHalfRatio = glass ? GLASS_MONITOR_UNDERLIGHT_HALF_RATIO : 0.225;
 
     const stop = () => {
@@ -5804,9 +5987,11 @@ function useMonitorNumberLight({
         const start = clampPhase(phaseAt(0.5 - beamHalfRatio));
         const peak = clampPhase(phaseAt(0.5));
         const end = clampPhase(phaseAt(0.5 + beamHalfRatio));
+        const delayedStart = Math.min(peak, start + fadeInLag);
         frames = [
           { offset: 0, opacity: 0 },
           { offset: start, opacity: 0 },
+          { offset: delayedStart, opacity: 0 },
           { offset: peak, opacity: maxOpacity },
           { offset: end, opacity: 0 },
           { offset: 1, opacity: 0 },
@@ -5821,11 +6006,14 @@ function useMonitorNumberLight({
         const end = clampPhase(phaseAt((textWidth - fillOffset + beamHalfWidth) / fillWidth));
         const span = Math.max(0.02, end - start);
         const fade = Math.min(0.07, span * 0.22);
-        const fullStart = Math.min(end, start + fade);
+        // Delay only the entrance. The mask keeps the crest's path and original exit so it never trails the wave.
+        const delayedStart = Math.max(start, Math.min(end - fade, start + fadeInLag));
+        const fullStart = Math.min(end, delayedStart + fade);
         const fullEnd = Math.max(fullStart, end - fade);
         frames = [
           { offset: 0, opacity: 0, backgroundPosition: positionAt(0) },
           { offset: start, opacity: 0, backgroundPosition: positionAt(start) },
+          { offset: delayedStart, opacity: 0, backgroundPosition: positionAt(delayedStart) },
           { offset: fullStart, opacity: maxOpacity, backgroundPosition: positionAt(fullStart) },
           { offset: fullEnd, opacity: maxOpacity, backgroundPosition: positionAt(fullEnd) },
           { offset: end, opacity: 0, backgroundPosition: positionAt(end) },
@@ -6020,6 +6208,170 @@ function useAiUsageNumberLight({
   return { numberRef, leftLightRef, rightLightRef, barRef };
 }
 
+function usePixelInsertionLights({
+  enabled,
+  effect,
+  phaseOrigin,
+}: {
+  enabled: boolean;
+  effect?: UsageEffect;
+  phaseOrigin?: number;
+}) {
+  const numberRef = useRef<HTMLSpanElement>(null);
+  const leftLightRef = useRef<HTMLSpanElement>(null);
+  const rightLightRef = useRef<HTMLSpanElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
+  const leftBeamRef = useRef<HTMLSpanElement>(null);
+  const rightBeamRef = useRef<HTMLSpanElement>(null);
+  const startTimeRef = useRef<{ id?: number; value: number }>({ value: 0 });
+
+  useLayoutEffect(() => {
+    const number = numberRef.current;
+    const leftLight = leftLightRef.current;
+    const rightLight = rightLightRef.current;
+    const bar = barRef.current;
+    const leftBeam = leftBeamRef.current;
+    const rightBeam = rightBeamRef.current;
+    const elements = [leftLight, rightLight, leftBeam, rightBeam];
+    if (!enabled || !effect || phaseOrigin === undefined || !number || !leftLight || !rightLight || !bar || !leftBeam || !rightBeam) {
+      elements.forEach((element) => element?.getAnimations().forEach((animation) => animation.cancel()));
+      return;
+    }
+
+    let disposed = false;
+    let geometryKey = "";
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const timing = pixelInsertTiming(effect);
+    const dynamics = pixelInsertDynamics(effect);
+    const target = Math.max(0, Math.min(100, effect.to));
+    const insertStart = pixelInsertStart(effect.from);
+    const impactCenterPct = insertStart + dynamics.delta / 2;
+    const rebuild = (force = false) => {
+      if (disposed) return;
+      if (reducedMotion.matches) {
+        elements.forEach((element) => element?.getAnimations().forEach((animation) => animation.cancel()));
+        return;
+      }
+      const scene = leftBeam.closest<HTMLElement>(".pixel-insert-scene");
+      if (!scene) return;
+      const sceneRect = scene.getBoundingClientRect();
+      const numberRect = number.getBoundingClientRect();
+      if (sceneRect.width <= 0.5 || numberRect.width <= 0.5) return;
+      const nextGeometryKey = `${sceneRect.left.toFixed(2)}:${sceneRect.width.toFixed(2)}:${numberRect.left.toFixed(2)}`;
+      if (!force && nextGeometryKey === geometryKey) return;
+      geometryKey = nextGeometryKey;
+      elements.forEach((element) => element?.getAnimations().forEach((animation) => animation.cancel()));
+      const fillWidth = sceneRect.width * target / 100;
+      const center = sceneRect.width * impactCenterPct / 100;
+      const leftDistance = Math.max(0, center);
+      const rightDistance = Math.max(0, fillWidth - center);
+      const cellWidth = sceneRect.width / 10;
+      const beamWidth = Math.min(sceneRect.width, cellWidth * (1.75 + dynamics.strength * 0.5));
+      const peakOpacity = 0.58 + dynamics.strength * 0.4;
+      const numberOffset = sceneRect.left - numberRect.left;
+      leftLight.style.backgroundSize = `${beamWidth}px 145%`;
+      rightLight.style.backgroundSize = `${beamWidth}px 145%`;
+      leftBeam.style.width = `${beamWidth}px`;
+      rightBeam.style.width = `${beamWidth}px`;
+      number.style.setProperty("--monitor-number-glow-blur", `${4 + dynamics.strength * 7}px`);
+      number.style.setProperty("--monitor-number-glow-alpha", `${30 + dynamics.strength * 42}%`);
+
+      const makeFrames = (end: number, textLayer: boolean, travelDuration: number): Keyframe[] => {
+        const totalDuration = travelDuration + PIXEL_INSERT_BEAM_FADE_MS;
+        const arrivalOffset = travelDuration / totalDuration;
+        const fadeInOffset = arrivalOffset * 0.12;
+        const frame = (offset: number, travelProgress: number, opacity: number): Keyframe => {
+          const position = center + (end - center) * travelProgress - beamWidth / 2;
+          return textLayer
+            ? { offset, opacity, backgroundPosition: `${numberOffset + position}px 50%` }
+            : { offset, opacity, transform: `translate3d(${position}px, 0, 0)` };
+        };
+        return [
+          frame(0, 0, 0),
+          frame(fadeInOffset, 0.12, peakOpacity),
+          frame(arrivalOffset, 1, peakOpacity),
+          frame(1, 1, 0),
+        ];
+      };
+
+      const animations = [
+        { element: leftLight, end: 0, textLayer: true, distance: leftDistance, travelDuration: impactCenterPct * PIXEL_INSERT_MS_PER_PERCENT },
+        { element: rightLight, end: fillWidth, textLayer: true, distance: rightDistance, travelDuration: Math.max(0, target - impactCenterPct) * PIXEL_INSERT_MS_PER_PERCENT },
+        { element: leftBeam, end: 0, textLayer: false, distance: leftDistance, travelDuration: impactCenterPct * PIXEL_INSERT_MS_PER_PERCENT },
+        { element: rightBeam, end: fillWidth, textLayer: false, distance: rightDistance, travelDuration: Math.max(0, target - impactCenterPct) * PIXEL_INSERT_MS_PER_PERCENT },
+      ];
+      const impactAt = phaseOrigin + timing.impactMs;
+      const timelineNow = typeof document.timeline.currentTime === "number" ? document.timeline.currentTime : performance.now();
+      if (startTimeRef.current.id !== effect.id) {
+        startTimeRef.current = { id: effect.id, value: timelineNow + impactAt - performance.now() };
+      }
+      const startTime = startTimeRef.current.value;
+      animations.forEach(({ element, end, textLayer, distance, travelDuration }) => {
+        if (distance <= 0.5) {
+          element.style.opacity = "0";
+          return;
+        }
+        element.style.opacity = "";
+        const frames = makeFrames(end, textLayer, travelDuration);
+        const duration = travelDuration + PIXEL_INSERT_BEAM_FADE_MS;
+        const animation = element.animate(frames, { duration, easing: "linear", fill: "both" });
+        animation.startTime = startTime;
+      });
+    };
+
+    const observer = new ResizeObserver(() => rebuild());
+    observer.observe(bar);
+    const handleMotion = () => {
+      geometryKey = "";
+      rebuild(true);
+    };
+    reducedMotion.addEventListener("change", handleMotion);
+    rebuild(true);
+    void document.fonts.ready.then(() => { if (!disposed) rebuild(); });
+    return () => {
+      disposed = true;
+      observer.disconnect();
+      reducedMotion.removeEventListener("change", handleMotion);
+      elements.forEach((element) => element?.getAnimations().forEach((animation) => animation.cancel()));
+      number.style.removeProperty("--monitor-number-glow-blur");
+      number.style.removeProperty("--monitor-number-glow-alpha");
+    };
+  }, [effect?.id, enabled, phaseOrigin]);
+
+  return { numberRef, leftLightRef, rightLightRef, barRef, leftBeamRef, rightBeamRef };
+}
+
+function usePixelInsertionImpact(effect: UsageEffect | undefined, enabled: boolean, phaseOrigin: number | undefined) {
+  const active = enabled && effect !== undefined && effect.to > effect.from;
+  const effectId = active ? effect.id : undefined;
+  const reducedNow = active && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const [state, setState] = useState<{ id?: number; impacted: boolean; suppressed: boolean }>({ impacted: true, suppressed: false });
+  const impacted = !active || reducedNow || (state.id === effectId && state.impacted);
+  const sceneActive = active && !reducedNow && !(state.id === effectId && state.suppressed);
+
+  useEffect(() => {
+    if (!active || effectId === undefined) return;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const finish = (suppressed = false) => setState({ id: effectId, impacted: true, suppressed });
+    if (reducedMotion.matches) {
+      finish(true);
+      return;
+    }
+    setState({ id: effectId, impacted: false, suppressed: false });
+    const elapsed = phaseOrigin === undefined ? 0 : Math.max(0, performance.now() - phaseOrigin);
+    const impactMs = effect ? pixelInsertTiming(effect).impactMs : 0;
+    const timeout = window.setTimeout(() => finish(false), Math.max(0, impactMs - elapsed));
+    const handleMotion = () => { if (reducedMotion.matches) finish(true); };
+    reducedMotion.addEventListener("change", handleMotion);
+    return () => {
+      window.clearTimeout(timeout);
+      reducedMotion.removeEventListener("change", handleMotion);
+    };
+  }, [active, effectId, phaseOrigin]);
+
+  return { active: sceneActive, impacted };
+}
+
 function usePixelUsageNumberFlash(percent: number | undefined, enabled: boolean) {
   const previousRef = useRef(percent);
   const timerRef = useRef(0);
@@ -6029,7 +6381,7 @@ function usePixelUsageNumberFlash(percent: number | undefined, enabled: boolean)
     const previous = previousRef.current;
     previousRef.current = percent;
     window.clearTimeout(timerRef.current);
-    if (!enabled || previous === undefined || percent === undefined || previous === percent) {
+    if (!enabled || previous === undefined || percent === undefined || percent <= previous) {
       setFlash((current) => current.active ? { ...current, active: false } : current);
       return;
     }
@@ -6169,7 +6521,6 @@ const UsageBlock = React.memo(function UsageBlock({ snapshot, accent, flash = fa
   const sourceState = stale ? "stale" : snapshot.status !== "ok" ? snapshot.status : paused ? "paused" : "ok";
   const metaLeft = usageMetaLeft(snapshot);
   const metaRight = usageMetaRight(snapshot);
-  const percentText = percent !== undefined ? `${Math.round(percent)}%` : "--";
   const waveStrength = effect && dropCell ? glassWaveStrength(Math.abs(effect.to - effect.from)) : 0.32;
   const waveFill = effect && dropCell ? Math.max(0, Math.min(100, effect.to)) : percent ?? 0;
   const effectOriginRef = useRef<{ id?: number; time: number }>({ time: 0 });
@@ -6179,7 +6530,13 @@ const UsageBlock = React.memo(function UsageBlock({ snapshot, accent, flash = fa
     effectOriginRef.current = { time: 0 };
   }
   const phaseOrigin = effect ? effectOriginRef.current.time : undefined;
-  const { numberRef, leftLightRef, rightLightRef, barRef } = useAiUsageNumberLight({
+  const pixelInsertion = usePixelInsertionImpact(effect, !glass && dropCell && effectsEnabled, phaseOrigin);
+  const pixelStagesValue = pixelInsertion.active && percent !== undefined && effect !== undefined && Math.abs(percent - effect.to) < 0.01;
+  const displayPercent = pixelStagesValue && !pixelInsertion.impacted && effect
+    ? Math.max(0, Math.min(100, effect.from))
+    : percent;
+  const percentText = displayPercent !== undefined ? `${Math.round(displayPercent)}%` : "--";
+  const glassNumberLight = useAiUsageNumberLight({
     enabled: glass && dropCell && effect !== undefined,
     fill: waveFill,
     strength: waveStrength,
@@ -6187,7 +6544,13 @@ const UsageBlock = React.memo(function UsageBlock({ snapshot, accent, flash = fa
     phaseOrigin,
     text: percentText,
   });
-  const pixelNumberFlash = usePixelUsageNumberFlash(percent, effectsEnabled && !glass);
+  const pixelNumberLight = usePixelInsertionLights({
+    enabled: pixelInsertion.active,
+    effect,
+    phaseOrigin,
+  });
+  const numberLight = glass ? glassNumberLight : pixelNumberLight;
+  const pixelNumberFlash = usePixelUsageNumberFlash(percent, effectsEnabled && !glass && !pixelInsertion.active);
   const pixelFlashClass = pixelNumberFlash.active ? ` pixel-number-flash-${pixelNumberFlash.sequence % 2}` : "";
   return (
     <article className={`usage compact provider-tile ${providerKind(snapshot.provider)}${flash ? " mark-flash" : ""}${paused ? " mark-paused" : ""}${onFlip ? " flippable" : ""}`} style={providerAccentStyle(accent)} onClick={onFlip} title={onFlip ? "Tap for reset countdown" : undefined}>
@@ -6199,12 +6562,12 @@ const UsageBlock = React.memo(function UsageBlock({ snapshot, accent, flash = fa
         </span>
       </div>
       <div className="metric">
-        <span ref={numberRef} className={`percent ai-usage-number${pixelFlashClass}`}><span className="ai-number-base">{percentText}</span><span ref={leftLightRef} className="ai-number-light ai-number-light-left" aria-hidden="true">{percentText}</span><span ref={rightLightRef} className="ai-number-light ai-number-light-right" aria-hidden="true">{percentText}</span></span>
+        <span ref={numberLight.numberRef} className={`percent ai-usage-number${pixelFlashClass}`}><span className="ai-number-base">{percentText}</span><span ref={numberLight.leftLightRef} className="ai-number-light ai-number-light-left" aria-hidden="true">{percentText}</span><span ref={numberLight.rightLightRef} className="ai-number-light ai-number-light-right" aria-hidden="true">{percentText}</span></span>
         <span className="message">{providerMessage(snapshot)}</span>
       </div>
-      <div ref={barRef} key={effect?.id ?? "idle"} className={`bar${effect ? " usage-effect-bar" : ""}${effect && dropCell ? " drop-impact" : ""}`} style={effectStyle(effect, percent)} aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
-        {buildUsageCells(percent, 10, effect)}
-        <EffectOverlays effect={effect} dropCell={dropCell} />
+      <div ref={numberLight.barRef} key={effect?.id ?? "idle"} className={`bar${effect ? " usage-effect-bar" : ""}${effect && dropCell ? " drop-impact" : ""}${pixelInsertion.active ? " pixel-insert-active" : ""}`} style={effectStyle(effect, percent)} aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
+        {buildUsageCells(percent, 10, glass ? effect : undefined)}
+        {pixelInsertion.active && effect && <PixelInsertionScene effect={effect} leftBeamRef={pixelNumberLight.leftBeamRef} rightBeamRef={pixelNumberLight.rightBeamRef} />}
         <LiquidLayers
           waveStrength={effect && dropCell ? waveStrength : undefined}
           waveFill={effect && dropCell ? waveFill : undefined}
@@ -6224,32 +6587,23 @@ function StatusPill({ status, label }: { status: UsageStatus | "warn"; label?: s
   return <span className={`pill ${status}`}>{label ?? readableStatus(status as UsageStatus)}</span>;
 }
 
-function ProviderLifecycleToasts({ notices }: { notices: Partial<Record<Provider, ProviderLifecycle>> }) {
+function WidgetToasts({ notices, monitorToasts }: { notices: Partial<Record<Provider, ProviderLifecycle>>; monitorToasts: MonitorToast[] }) {
   // Every account, not a fixed three — a freshly added provider must toast on the widget too.
-  const rows = Object.values(notices).filter((lifecycle): lifecycle is ProviderLifecycle => Boolean(lifecycle));
-  if (!rows.length) return null;
+  const rows = Object.values(notices).filter((lifecycle): lifecycle is ProviderLifecycle =>
+    Boolean(lifecycle) && !(lifecycle?.phase === "stopped" && lifecycle.generation === 1),
+  );
   return (
     <div className="provider-lifecycle-toasts" aria-live="polite" aria-atomic="false">
       {rows.map((lifecycle) => (
-        <div key={`${lifecycle.provider}-${lifecycle.generation}-${lifecycle.phase}`} className={`provider-lifecycle-toast ${lifecycleTone(lifecycle)}`}>
+        <div key={`provider-${lifecycle.provider}-${lifecycle.generation}-${lifecycle.phase}`} className={`provider-lifecycle-toast provider-toast ${lifecycleTone(lifecycle)}`}>
           <span className="provider-lifecycle-dot" aria-hidden="true" />
           <span>{lifecycle.message ?? `${providerLabel(lifecycle.provider)} ${lifecycleLabel(lifecycle)}`}</span>
         </div>
       ))}
-    </div>
-  );
-}
-
-// Transient toasts for system-monitor show/hide, mirroring the account lifecycle toasts (reuses the same
-// container/skin). Driven by the "usageview-monitor-toast" event the Settings window emits.
-function MonitorToasts({ toasts }: { toasts: { id: number; text: string; tone: string }[] }) {
-  if (!toasts.length) return null;
-  return (
-    <div className="provider-lifecycle-toasts" aria-live="polite" aria-atomic="false">
-      {toasts.map((t) => (
-        <div key={t.id} className={`provider-lifecycle-toast ${t.tone}`}>
+      {monitorToasts.map((toast) => (
+        <div key={`monitor-${toast.id}`} className={`provider-lifecycle-toast monitor-toast ${toast.tone}`}>
           <span className="provider-lifecycle-dot" aria-hidden="true" />
-          <span>{t.text}</span>
+          <span>{toast.text}</span>
         </div>
       ))}
     </div>

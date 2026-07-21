@@ -416,12 +416,7 @@
           0 8px 22px -14px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 24%), transparent);
       }
 
- .theme-glass .bar .cell,
-.theme-glass .effect-delta-range,
-.theme-glass .effect-edge-glow,
-.theme-glass .effect-ripple,
-.theme-glass .effect-drop-cell,
-.theme-glass .effect-particle {
+ .theme-glass .bar .cell {
         display: none !important;
       }
 
@@ -835,27 +830,55 @@
   .theme-glass .monitor-scan .glass-monitor-wave { display: none; }
 }
 
-/* Lifecycle + sensor toasts (widget). The Pixel chip — hard 3px offset shadow, mono uppercase, 4px
-   corners — reads as out-of-place in Glass, so restyle to the frosted-panel language the modal and
-   tooltips use. Both ProviderLifecycleToasts and MonitorToasts share .provider-lifecycle-toast, so this
-   covers both. Only the chip changes; the centered container and the tone dot are left alone. */
+/* Lifecycle + sensor toasts use a floating glass ribbon, not a rounded version of the Pixel chip. */
 .theme-glass .provider-lifecycle-toast {
-  border-radius: 13px;
-  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--paper-glass-line));
-  background: color-mix(in srgb, var(--paper-panel) 82%, transparent);
-  backdrop-filter: blur(9px) saturate(150%);
-  -webkit-backdrop-filter: blur(9px) saturate(150%);
+  --toast-tone: var(--warn);
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-width: min(230px, calc(100vw - 28px));
+  max-width: 100%;
+  min-height: 38px;
+  gap: 11px;
+  padding: 9px 16px 9px 12px;
+  border-radius: 15px 7px 15px 7px;
+  border: 1px solid color-mix(in srgb, var(--toast-tone) 24%, var(--paper-glass-line));
+  background:
+    linear-gradient(105deg, color-mix(in srgb, var(--toast-tone) 11%, transparent), transparent 48%),
+    color-mix(in srgb, var(--paper-panel) 76%, transparent);
+  backdrop-filter: blur(16px) saturate(175%);
+  -webkit-backdrop-filter: blur(16px) saturate(175%);
   color: var(--paper-ink);
   box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 16%), transparent),
-    inset 1.5px 2px 0 -2px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 80%), transparent),
-    0 16px 34px -18px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 46%), transparent);
-  font-family: inherit;
-  font-weight: 600;
-  font-size: 13px;
-  line-height: 1.2;
+    inset 0 1px 0 color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 58%), transparent),
+    inset 0 -1px 0 color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 16%), transparent),
+    inset 1px 0 0 color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 22%), transparent),
+    0 18px 38px -20px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 52%), transparent),
+    0 0 24px -16px color-mix(in srgb, var(--toast-tone) 48%, transparent);
+  font: 600 13px/1.25 var(--font-body);
   letter-spacing: 0.01em;
   text-transform: none;
 }
-.theme-glass .provider-lifecycle-toast.ok { border-color: color-mix(in srgb, var(--ok) 44%, var(--paper-glass-line)); }
-.theme-glass .provider-lifecycle-toast.page_unavailable { border-color: color-mix(in srgb, var(--danger) 50%, var(--paper-glass-line)); }
+.theme-glass .provider-lifecycle-toast::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 70% 55% at 24% -8%, color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 42%), transparent), transparent 72%),
+    linear-gradient(180deg, color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 12%), transparent), transparent 42%);
+}
+.theme-glass .provider-lifecycle-toast > span { position: relative; z-index: 1; }
+.theme-glass .provider-lifecycle-toast.ok { --toast-tone: var(--ok); }
+.theme-glass .provider-lifecycle-toast.page_unavailable { --toast-tone: var(--danger); }
+.theme-glass .provider-lifecycle-dot {
+  width: 3px;
+  height: 22px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--toast-tone);
+  box-shadow:
+    0 0 7px color-mix(in srgb, var(--toast-tone) 78%, transparent),
+    0 0 16px color-mix(in srgb, var(--toast-tone) 40%, transparent);
+}

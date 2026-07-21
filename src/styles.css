@@ -579,15 +579,17 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 
 .message { max-width: 128px; color: var(--muted); text-align: right; font-size: 12px; overflow-wrap: anywhere; }
 .bar {
+  --bar-pad: 3px;
+  --bar-gap: 2px;
   position: relative;
   width: 100%;
   min-width: 0;
   height: 22px;
   margin: 12px 0 9px;
-  padding: 3px;
+  padding: var(--bar-pad);
   display: grid;
   grid-template-columns: repeat(10, 1fr);
-  gap: 2px;
+  gap: var(--bar-gap);
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 2px;
@@ -612,231 +614,226 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
 }
 
 /* ============================================================================
-   USAGE EFFECT — chỉ port CSS trong vùng này (từ HTML sandbox design/usage-effect-sandbox.html).
-   Khi đem hiệu ứng từ HTML vào: CHỈ thay text giữa marker START..END dưới đây.
-   Ngoài vùng này (layout / theme / tile) KHÔNG đụng → không thể vỡ bố cục app.
+   PIXEL AI INSERTION — the old fill opens an exact delta-sized pocket before the new block falls.
+   Glass has its own liquid scene and never matches these Pixel-scoped selectors.
+   ========================================================================== */
+.pixel-insert-scene { display: none; }
 
-   Hợp đồng biến/class mà JSX (effectStyle + EffectOverlays trong main.tsx) cam kết cung cấp:
-   - vars trên .bar khi có effect:
-       --delta-start --delta-width --delta-edge --drop-left --drop-width
-       --effect-duration --effect-impact-duration --effect-impact-delay
-       --effect-bar-brightness --effect-delta-brightness
-   - class overlay (con của .bar): .effect-delta-range .effect-edge-glow
-       .effect-ripple .effect-drop-cell .effect-particle
-       (.effect-particle nhận: --particle-x --particle-y --particle-size --particle-delay)
-   - bar khi active: .usage-effect-bar ; cell nền: .cell.partial.fx-partial > .mini-cell(.on/.edge)
-   Cần biến/class MỚI → đó là lần DUY NHẤT sửa main.tsx, có chủ đích.
-   ==== USAGE EFFECT START ==== */
-.cell.partial.fx-partial {
+:is(.theme-terminal, .theme-light) .bar.pixel-insert-active {
+  overflow: visible;
+  clip-path: inset(-76px -12px -12px -12px);
+  will-change: transform;
+  animation: pixel-insert-bar-recoil 190ms cubic-bezier(.22, .72, .28, 1) var(--pixel-final-impact-delay, 850ms) both;
+}
+
+:is(.theme-terminal, .theme-light) .bar.pixel-insert-active > .cell {
+  animation: pixel-insert-final-grid var(--pixel-handoff-duration, 200ms) ease-out var(--pixel-handoff-delay, 1700ms) both;
+}
+
+:is(.theme-terminal, .theme-light) .bar.pixel-insert-active .pixel-insert-scene {
+  position: absolute;
+  display: block;
+  pointer-events: none;
+  left: var(--bar-pad);
+  right: var(--bar-pad);
+  top: var(--bar-pad);
+  bottom: var(--bar-pad);
+  z-index: 4;
+  overflow: visible;
+  animation: pixel-insert-scene-handoff var(--pixel-handoff-duration, 200ms) ease-out var(--pixel-handoff-delay, 1700ms) both;
+}
+
+.pixel-insert-track {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
   display: grid;
-  grid-template-columns: repeat(10, 1fr);
-  column-gap: 1px;
-  padding: 0;
+  grid-template-columns: repeat(10, minmax(0, 1fr));
+  gap: var(--bar-gap);
+}
+
+.pixel-insert-track > span {
+  min-width: 0;
   background: color-mix(in srgb, var(--fg) 9%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 4%, transparent);
 }
-.cell.partial.fx-partial::after {
-  display: none;
-}
-.cell.partial.fx-partial .mini-cell {
-  min-width: 0;
-  background: color-mix(in srgb, var(--fg) 8%, transparent);
-  box-shadow: none;
-}
-.cell.partial.fx-partial .mini-cell.on {
-  background:
-    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.2) 0 1px, transparent 1px 4px),
-    linear-gradient(180deg, color-mix(in srgb, var(--tone) 78%, #fff), var(--tone));
-  box-shadow:
-    0 0 9px color-mix(in srgb, var(--tone) 62%, transparent),
-    0 0 18px color-mix(in srgb, var(--tone) 28%, transparent),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.24);
-}
-.cell.partial.fx-partial .mini-cell.edge {
-  filter: brightness(1.35);
-  box-shadow:
-    0 0 10px color-mix(in srgb, var(--tone) 78%, transparent),
-    0 0 22px color-mix(in srgb, var(--tone) 42%, transparent),
-    1px 0 0 color-mix(in srgb, var(--tone) 78%, #fff),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.34);
-}
-.cell.partial.fx-partial .mini-cell.added {
-  animation: usage-mini-cell-land var(--effect-duration, 4000ms) cubic-bezier(.16, 1, .3, 1) both;
-}
-.usage-effect-bar {
-  overflow: visible;
-  clip-path: inset(-90px -48px -48px -48px);
-  will-change: transform, box-shadow;
-  border-color: color-mix(in srgb, var(--tone) 62%, var(--border));
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--tone) 26%, transparent) inset,
-    0 0 15px color-mix(in srgb, var(--tone) 18%, transparent);
-  animation: usage-bar-glow var(--effect-duration, 4000ms) cubic-bezier(.16, 1, .3, 1) both;
-}
-.bar.usage-effect-bar.drop-impact {
-  animation:
-    usage-bar-glow var(--effect-duration, 4000ms) cubic-bezier(.16, 1, .3, 1) both,
-    impact-shake 360ms steps(2, end) var(--effect-impact-delay, 520ms) both;
-}
-.effect-delta-range,
-.effect-edge-glow,
-.effect-ripple,
-.effect-drop-cell,
-.effect-particle {
+
+.pixel-insert-old-group {
   position: absolute;
-  pointer-events: none;
-  z-index: 2;
-}
-.effect-delta-range {
-  left: var(--delta-start);
-  top: 2px;
-  bottom: 2px;
-  width: max(var(--delta-width), 3px);
-  background:
-    linear-gradient(90deg, color-mix(in srgb, var(--tone) 38%, transparent), color-mix(in srgb, var(--tone) 72%, #fff) 78%, color-mix(in srgb, var(--tone) 92%, #fff)),
-    linear-gradient(180deg, color-mix(in srgb, var(--tone) 84%, #fff), var(--tone));
-  border-radius: 2px;
-  box-shadow:
-    2px 0 0 color-mix(in srgb, var(--tone) 78%, #fff),
-    7px 0 12px color-mix(in srgb, var(--tone) 58%, transparent),
-    12px 0 26px color-mix(in srgb, var(--tone) 34%, transparent),
-    inset 0 0 0 1px rgba(255, 255, 255, 0.28);
-  opacity: 0;
-  filter: brightness(var(--effect-delta-brightness, 1));
-  animation: usage-delta-range var(--effect-duration, 4000ms) cubic-bezier(.2, .8, .2, 1) both;
-}
-.effect-delta-range::after {
-  content: "";
-  position: absolute;
-  right: -2px;
-  top: -3px;
-  bottom: -3px;
-  width: 6px;
-  background: color-mix(in srgb, var(--tone) 74%, #fff);
-  opacity: min(1, calc(0.85 * var(--effect-delta-brightness, 1)));
-  box-shadow:
-    0 0 10px color-mix(in srgb, var(--tone) 88%, transparent),
-    0 0 24px color-mix(in srgb, var(--tone) 48%, transparent);
-}
-.effect-edge-glow {
-  left: var(--delta-edge);
+  left: 0;
   top: 0;
   bottom: 0;
-  width: 10px;
-  transform: translateX(-50%);
-  background: linear-gradient(90deg, transparent, color-mix(in srgb, white 72%, var(--tone) 28%), transparent);
-  filter: brightness(var(--effect-delta-brightness, 1));
-  opacity: 0;
-  animation: usage-edge-glow var(--effect-duration, 4000ms) ease-out both;
+  z-index: 2;
+  will-change: transform;
 }
-.effect-ripple {
-  left: var(--delta-start);
-  top: 2px;
-  bottom: 2px;
-  width: max(var(--delta-width), 3px);
-  transform-origin: center;
-  border: 1px solid color-mix(in srgb, var(--tone) 70%, white 30%);
-  border-radius: 2px;
-  box-shadow:
-    0 0 0 0 color-mix(in srgb, var(--tone) 70%, transparent),
-    0 0 0 0 color-mix(in srgb, var(--tone) 34%, transparent);
-  opacity: 0;
-  animation: usage-pixel-ripple var(--effect-duration, 4000ms) cubic-bezier(.16, 1, .3, 1) both;
+
+.pixel-insert-old-right {
+  animation: pixel-insert-group-shift var(--pixel-shift-duration, 300ms) cubic-bezier(.22, .82, .24, 1) both;
 }
-.effect-drop-cell {
-  left: var(--drop-left);
+
+.pixel-insert-unit {
+  position: absolute;
+  left: calc(var(--pixel-unit-left) + var(--pixel-unit-gap-left, 0px));
   top: 0;
-  width: var(--drop-width, 8px);
-  height: calc(100% - 2px);
-  transform: translate(-50%, 0);
-  background: linear-gradient(180deg, color-mix(in srgb, var(--tone) 82%, white), var(--tone));
+  bottom: 0;
+  width: max(0px, calc(var(--pixel-unit-width) - var(--pixel-unit-gap-left, 0px) - var(--pixel-unit-gap-right, 0px)));
+  border-radius: 1px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--tone) 76%, #fff), var(--tone));
   box-shadow:
-    0 0 10px color-mix(in srgb, var(--tone) 78%, transparent),
-    inset 1px 1px 0 rgba(255, 255, 255, .28),
+    0 0 8px color-mix(in srgb, var(--tone) 34%, transparent),
+    inset 1px 1px 0 rgba(255, 255, 255, .18),
     inset -1px -1px 0 color-mix(in srgb, #000 18%, transparent);
+  will-change: transform;
+  animation: pixel-insert-hop var(--pixel-hop-duration, 450ms) linear var(--pixel-hop-delay, 850ms) both;
+}
+
+.pixel-insert-unit::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
   opacity: 0;
-  filter: brightness(var(--effect-bar-brightness, 1));
-  image-rendering: pixelated;
-  will-change: transform, opacity;
-  animation: usage-drop-cell var(--effect-impact-duration, 900ms) cubic-bezier(0.22, 0.9, 0.22, 1) forwards;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .72), color-mix(in srgb, var(--tone) 58%, transparent));
+  box-shadow: 0 0 9px color-mix(in srgb, var(--tone) 58%, transparent);
+  will-change: opacity;
+  animation: pixel-insert-hop-light var(--pixel-hop-duration, 450ms) linear var(--pixel-hop-delay, 850ms) both;
 }
-.effect-particle {
-  left: var(--particle-left, var(--delta-edge));
-  top: 50%;
-  width: var(--particle-size);
-  height: var(--particle-size);
-  background: color-mix(in srgb, var(--tone) 78%, white 22%);
-  box-shadow: 0 0 8px color-mix(in srgb, var(--tone) 58%, transparent);
+
+.pixel-insert-drop-piece {
+  position: absolute;
+  left: calc(var(--pixel-piece-left) + var(--pixel-piece-gap-left, 0px));
+  top: 0;
+  bottom: 0;
+  z-index: 3;
+  width: max(2px, calc(var(--pixel-piece-width) - var(--pixel-piece-gap-left, 0px) - var(--pixel-piece-gap-right, 0px)));
   opacity: 0;
   will-change: transform, opacity;
-  animation: usage-particle-burst var(--effect-duration, 4000ms) ease-out both;
-  animation-delay: var(--particle-delay);
+  animation: pixel-insert-piece-fall 430ms cubic-bezier(.38, 0, .78, .58) var(--pixel-drop-delay, 420ms) both;
 }
-@keyframes usage-bar-glow {
-  0%, 18% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--tone) 18%, transparent) inset; }
-  34%, 58% {
-    box-shadow:
-      0 0 0 1px color-mix(in srgb, var(--tone) 42%, transparent) inset,
-      0 0 18px color-mix(in srgb, var(--tone) 24%, transparent),
-      0 0 34px color-mix(in srgb, var(--tone) 12%, transparent);
-  }
-  100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--tone) 12%, transparent) inset; }
+
+.pixel-insert-drop-piece > span {
+  position: absolute;
+  inset: 0;
+  border-radius: 1px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--tone) 76%, #fff), var(--tone));
+  box-shadow:
+    0 0 7px color-mix(in srgb, var(--tone) 38%, transparent),
+    inset 1px 1px 0 rgba(255, 255, 255, .22),
+    inset -1px -1px 0 color-mix(in srgb, #000 18%, transparent);
+  transform-origin: 50% 100%;
 }
-@keyframes usage-mini-cell-land {
-  0%, 34% { opacity: .18; transform: translateY(-5px); filter: brightness(1); }
-  46%, 64% { opacity: 1; transform: translateY(0); filter: brightness(var(--effect-bar-brightness, 1.25)); }
-  100% { opacity: 1; transform: translateY(0); filter: brightness(1); }
+
+.pixel-insert-drop-piece > span::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  background: #fff;
+  mix-blend-mode: screen;
+  will-change: opacity;
+  animation: pixel-insert-piece-contact 150ms ease-out var(--pixel-drop-impact-delay, 850ms) both;
 }
-@keyframes usage-delta-range {
-  0%, 12% { opacity: 0; transform: scaleX(.72); transform-origin: right center; }
-  22%, 72% { opacity: .86; transform: scaleX(1); }
-  100% { opacity: 0; transform: scaleX(1); }
+
+.pixel-insert-impact {
+  position: absolute;
+  left: var(--pixel-gap-start);
+  top: 0;
+  bottom: 0;
+  z-index: 4;
+  width: var(--pixel-insert-width);
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, #fff 54%, var(--tone));
+  border-radius: 1px;
+  box-shadow: 0 0 9px color-mix(in srgb, var(--tone) 54%, transparent);
+  pointer-events: none;
+  opacity: 0;
+  transform-origin: 50% 50%;
+  will-change: transform, opacity;
+  animation: pixel-insert-impact-spread 280ms cubic-bezier(.16, .74, .22, 1) var(--pixel-final-impact-delay, 850ms) both;
 }
-@keyframes usage-edge-glow {
-  0%, 30% { opacity: 0; transform: translateX(-50%) scaleX(.6); }
-  42%, 68% { opacity: .62; transform: translateX(-50%) scaleX(.82); }
-  100% { opacity: 0; transform: translateX(-50%) scaleX(1.3); }
+
+@keyframes pixel-insert-group-shift {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(var(--pixel-right-shift), 0, 0); }
 }
-@keyframes usage-pixel-ripple {
-  0%, 30% { opacity: 0; transform: scaleY(.3); }
-  40% {
-    opacity: .76;
-    transform: scaleY(1.12);
-    box-shadow:
-      0 0 0 calc(6px * var(--impact-strength, 1)) color-mix(in srgb, var(--tone) 42%, transparent),
-      0 0 0 calc(14px * var(--impact-strength, 1)) color-mix(in srgb, var(--tone) 18%, transparent);
-  }
-  72%, 100% {
-    opacity: 0;
-    transform: scaleY(2.6);
-    box-shadow:
-      0 0 0 calc(18px * var(--impact-strength, 1)) transparent,
-      0 0 0 calc(36px * var(--impact-strength, 1)) transparent;
-  }
+
+@keyframes pixel-insert-piece-fall {
+  0% { opacity: 0; transform: translate3d(0, calc(-100% - 2px), 0); }
+  12% { opacity: 1; transform: translate3d(0, calc(-100% - 2px), 0); }
+  100% { opacity: 1; transform: translate3d(0, 0, 0); }
 }
-@keyframes usage-drop-cell {
-  0% { opacity: 0; transform: translate(-50%, -72px) scale(1.72); }
-  12% { opacity: 1; transform: translate(-50%, -64px) scale(1.56); }
-  48% { opacity: 1; transform: translate(-50%, -7px) scale(1.08); }
-  58% { transform: translate(-50%, 0) scale(1.12, 0.82); }
-  70% { transform: translate(-50%, -3px) scale(0.94, 1.08); }
-  84% { transform: translate(-50%, 0) scale(1.04, 0.96); }
-  100% { opacity: 0; transform: translate(-50%, 0) scale(1); }
+
+@keyframes pixel-insert-piece-contact {
+  0%, 100% { opacity: 0; }
+  18% { opacity: var(--pixel-contact-opacity, .4); }
 }
-@keyframes impact-shake {
-  0%, 100% { transform: translate(0, 0) scaleY(1); }
-  16% { transform: translate(calc(var(--pixel-impact-strength, 1) * -1.7px), calc(var(--pixel-impact-strength, 1) * .7px)) scaleY(.96); }
-  34% { transform: translate(calc(var(--pixel-impact-strength, 1) * 1.5px), calc(var(--pixel-impact-strength, 1) * -.55px)) scaleY(1.025); }
-  52% { transform: translate(calc(var(--pixel-impact-strength, 1) * -1.1px), calc(var(--pixel-impact-strength, 1) * .4px)) scaleY(.98); }
-  70% { transform: translate(calc(var(--pixel-impact-strength, 1) * .75px), calc(var(--pixel-impact-strength, 1) * -.25px)) scaleY(1.012); }
-  86% { transform: translate(calc(var(--pixel-impact-strength, 1) * -.35px), 0) scaleY(.994); }
+
+@keyframes pixel-insert-hop {
+  0% { transform: translate3d(0, 0, 0); animation-timing-function: cubic-bezier(.4, 0, .2, 1); }
+  42% { transform: translate3d(0, var(--pixel-cell-rise, -3px), 0); animation-timing-function: cubic-bezier(.4, 0, .2, 1); }
+  100% { transform: translate3d(0, 0, 0); }
 }
-@keyframes usage-particle-burst {
-  0%, 34% { opacity: 0; transform: translate(-50%, -50%) scale(.4); }
-  44% { opacity: .95; transform: translate(-50%, -50%) scale(1); }
-  100% { opacity: 0; transform: translate(calc(-50% + var(--particle-x)), calc(-50% + var(--particle-y))) scale(.35); }
+
+@keyframes pixel-insert-hop-light {
+  0%, 100% { opacity: 0; }
+  42% { opacity: var(--pixel-cell-glow-opacity, .45); }
 }
-/* ==== USAGE EFFECT END ==== */
+
+@keyframes pixel-insert-impact-spread {
+  0% { opacity: 0; transform: scale(1); }
+  12% { opacity: calc(.45 + var(--pixel-contact-opacity, .4)); transform: scale(1); }
+  100% { opacity: 0; transform: scale(var(--pixel-impact-spread-x, 1.05), var(--pixel-impact-spread-y, 1.35)); }
+}
+
+@keyframes pixel-insert-bar-recoil {
+  0%, 100% { transform: translate3d(0, 0, 0); }
+  24% { transform: translate3d(0, var(--pixel-bar-recoil, 1px), 0); }
+  58% { transform: translate3d(0, var(--pixel-bar-rebound, -.4px), 0); }
+}
+
+@keyframes pixel-insert-scene-handoff {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes pixel-insert-final-grid {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.pixel-insert-beam-clip {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 1;
+  width: var(--pixel-target-fill);
+  pointer-events: none;
+  clip-path: inset(-14px 0 -14px 0);
+}
+
+.pixel-insert-beam {
+  position: absolute;
+  left: 0;
+  top: -2px;
+  bottom: -2px;
+  border-radius: 2px;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(ellipse at 50% 70%, #fff 0 8%, color-mix(in srgb, #fff 78%, var(--tone)) 28%, color-mix(in srgb, var(--tone) 66%, transparent) 62%, transparent 86%);
+  filter: drop-shadow(0 0 var(--pixel-beam-glow-blur, 7px) color-mix(in srgb, var(--tone) var(--pixel-beam-glow-alpha, 42%), transparent));
+  mix-blend-mode: screen;
+  will-change: transform, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :is(.theme-terminal, .theme-light) .bar.pixel-insert-active { animation: none; transform: none; }
+  :is(.theme-terminal, .theme-light) .bar.pixel-insert-active > .cell { animation: none; opacity: 1; }
+  :is(.theme-terminal, .theme-light) .bar.pixel-insert-active .pixel-insert-scene { display: none; }
+}
 
 .usage-meta {
   position: relative;
@@ -1153,6 +1150,15 @@ h2 {
   background: rgba(0, 0, 0, 0.32);
   border-radius: 4px;
   color: var(--fg);
+}
+.control-shell .debug-text pre {
+  -webkit-user-select: text;
+  user-select: text;
+  cursor: text;
+}
+.control-shell .debug-text pre::selection {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--accent) 34%, transparent);
 }
 .hint { margin: 8px 0 0; color: var(--warn); font-size: 11px; }
 .url-field, .settings-card label {
@@ -1581,7 +1587,7 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   .usage { padding: 9px; }
   .percent { font-size: 36px; }
   .message { max-width: 112px; font-size: 11px; }
-  .bar { height: 18px; gap: 1px; }
+  .bar { --bar-gap: 1px; height: 18px; gap: var(--bar-gap); }
 
   .settings-section.mini-card { margin-inline: 14px; max-width: calc(100% - 28px); }
   .settings-titlebar { gap: 6px; padding-inline: 9px; }
@@ -1610,7 +1616,7 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   .metric { margin-top: 8px; gap: 6px; }
   .percent { font-size: 30px; }
   .message { max-width: 88px; font-size: 10px; }
-  .bar { height: 14px; margin: 8px 0 6px; padding: 2px; gap: 1px; }
+  .bar { --bar-pad: 2px; --bar-gap: 1px; height: 14px; margin: 8px 0 6px; padding: var(--bar-pad); gap: var(--bar-gap); }
   .usage-meta { gap: 5px; font-size: 11px; }
 
 }

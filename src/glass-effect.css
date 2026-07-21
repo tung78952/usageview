@@ -51,8 +51,7 @@
 
 .theme-glass .bar.drop-impact .liquid-refraction { opacity: 0.16; }
 
-/* Pixel's impact-shake / usage-bar-glow (styles.css) are theme-agnostic selectors, so they would rattle
-   the glass bar too. overflow:visible lets the droplet be seen above the bar before it lands. */
+/* Pixel owns a separate insertion scene. This rule only gives the Glass droplet room above the bar. */
 .theme-glass .bar.usage-effect-bar.drop-impact {
   overflow: visible;
   animation: none !important;
