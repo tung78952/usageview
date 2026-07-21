@@ -1,6 +1,7 @@
-import React, { Component, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { Component, ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { availableMonitors, getCurrentWindow, LogicalSize, PhysicalPosition, PhysicalSize } from "@tauri-apps/api/window";
@@ -125,7 +126,11 @@ type MonitorReading = {
   sub?: string; // always-visible meta line (component name or "12.3 / 31.9 GB")
   details?: MonitorDetail[]; // full stat rows shown on the flipped/hover face
   available: boolean;
+  testing?: boolean;
+  testNonce?: string;
 };
+type MonitorEffectTest = { kind: MonitorKind; value: number; nonce: string };
+const MONITOR_TEST_DURATION_MS = 12_000;
 
 type Settings = {
   claudeUrl: string;
@@ -160,7 +165,20 @@ type Settings = {
   providerColorsVersion: number;
   colorScope: ColorScope;
   baseOverrides: Partial<Record<ThemeKey, BaseOverride>>;
+  // Developer mode gates the effect tester, API discovery and the custom-URL field. Default off.
+  developerMode: boolean;
 };
+
+// Settings window tabs (sidebar). General is an overview: a read-only widget preview + the top-level
+// switches. Content of every tab reuses the existing controls unchanged.
+type SettingsTab = "general" | "accounts" | "appearance" | "monitors" | "about";
+const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+  { id: "general", label: "General" },
+  { id: "accounts", label: "AI Accounts" },
+  { id: "monitors", label: "System monitor" },
+  { id: "appearance", label: "Appearance" },
+  { id: "about", label: "About" },
+];
 
 type ThemeKey = "terminal" | "light" | "glass-light" | "glass-dark";
 const ACCOUNT_BRAND_COLORS: Record<AccountKind, Record<ThemeKey, string>> = {
@@ -258,6 +276,7 @@ const defaultSettings: Settings = {
   providerColorsVersion: 2,
   colorScope: { text: true, bar: true, border: true, bgTint: false },
   baseOverrides: {},
+  developerMode: false,
 };
 
 // Built-in default base tokens per theme (mirror the CSS defaults) — used as the starting point when the
@@ -310,6 +329,7 @@ const PROVIDER_LIFECYCLE_EVENT = "usageview-provider-lifecycle";
 const PROVIDER_LIFECYCLE_REQUEST_EVENT = "usageview-provider-lifecycle-request";
 const PROVIDER_RELEASED_EVENT = "usageview-provider-released";
 const PROVIDER_REMOVED_EVENT = "usageview-provider-removed";
+const WIDGET_VISIBILITY_EVENT = "usageview-widget-visibility";
 const PROVIDER_REMOVING_KEY_PREFIX = "usageview.provider-removing.";
 const PROVIDER_RETRY_EVENT = "usageview-provider-retry";
 const PROVIDER_START_ATTEMPTS = 3;
@@ -541,7 +561,7 @@ function loadSettings(): Settings {
       showGpuTemp: loaded.showGpuTemp ?? false,
       systemMonitorsEnabled: typeof parsed.systemMonitorsEnabled === "boolean" ? parsed.systemMonitorsEnabled : hadShownMonitor,
       monitorIntervalSec: clampNumber(loaded.monitorIntervalSec, 1, 10, 2),
-      colorsEnabled: loaded.colorsEnabled ?? true,
+      colorsEnabled: true,
       monitorColors: normalizeMonitorColors(loaded.monitorColors),
       providerColors,
       providerColorsVersion: 2,
@@ -645,7 +665,7 @@ function panelStyle(settings: Settings): React.CSSProperties {
 
 function providerAccent(provider: Provider, settings: Settings): string | undefined {
   if (!settings.colorsEnabled) return undefined;
-  return settings.providerColors[provider] ?? undefined;
+  return settings.providerColors[provider] ?? accountBrandColor(providerKind(provider), settings.theme);
 }
 
 function providerAccentStyle(accent?: string): React.CSSProperties | undefined {
@@ -850,10 +870,7 @@ async function recoverVisibleWindow(mode: AppMode, corner: Settings["corner"], w
       saveWindowGeometry(mode, { x: Math.round(actualPosition.x), y: Math.round(actualPosition.y) });
     }
   }
-  if (reveal) {
-    await appWindow.show().catch(() => undefined);
-    await appWindow.setFocus().catch(() => undefined);
-  }
+  if (reveal) await invoke("open_widget_window").catch(() => undefined);
 }
 
 // Persist only the outer position. Full and Mini sizes are layout-controlled and can be transient while
@@ -1140,12 +1157,26 @@ function tooltipLeftLabel(snapshot: UsageSnapshot) {
   return `${left}% left`;
 }
 
-function trayTooltipText(snapshots: Record<Provider, UsageSnapshot>, accounts: Account[]) {
-  const shownAccounts = accounts.filter((account) => account.shown);
-  if (!shownAccounts.length) return "UsageView — no shown accounts";
-  return shownAccounts
-    .map((account) => `${account.label}: ${tooltipLeftLabel(snapshots[account.id] ?? emptySnapshot(account.id))}`)
-    .join("\n");
+// Mirrors exactly what the widget currently shows: enabled accounts (aiUsageEnabled && shown) plus the
+// enabled system monitors, one metric per line, accounts first. Toggling a metric off in Settings drops
+// it from the tooltip too.
+function trayTooltipText(
+  snapshots: Record<Provider, UsageSnapshot>,
+  settings: Settings,
+  monitorReadings: Record<MonitorKind, MonitorReading>,
+) {
+  const lines: string[] = [];
+  for (const account of settings.accounts) {
+    if (!providerEnabled(account.id, settings)) continue;
+    lines.push(`${account.label}: ${tooltipLeftLabel(snapshots[account.id] ?? emptySnapshot(account.id))}`);
+  }
+  const shownMonitors = settings.systemMonitorsEnabled ? MONITOR_ORDER.filter((kind) => settings[MONITOR_SHOW_KEY[kind]] as boolean) : [];
+  for (const kind of shownMonitors) {
+    const reading = monitorReadings[kind];
+    if (reading) lines.push(`${reading.label}: ${reading.available ? reading.displayValue : "N/A"}`);
+  }
+  if (!lines.length) return "UsageView — nothing shown";
+  return lines.join("\n");
 }
 
 const LIMITED_RESET_REFRESH_LEAD_MS = 2 * 60 * 1000;
@@ -1404,10 +1435,12 @@ function DetachedTileApp({ tileId }: { tileId: TileId }) {
           updatedAgo={formatAgo(runtime.freshAt)}
           effect={settings.effectsEnabled ? runtime.activeEffect : undefined}
           dropCell={settings.effectDropCell}
+          glass={themeStyle(settings.theme) === "glass"}
+          effectsEnabled={settings.effectsEnabled}
           onFlip={() => setTimer(true)}
         />
     : monitor
-      ? <MonitorBlock reading={reading!} tone={monitorTone(settings, reading!)} />
+      ? <MonitorBlock key={reading!.testNonce ?? "live"} reading={reading!} tone={monitorTone(settings, reading!)} pulse={settings.effectsEnabled} glass={themeStyle(settings.theme) === "glass"} textEffect={!settings.colorsEnabled || settings.colorScope.text} />
       : null;
 
   return (
@@ -1442,6 +1475,8 @@ type RefreshResult = { nonce: string; provider: Provider; status: UsageStatus; m
 type AppCommand =
   | { nonce: string; type: "play"; provider: Provider; from: number; to: number; driveBar: boolean }
   | { nonce: string; type: "restore" }
+  | { nonce: string; type: "play-monitor"; kind: MonitorKind; value: number }
+  | { nonce: string; type: "restore-monitor" }
   | { nonce: string; type: "refresh"; provider: Provider }
   | { nonce: string; type: "reset-window" };
 
@@ -1567,8 +1602,106 @@ function SettingsWindowApp() {
   const [providerLifecycles, setProviderLifecycles] = useState<Partial<Record<Provider, ProviderLifecycle>>>({});
   const [addOpen, setAddOpen] = useState(false);
   const [pendingRemove, setPendingRemove] = useState<Account | null>(null);
+  const [tab, setTab] = useState<SettingsTab>("general");
+  // The widget's Full/Mini mode lives in the widget window; the Settings General tab mirrors it via the
+  // shared MODE_KEY (the widget writes it on change) and drives it through the context-action channel.
+  const [widgetMode, setWidgetMode] = useState<AppMode>(loadMode);
+  const [widgetVisible, setWidgetVisible] = useState<boolean | null>(null);
+  const [widgetToggleBusy, setWidgetToggleBusy] = useState(false);
+  const widgetVisibilityQueryRef = useRef(0);
+  // Live sensor values for the System-monitor tab cards. Local hardware reads are cheap, so this polls
+  // only while that tab is open and stops otherwise (accounts are NOT polled — they show last snapshot).
+  const [monitorReadings, setMonitorReadings] = useState<Record<MonitorKind, MonitorReading>>(() => buildMonitorReadings(null));
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const refreshNonceRef = useRef<Partial<Record<Provider, string>>>({});
+
+  const queryWidgetVisibility = useCallback(async () => {
+    const query = ++widgetVisibilityQueryRef.current;
+    try {
+      const visible = await invoke<boolean>("get_widget_visibility");
+      if (query === widgetVisibilityQueryRef.current) setWidgetVisible(visible);
+    } catch {
+      if (query === widgetVisibilityQueryRef.current) setWidgetVisible(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<boolean>(WIDGET_VISIBILITY_EVENT, ({ payload }) => {
+      widgetVisibilityQueryRef.current += 1;
+      setWidgetVisible(payload);
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+    void queryWidgetVisibility();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void queryWidgetVisibility();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      disposed = true;
+      unlisten?.();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [queryWidgetVisibility]);
+
+  useEffect(() => {
+    function syncMode(event: StorageEvent) { if (event.key === MODE_KEY) setWidgetMode(loadMode()); }
+    window.addEventListener("storage", syncMode);
+    return () => window.removeEventListener("storage", syncMode);
+  }, []);
+
+  useEffect(() => {
+    if (tab !== "monitors") return;
+    let alive = true;
+    let id = 0;
+    const poll = async () => {
+      const metrics = await readSystemMetrics(MONITOR_ORDER);
+      if (alive && metrics) setMonitorReadings(buildMonitorReadings(metrics, MONITOR_ORDER));
+    };
+    const start = () => {
+      if (id) return;
+      void poll();
+      id = window.setInterval(poll, Math.max(1, settings.monitorIntervalSec) * 1000);
+    };
+    const stop = () => { if (id) { window.clearInterval(id); id = 0; } };
+    // Only read while the Settings window is actually visible — hiding it (the ✕ just hides, not closes)
+    // must stop the interval so nothing polls in the background.
+    const onVisibility = () => (document.visibilityState === "hidden" ? stop() : start());
+    if (document.visibilityState !== "hidden") start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => { alive = false; stop(); document.removeEventListener("visibilitychange", onVisibility); };
+  }, [tab, settings.monitorIntervalSec]);
+
+  function setWidgetViewMode(mode: AppMode) {
+    setWidgetMode(mode);
+    void emitTo("widget", "usageview-context-action", mode).catch(() => undefined);
+  }
+
+  async function toggleWidgetVisibility() {
+    if (widgetToggleBusy) return;
+    setWidgetToggleBusy(true);
+    try {
+      const visible = await invoke<boolean>("toggle_widget_window");
+      widgetVisibilityQueryRef.current += 1;
+      setWidgetVisible(visible);
+    } catch (error) {
+      setActivity(`Widget visibility failed: ${String(error)}`);
+      void queryWidgetVisibility();
+    } finally {
+      setWidgetToggleBusy(false);
+    }
+  }
+
+  // Refresh everything currently on the widget (shown accounts); hidden accounts are skipped. Monitors
+  // refresh on their own poll, so this only re-reads the AI accounts.
+  function refreshAllShown() {
+    for (const account of settings.accounts) {
+      if (providerEnabled(account.id, settings)) void refresh(account.id);
+    }
+  }
 
   useEffect(() => {
     function reloadSettings() {
@@ -1818,53 +1951,76 @@ function SettingsWindowApp() {
 
   return (
     <main className={`control-shell ${themeClass(settings.theme)} ${panelScopeClasses(settings)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag}>
-      <div ref={scrollRef} className="scale-shell">
-        <header className="titlebar settings-titlebar">
-          <div className="settings-header-title"><strong>Widget settings</strong></div>
-          <div className={`settings-header-status ${headerTone}`} title={headerMessage}>
-            <span className="settings-health-dot" aria-hidden="true" />
-            <span className="settings-header-message">{headerMessage}</span>
-            <span className="settings-header-saved">{savedLabel}</span>
-          </div>
-          <button className="window-control close settings-close" type="button" title="Close" aria-label="Close" onClick={() => void invoke("toggle_settings_window")}><CloseIcon /></button>
-        </header>
-
-        <WidgetSettings
-          settings={settings}
-          onChange={handleChange}
-          accountPanels={
-            <>
-              {settings.accounts.map((account) => (
-                <ProviderPanel
-                  key={account.id}
-                  provider={account.id}
-                  accent={providerAccent(account.id, settings)}
-                  url={account.url}
-                  snapshot={snapshotOf(snapshots, account.id)}
-                  lifecycle={providerLifecycles[account.id]}
-                  busy={busy}
-                  onOpen={() => void openInApp(account.id)}
-                  onReload={() => void reloadInApp(account.id)}
-                  onClose={() => void closeInApp(account.id)}
-                  onLogout={() => void logoutInApp(account.id)}
-                  onDiscover={() => void findApi(account.id)}
-                  discovery={discovery[account.id]}
-                  onExtract={() => void refresh(account.id)}
-                  onRetry={() => void emitTo("widget", PROVIDER_RETRY_EVENT, account.id)}
-                  onUrlChange={(url) => handleChange({ ...settings, accounts: settings.accounts.map((a) => (a.id === account.id ? { ...a, url } : a)) })}
-                  shownInWidget={account.shown}
-                  onToggleShown={() => handleChange(setAccountShown(settings, account.id, !account.shown))}
-                  onRemove={() => setPendingRemove(account)}
-                  onRename={(label) => renameAccount(account.id, label)}
-                />
-              ))}
-              <button type="button" className="add-account-btn" onClick={() => setAddOpen(true)}>+ Add account</button>
-            </>
-          }
-          onEffectPlay={(provider, from, to, driveBar) => postAppCommand({ nonce: newNonce(), type: "play", provider, from, to, driveBar })}
-          onEffectRestore={() => postAppCommand({ nonce: newNonce(), type: "restore" })}
-          providerPercents={providerPercents}
-        />
+      <header className="titlebar settings-titlebar">
+        <div className="settings-header-title"><strong>Settings</strong></div>
+        <span className="settings-header-saved">{savedLabel}</span>
+        <button className="window-control close settings-close" type="button" title="Close" aria-label="Close" onClick={() => void invoke("toggle_settings_window")}><CloseIcon /></button>
+      </header>
+      <div className="settings-body">
+        <nav className="settings-nav" aria-label="Settings sections">
+          {SETTINGS_TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={`settings-nav-item${tab === t.id ? " is-active" : ""}`}
+              aria-current={tab === t.id ? "page" : undefined}
+              onClick={() => setTab(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+        <div ref={scrollRef} className="scale-shell">
+          <WidgetSettings
+            settings={settings}
+            onChange={handleChange}
+            activeTab={tab}
+            widgetMode={widgetMode}
+            onSetMode={setWidgetViewMode}
+            onRefreshAll={refreshAllShown}
+            widgetVisible={widgetVisible}
+            widgetToggleBusy={widgetToggleBusy}
+            onToggleWidget={() => void toggleWidgetVisibility()}
+            monitorReadings={monitorReadings}
+            statusTone={headerTone}
+            statusMessage={headerMessage}
+            accountPanels={
+              <>
+                {settings.accounts.map((account) => (
+                  <ProviderPanel
+                    key={account.id}
+                    provider={account.id}
+                    accent={providerAccent(account.id, settings)}
+                    url={account.url}
+                    developerMode={settings.developerMode}
+                    snapshot={snapshotOf(snapshots, account.id)}
+                    lifecycle={providerLifecycles[account.id]}
+                    busy={busy}
+                    onOpen={() => void openInApp(account.id)}
+                    onReload={() => void reloadInApp(account.id)}
+                    onClose={() => void closeInApp(account.id)}
+                    onLogout={() => void logoutInApp(account.id)}
+                    onDiscover={() => void findApi(account.id)}
+                    discovery={discovery[account.id]}
+                    onExtract={() => void refresh(account.id)}
+                    onRetry={() => void emitTo("widget", PROVIDER_RETRY_EVENT, account.id)}
+                    onUrlChange={(url) => handleChange({ ...settings, accounts: settings.accounts.map((a) => (a.id === account.id ? { ...a, url } : a)) })}
+                    shownInWidget={account.shown}
+                    onToggleShown={() => handleChange(setAccountShown(settings, account.id, !account.shown))}
+                    onRemove={() => setPendingRemove(account)}
+                    onRename={(label) => renameAccount(account.id, label)}
+                  />
+                ))}
+                <button type="button" className="add-account-btn" onClick={() => setAddOpen(true)}>+ Add account</button>
+              </>
+            }
+            onEffectPlay={(provider, from, to, driveBar) => postAppCommand({ nonce: newNonce(), type: "play", provider, from, to, driveBar })}
+            onEffectRestore={() => postAppCommand({ nonce: newNonce(), type: "restore" })}
+            onMonitorEffectPlay={(kind, value) => postAppCommand({ nonce: newNonce(), type: "play-monitor", kind, value })}
+            onMonitorEffectRestore={() => postAppCommand({ nonce: newNonce(), type: "restore-monitor" })}
+            providerPercents={providerPercents}
+          />
+        </div>
       </div>
       <OverlayScrollbar targetRef={scrollRef} />
       <Modal open={addOpen} onClose={() => setAddOpen(false)}>
@@ -1939,6 +2095,17 @@ function WidgetApp() {
   const removedAccountIdsRef = useRef(new Set<Provider>());
   const [providerNotices, setProviderNotices] = useState<Partial<Record<Provider, ProviderLifecycle>>>({});
   const providerNoticeTimersRef = useRef<Partial<Record<Provider, number>>>({});
+  const [monitorToasts, setMonitorToasts] = useState<{ id: number; text: string; tone: string }[]>([]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<{ label: string; shown: boolean }>("usageview-monitor-toast", ({ payload }) => {
+      const id = Date.now() + Math.random();
+      setMonitorToasts((current) => [...current, { id, text: `${payload.label} ${payload.shown ? "shown" : "hidden"}`, tone: payload.shown ? "ok" : "warn" }]);
+      window.setTimeout(() => setMonitorToasts((current) => current.filter((toast) => toast.id !== id)), 2500);
+    }).then((dispose) => { unlisten = dispose; });
+    return () => unlisten?.();
+  }, []);
   const lastLimitedAutoRefreshRef = useRef<Record<Provider, number>>(Object.fromEntries(settings.accounts.map((account) => [account.id, 0])));
   const prevFlashTokenRef = useRef<Partial<Record<Provider, string>>>({});
   const prevEffectPercentRef = useRef<Partial<Record<Provider, number>>>({});
@@ -1947,13 +2114,29 @@ function WidgetApp() {
   const runtimePayloadRef = useRef<Partial<Record<TileId, DetachedRuntimeState>>>({});
   const flashTimersRef = useRef<Partial<Record<Provider, number>>>({});
   const effectTimersRef = useRef<Partial<Record<Provider, number>>>({});
+  const monitorTestTimerRef = useRef(0);
   const lastCmdNonceRef = useRef<string | null>(null);
   const [flashSet, setFlashSet] = useState<Set<Provider>>(new Set());
   const [activeEffects, setActiveEffects] = useState<Partial<Record<Provider, UsageEffect>>>({});
+  const [monitorEffectTest, setMonitorEffectTest] = useState<MonitorEffectTest | null>(null);
   const [, setAgoTick] = useState(0);
   const [lastUpdated, setLastUpdated] = useState(new Date());
   const [busy, setBusy] = useState<Provider | null>(null);
   const [monitorReadings, setMonitorReadings] = useState<Record<MonitorKind, MonitorReading>>(() => buildMonitorReadings(null));
+  const monitorReadingsForRender = useMemo(() => {
+    if (!monitorEffectTest) return monitorReadings;
+    return {
+      ...monitorReadings,
+      [monitorEffectTest.kind]: monitorTestReading(
+        monitorReadings[monitorEffectTest.kind],
+        monitorEffectTest.kind,
+        monitorEffectTest.value,
+        monitorEffectTest.nonce,
+      ),
+    };
+  }, [monitorReadings, monitorEffectTest]);
+
+  useEffect(() => () => window.clearTimeout(monitorTestTimerRef.current), []);
 
   function updateSettings(next: Settings) {
     setSettings(next);
@@ -2059,6 +2242,26 @@ function WidgetApp() {
     setSnapshots((current) => currentResults.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), current));
   }
 
+  function restoreMonitorTestEffect() {
+    window.clearTimeout(monitorTestTimerRef.current);
+    monitorTestTimerRef.current = 0;
+    setMonitorEffectTest(null);
+  }
+
+  function playMonitorTestEffect(kind: MonitorKind, value: number, nonce: string) {
+    const clamped = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+    window.clearTimeout(monitorTestTimerRef.current);
+    setMonitorEffectTest({ kind, value: clamped, nonce });
+    monitorTestTimerRef.current = window.setTimeout(restoreMonitorTestEffect, MONITOR_TEST_DURATION_MS);
+  }
+
+  useEffect(() => {
+    if (!monitorEffectTest) return;
+    if (!settings.effectsEnabled || !settings.systemMonitorsEnabled || !settings[MONITOR_SHOW_KEY[monitorEffectTest.kind]]) {
+      restoreMonitorTestEffect();
+    }
+  }, [settings, monitorEffectTest]);
+
   async function resetWindowPosition() {
     windowGeometryResetGeneration += 1;
     localStorage.removeItem(GEOMETRY_KEY);
@@ -2076,9 +2279,7 @@ function WidgetApp() {
   async function revealInitialWidget() {
     if (initialRevealDoneRef.current || !initialPositionRestoredRef.current || !initialLayoutCommittedRef.current) return;
     initialRevealDoneRef.current = true;
-    const appWindow = getCurrentWindow();
-    await appWindow.show().catch(() => undefined);
-    await appWindow.setFocus().catch(() => undefined);
+    await invoke("open_widget_window").catch(() => undefined);
   }
 
   useEffect(() => {
@@ -2108,7 +2309,15 @@ function WidgetApp() {
     setProviderNotices((current) => ({ ...current, [next.provider]: next }));
     const existingTimer = providerNoticeTimersRef.current[next.provider];
     if (existingTimer !== undefined) window.clearTimeout(existingTimer);
-    if (next.phase === "ready" || next.phase === "stopped") {
+    // ready/stopped are the "done" states — dismiss quickly. retrying/error/login-needed can otherwise sit
+    // on screen forever (a slow/stuck provider never reaches ready), covering the widget, so they self-clear
+    // ~5s after the LAST update — an active retry keeps refreshing this timer, so the toast stays only while
+    // things are genuinely moving. starting/stopping/waiting-close keep no timer (short, or user-driven).
+    const dismissMs =
+      next.phase === "ready" || next.phase === "stopped" ? 1800
+      : next.phase === "retrying" || next.phase === "error" || next.phase === "login-needed" ? 5000
+      : undefined;
+    if (dismissMs !== undefined) {
       providerNoticeTimersRef.current[next.provider] = window.setTimeout(() => {
         setProviderNotices((current) => {
           const updated = { ...current };
@@ -2122,7 +2331,7 @@ function WidgetApp() {
           setProviderLifecycles(lifecycles);
         }
         delete providerNoticeTimersRef.current[next.provider];
-      }, 1800);
+      }, dismissMs);
     }
     void emitTo("settings", PROVIDER_LIFECYCLE_EVENT, next).catch(() => undefined);
   }
@@ -2535,8 +2744,8 @@ function WidgetApp() {
   }, [snapshots]);
 
   useEffect(() => {
-    void invoke("update_tray_tooltip", { text: trayTooltipText(snapshots, settings.accounts) }).catch(() => undefined);
-  }, [snapshots, settings.accounts]);
+    void invoke("update_tray_tooltip", { text: trayTooltipText(snapshots, settings, monitorReadings) }).catch(() => undefined);
+  }, [snapshots, settings, monitorReadings]);
 
   useEffect(() => {
     return () => {
@@ -2773,7 +2982,7 @@ function WidgetApp() {
             freshAt: lastFreshAtRef.current[provider],
           }
         : {
-            monitorReading: monitor ? monitorReadings[monitor] : undefined,
+            monitorReading: monitor ? monitorReadingsForRender[monitor] : undefined,
             flash: false,
             paused: false,
           };
@@ -2789,7 +2998,7 @@ function WidgetApp() {
       if (changed) void emitTo(tileWindowLabel(tileId), "usageview-runtime-state", state).catch(() => undefined);
     }
     runtimePayloadRef.current = next;
-  }, [snapshots, monitorReadings, activeEffects, flashSet, tileLayout, settings]);
+  }, [snapshots, monitorReadingsForRender, activeEffects, flashSet, tileLayout, settings]);
 
   // A late-joining tile asks for the current state. This listener is deliberately kept out of the
   // push effect above: that one re-runs on every monitor poll, and `listen` resolving after its
@@ -3021,6 +3230,8 @@ async function refresh(provider: Provider, requestNonce: string) {
       lastCmdNonceRef.current = command.nonce;
       if (command.type === "play" && settingsRef.current.accounts.some((account) => account.id === command.provider)) playTestEffect(command.provider, command.from, command.to, command.driveBar);
       else if (command.type === "restore") void restoreTestEffect();
+      else if (command.type === "play-monitor" && settingsRef.current.systemMonitorsEnabled && settingsRef.current[MONITOR_SHOW_KEY[command.kind]]) playMonitorTestEffect(command.kind, command.value, command.nonce);
+      else if (command.type === "restore-monitor") restoreMonitorTestEffect();
       else if (command.type === "refresh") void refresh(command.provider, command.nonce);
       else if (command.type === "reset-window") void resetWindowPosition();
     }
@@ -3122,10 +3333,11 @@ async function refresh(provider: Provider, requestNonce: string) {
       const accent = providerAccent(provider, settings);
       return timerSet.has(provider)
         ? <TimerView snapshot={snap} accent={accent} onBack={timerToggles[provider]} paused={isPaused(provider)} />
-        : <UsageBlock snapshot={snap} accent={accent} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} onFlip={timerToggles[provider]} />;
+        : <UsageBlock snapshot={snap} accent={accent} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={settings.effectsEnabled ? activeEffects[provider] : undefined} dropCell={settings.effectDropCell} glass={themeStyle(settings.theme) === "glass"} effectsEnabled={settings.effectsEnabled} onFlip={timerToggles[provider]} />;
     }
     const monitor = monitorFromTile(tileId);
-    return monitor ? <MonitorBlock reading={monitorReadings[monitor]} tone={monitorTone(settings, monitorReadings[monitor])} /> : null;
+    const reading = monitor ? monitorReadingsForRender[monitor] : null;
+    return monitor && reading ? <MonitorBlock key={reading.testNonce ?? "live"} reading={reading} tone={monitorTone(settings, reading)} pulse={settings.effectsEnabled} glass={themeStyle(settings.theme) === "glass"} textEffect={!settings.colorsEnabled || settings.colorScope.text} /> : null;
   }
 
   function renderMiniTile(tileId: TileId) {
@@ -3208,6 +3420,7 @@ async function refresh(provider: Provider, requestNonce: string) {
     return (
       <main className={`compact-widget mini-widget ${themeClass(settings.theme)} ${panelScopeClasses(settings)}`} style={panelStyle(settings)} onMouseDown={prepareCompactDrag} onMouseMove={maybeStartCompactDrag} onContextMenu={openCompactMenu}>
         <ProviderLifecycleToasts notices={providerNotices} />
+        <MonitorToasts toasts={monitorToasts} />
         <div ref={compactProvidersRef} className="mini-providers">
           {attachedTileIds.map((tileId) => (
             <div
@@ -3239,16 +3452,15 @@ async function refresh(provider: Provider, requestNonce: string) {
   return (
     <main ref={widgetRef} className={`widget ${themeClass(settings.theme)} ${panelScopeClasses(settings)}`} style={panelStyle(settings)} onMouseDown={startWindowDrag}>
       <ProviderLifecycleToasts notices={providerNotices} />
+      <MonitorToasts toasts={monitorToasts} />
       <div className="scale-shell">
       <div ref={widgetHeaderRef} className="widget-header">
         <div className="window-title">
           <span>updated {lastUpdated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
         </div>
         <div className="header-actions">
-          <button className={`window-control refresh${busy !== null ? " spinning" : ""}`} type="button" title="Refresh now" aria-label="Refresh now" onClick={() => void refreshAll()} disabled={busy !== null || !shown.length}><RefreshIcon /></button>
           <button className="window-control gear" type="button" title="Settings" aria-label="Settings" onClick={() => void invoke("toggle_settings_window")}><GearIcon /></button>
-          <button className="window-control mini" type="button" title="Mini mode" aria-label="Mini mode" onClick={() => setMode("mini")}><MiniIcon /></button>
-          <WindowControls pinned={settings.alwaysOnTop} onTogglePin={togglePinned} onClose={() => void closeWindow()} />
+          <button className="window-control close" type="button" title="Close" aria-label="Close" onClick={() => void closeWindow()}>x</button>
         </div>
       </div>
       <div ref={providersRef} className="providers">
@@ -3423,6 +3635,7 @@ function ProviderPanel({
   provider,
   accent,
   url,
+  developerMode,
   snapshot,
   lifecycle,
   busy,
@@ -3443,6 +3656,7 @@ function ProviderPanel({
   provider: Provider;
   accent?: string;
   url: string;
+  developerMode: boolean;
   snapshot: UsageSnapshot;
   lifecycle?: ProviderLifecycle;
   busy: Provider | `${Provider}-open` | `${Provider}-close` | `${Provider}-reload` | `${Provider}-logout` | `${Provider}-discover` | null;
@@ -3473,6 +3687,13 @@ function ProviderPanel({
   const lifecycleActive = lifecycle && lifecycle.phase !== "ready";
   const pillStatus = lifecycleActive ? lifecycleTone(lifecycle) : snapshot.status;
   const pillLabel = lifecycleActive ? lifecycleLabel(lifecycle) : undefined;
+  // Last-known usage from the saved snapshot (no polling in Settings). A hidden account keeps showing its
+  // last value + reset countdown, so you can check "is it used up?" without unhiding it.
+  const usagePercent = typeof snapshot.percentUsed === "number" ? Math.round(snapshot.percentUsed) : null;
+  const usageReset = resetCountdownLabel(snapshot);
+  const usageSummary = snapshot.status === "ok"
+    ? `${usagePercent !== null ? `${usagePercent}% used` : "up to date"}${usageReset ? ` · ${usageReset}` : ""}`
+    : providerMessage(snapshot);
   const showLabel = lifecycle?.phase === "starting" || lifecycle?.phase === "retrying"
     ? "Cancel"
     : lifecycle?.phase === "stopping" || lifecycle?.phase === "waiting-close"
@@ -3505,11 +3726,10 @@ function ProviderPanel({
               </>
             )}
           </h2>
-          <p className="account-visibility">{shownInWidget ? "Shown in widget" : "Hidden from widget"}</p>
+          <p className="account-usage">{usageSummary}</p>
         </div>
         <StatusPill status={pillStatus} label={pillLabel} />
       </div>
-      <UsageBlock snapshot={snapshot} accent={accent} />
       <div className="daily-actions">
         <button className="primary" onClick={onOpen} disabled={busy === `${provider}-open`}>{busy === `${provider}-open` ? "Opening" : "Login"}</button>
         <button onClick={onExtract} disabled={busy === provider || transitioning}>{busy === provider ? "Refreshing" : "Refresh now"}</button>
@@ -3519,8 +3739,9 @@ function ProviderPanel({
         <button onClick={onLogout} disabled={busy === `${provider}-logout`}>{busy === `${provider}-logout` ? "Signing out" : "Log out"}</button>
         <button className="account-remove" onClick={onRemove} disabled={providerCommandBusy}>Remove</button>
       </div>
+      {developerMode && (
       <details className="advanced-tools">
-        <summary><span className="summary-left"><DisclosureChevron /><span>More options</span></span></summary>
+        <summary><span className="summary-left"><DisclosureChevron /><span>More options (developer)</span></span></summary>
         <label className="url-field">Login / usage link<input value={url} onChange={(event) => onUrlChange(event.target.value)} /></label>
         <div className="button-grid">
           <button onClick={onReload} disabled={busy === `${provider}-reload`}>Reload page</button>
@@ -3541,6 +3762,7 @@ function ProviderPanel({
         </details>
       )}
       </details>
+      )}
     </section>
   );
 }
@@ -3856,8 +4078,7 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
 
   return (
     <div className="effect-settings colors-settings">
-      <FeatureSwitch label="Colors" checked={settings.colorsEnabled} onChange={(colorsEnabled) => patch({ colorsEnabled })} />
-      {settings.colorsEnabled && <div className="feature-settings-body">
+      <div className="feature-settings-body">
       <div className="color-target-group">
         <span className="color-group-label">Providers</span>
         <div className="color-target-grid">
@@ -3877,17 +4098,17 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
         </div>
       </div>
 
-      {MONITOR_ORDER.some((kind) => settings[MONITOR_SHOW_KEY[kind]]) && (
+      {(
         <div className="color-target-group">
           <span className="color-group-label">System monitors</span>
           <div className="color-target-grid">
-            {MONITOR_ORDER.filter((kind) => settings[MONITOR_SHOW_KEY[kind]]).map((kind) => {
+            {MONITOR_ORDER.map((kind) => {
               const target: ColorTarget = { kind: "monitor", monitor: kind };
               const palette = settings.monitorColors[kind];
               return (
                 <button type="button" className={`color-target${targetIsSelected(target) ? " is-selected" : ""}`} style={{ "--tone": palette.low } as React.CSSProperties} key={kind} onClick={() => chooseTarget(target)} aria-expanded={targetIsSelected(target)}>
                   <MonitorMark kind={kind} />
-                  <span className="color-target-name">{MONITOR_LABELS[kind]}</span>
+                  <span className="color-target-name">{MONITOR_FULL_LABELS[kind]}</span>
                   <span className="color-target-preview monitor-preview">
                     <i style={{ background: palette.low }} /><i style={{ background: palette.medium }} /><i style={{ background: palette.high }} />
                   </span>
@@ -3945,8 +4166,7 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
         </div>
       )}
 
-      <details className="colors-advanced">
-        <summary><span className="summary-left"><DisclosureChevron /><span>Advanced styling</span></span></summary>
+      <div className="colors-advanced">
         <div className="color-row">
           <span className="seg-label">Apply accent to</span>
           <div className="scope-checks">
@@ -3975,8 +4195,8 @@ function ColorsSection({ settings, patch }: { settings: Settings; patch: (next: 
           </div>
           {picker?.kind === "base" && <ColorPicker value={baseFieldValue(picker.field)} onChange={(color) => setBase({ [picker.field]: color })} onClose={() => setPicker(null)} />}
         </div>
-      </details>
-      </div>}
+      </div>
+      </div>
     </div>
   );
 }
@@ -4049,28 +4269,98 @@ function SensorServiceSettings() {
   );
 }
 
-function WidgetSettings({ settings, onChange, accountPanels, onEffectPlay, onEffectRestore, providerPercents }: {
+// Small marks for the General overview cards.
+function AiIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 3.2l1.7 4.6 4.6 1.7-4.6 1.7L12 15.8l-1.7-4.6L5.7 9.5l4.6-1.7z" />
+      <path d="M18.4 15.2l.65 1.75 1.75.65-1.75.65-.65 1.75-.65-1.75-1.75-.65 1.75-.65z" />
+    </svg>
+  );
+}
+function MonitorsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="4" width="18" height="13" rx="1.6" />
+      <path d="M8.5 20h7M12 17v3" />
+      <path d="M6.6 12l1.9-2.6 2 3 2-4 1.9 3.4" />
+    </svg>
+  );
+}
+
+function AboutPanel({ settings, patch }: { settings: Settings; patch: (next: Partial<Settings>) => void }) {
+  const [version, setVersion] = useState<string>("");
+  useEffect(() => { void getVersion().then(setVersion).catch(() => setVersion("")); }, []);
+  return (
+    <div className="settings-about">
+      <div className="mini-head">
+        <div className="settings-card-title">
+          <h2>UsageView</h2>
+          <span>{version ? `Version ${version}` : "Version —"}</span>
+        </div>
+      </div>
+      <p className="about-p">Each account signs in through its own isolated in-app window. There are no API keys and no browser-cookie import — login sessions, snapshots and settings stay on this device.</p>
+      <p className="about-p muted">Removing an account deletes its local login profile and snapshot; your Claude/OpenAI account itself is never touched.</p>
+      <p className="about-p muted">Built with React and Tauri v2. Fonts: Space Grotesk, JetBrains Mono.</p>
+      <label className="toggle-row">
+        <span>Developer mode</span>
+        <input className="switch-control" type="checkbox" role="switch" checked={settings.developerMode} onChange={(event) => patch({ developerMode: event.target.checked })} />
+      </label>
+      <p className="about-p muted">Developer mode shows the effect tester, API discovery and the custom URL field.</p>
+    </div>
+  );
+}
+
+function WidgetSettings({ settings, onChange, accountPanels, activeTab, widgetMode, onSetMode, onRefreshAll, widgetVisible, widgetToggleBusy, onToggleWidget, monitorReadings, statusTone, statusMessage, onEffectPlay, onEffectRestore, onMonitorEffectPlay, onMonitorEffectRestore, providerPercents }: {
   settings: Settings;
   onChange: (settings: Settings) => void;
   accountPanels: ReactNode;
+  activeTab: SettingsTab;
+  widgetMode: AppMode;
+  onSetMode: (mode: AppMode) => void;
+  onRefreshAll: () => void;
+  widgetVisible: boolean | null;
+  widgetToggleBusy: boolean;
+  onToggleWidget: () => void;
+  monitorReadings: Record<MonitorKind, MonitorReading>;
+  statusTone: SettingsHeaderTone;
+  statusMessage: string;
   onEffectPlay: (provider: Provider, from: number, to: number, driveBar: boolean) => void;
   onEffectRestore: () => void;
+  onMonitorEffectPlay: (kind: MonitorKind, value: number) => void;
+  onMonitorEffectRestore: () => void;
   providerPercents: Partial<Record<Provider, number>>;
 }) {
   function patch(next: Partial<Settings>) {
     onChange({ ...settings, ...next });
   }
 
-  // Effect tester local state. Fields walk upward as you click Step so you can eyeball 1->2->3->4...
+  // One compact tester drives either the account effect or a temporary system-monitor reading.
+  const [testMode, setTestMode] = useState<"ai" | "monitor">("ai");
   const [testProvider, setTestProvider] = useState<Provider>(() => settings.accounts[0]?.id ?? "");
   const [testFrom, setTestFrom] = useState(36);
   const [testTo, setTestTo] = useState(37);
   const [driveBar, setDriveBar] = useState(false);
+  const initialTestMonitor = MONITOR_ORDER.find((kind) => settings.systemMonitorsEnabled && settings[MONITOR_SHOW_KEY[kind]] as boolean) ?? "cputemp";
+  const [testMonitor, setTestMonitor] = useState<MonitorKind>(initialTestMonitor);
+  const [testMonitorValue, setTestMonitorValue] = useState(63);
   const testable = settings.effectsEnabled;
-  const presets: [string, number, number][] = [["36→37", 36, 37], ["80→81", 80, 81], ["0→63", 0, 63], ["99→100", 99, 100], ["0→100", 0, 100]];
+  const aiPresets: [string, number, number][] = [["Small · 36→37", 36, 37], ["High · 80→81", 80, 81], ["Fill · 0→63", 0, 63], ["Edge · 99→100", 99, 100], ["Full · 0→100", 0, 100]];
+  const selectedTestProvider = settings.accounts.some((account) => account.id === testProvider) ? testProvider : settings.accounts[0]?.id ?? "";
+  const shownTestMonitors = settings.systemMonitorsEnabled
+    ? MONITOR_ORDER.filter((kind) => settings[MONITOR_SHOW_KEY[kind]] as boolean)
+    : [];
+  const selectedTestMonitor = shownTestMonitors.includes(testMonitor) ? testMonitor : shownTestMonitors[0];
+
+  function monitorPresetValue(kind: MonitorKind, level: MonitorLevel) {
+    const temperature = kind === "cputemp" || kind === "gputemp";
+    if (level === "low") return temperature ? 63 : 37;
+    if (level === "medium") return temperature ? 73 : 63;
+    return 88;
+  }
 
   function play(from: number, to: number) {
-    onEffectPlay(testProvider, from, to, driveBar);
+    if (selectedTestProvider) onEffectPlay(selectedTestProvider, from, to, driveBar);
   }
   function stepUp() {
     const from = Math.max(0, Math.min(100, testTo));
@@ -4080,8 +4370,12 @@ function WidgetSettings({ settings, onChange, accountPanels, onEffectPlay, onEff
     setTestTo(to);
   }
   function loadCurrent() {
-    const cur = providerPercents[testProvider];
+    const cur = providerPercents[selectedTestProvider];
     if (typeof cur === "number") { setTestFrom(cur); setTestTo(Math.min(100, cur + 1)); }
+  }
+
+  function playMonitor(value = testMonitorValue) {
+    if (selectedTestMonitor) onMonitorEffectPlay(selectedTestMonitor, value);
   }
 
   // The refresh interval applies to ALL providers. Values >=60s apply immediately; values below 60s
@@ -4124,149 +4418,272 @@ function WidgetSettings({ settings, onChange, accountPanels, onEffectPlay, onEff
     setPendingLow(null);
   }
 
+  const shownAccountCount = settings.accounts.filter((a) => providerEnabled(a.id, settings)).length;
+  const shownMonitorCount = settings.systemMonitorsEnabled ? MONITOR_ORDER.filter((k) => settings[MONITOR_SHOW_KEY[k]] as boolean).length : 0;
+
   return (
     <section className="settings-section mini-card settings-card">
-      <div className="mini-head">
-        <div className="settings-card-title">
-          <h2>Widget</h2>
-          <span>Auto-saves when changed.</span>
-        </div>
-      </div>
-      <div className="settings-row">
-        <div className="seg-field">
-          <span className="seg-label">Style</span>
-          <div className="seg" role="group" aria-label="Theme style">
-            <button type="button" className={`seg-btn${themeStyle(settings.theme) === "pixel" ? " active" : ""}`} onClick={() => patch({ theme: composeTheme("pixel", themeMode(settings.theme)) })}>Pixel</button>
-            <button type="button" className={`seg-btn${themeStyle(settings.theme) === "glass" ? " active" : ""}`} onClick={() => patch({ theme: composeTheme("glass", themeMode(settings.theme)) })}>Glass</button>
+      {activeTab === "general" && (
+        <>
+          <div className={`general-status ${statusTone}`}>
+            <span className="settings-health-dot" aria-hidden="true" />
+            <span className="general-status-msg">{statusMessage}</span>
           </div>
-        </div>
-        <div className="seg-field">
-          <span className="seg-label">Mode</span>
-          <ModeSwitch
-            mode={themeMode(settings.theme)}
-            onToggle={() => patch({ theme: composeTheme(themeStyle(settings.theme), themeMode(settings.theme) === "light" ? "dark" : "light") })}
-          />
-        </div>
-      </div>
-      <div className="settings-row">
-        <div className="seg-field">
-          <span className="seg-label">Zoom (Full view)</span>
-          <ThemedSelect
-            ariaLabel="Full view zoom"
-            value={settings.uiScale}
-            options={ZOOM_OPTIONS}
-            onChange={(value) => patch({ uiScale: value })}
-          />
-        </div>
-        <div className="seg-field">
-          <span className="seg-label">Refresh (enabled AIs)</span>
-          <div className="num-field">
-            <input
-              type="number"
-              min="10"
-              value={secondsDraft}
-              onChange={(event) => setSecondsDraft(event.target.value)}
-              onBlur={commitSeconds}
-              onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commitSeconds(); } }}
-            />
-            <span className="num-unit">sec</span>
+          <div className="general-summary">
+            <span><strong>{shownAccountCount}</strong> {shownAccountCount === 1 ? "account" : "accounts"}</span>
+            <span><strong>{shownMonitorCount}</strong> {shownMonitorCount === 1 ? "sensor" : "sensors"}</span>
           </div>
-        </div>
-      </div>
-      <div className="settings-row">
-        <div className="seg-field">
-          <span className="seg-label">Opacity <span className="seg-value">{Math.round(settings.opacity * 100)}%</span></span>
-          <input type="range" min="0.45" max="1" step="0.01" value={settings.opacity} onChange={(event) => patch({ opacity: Number(event.target.value) })} />
-        </div>
-      </div>
-      {pendingLow !== null && (
-        <div className="settings-warn">
-          <span>Under 60s refreshes more often — costs more resources and may get rate-limited. Apply {pendingLow}s anyway?</span>
-          <div className="settings-warn-actions">
-            <button className="primary" onClick={confirmLow}>Apply {pendingLow}s</button>
-            <button onClick={cancelLow}>Cancel</button>
+          <div className="settings-group">
+            <h3 className="settings-group-title">Widget</h3>
+            <div className="setting-card">
+              <span className="setting-card-text">
+                <span className="setting-card-label">View mode</span>
+                <small className="setting-card-desc">Full or compact widget</small>
+              </span>
+              <div className="seg" role="group" aria-label="View mode">
+                <button type="button" className={`seg-btn${widgetMode === "widget" ? " active" : ""}`} aria-pressed={widgetMode === "widget"} onClick={() => onSetMode("widget")}>Full</button>
+                <button type="button" className={`seg-btn${widgetMode === "mini" ? " active" : ""}`} aria-pressed={widgetMode === "mini"} onClick={() => onSetMode("mini")}>Mini</button>
+              </div>
+            </div>
+            <label className="setting-card">
+              <span className="setting-card-icon"><AiIcon /></span>
+              <span className="setting-card-text">
+                <span className="setting-card-label">AI usage</span>
+                <small className="setting-card-desc">Track Claude &amp; Codex usage</small>
+              </span>
+              <input className="switch-control" type="checkbox" role="switch" checked={settings.aiUsageEnabled} onChange={(event) => patch({ aiUsageEnabled: event.target.checked })} />
+            </label>
+            <label className="setting-card">
+              <span className="setting-card-icon"><MonitorsIcon /></span>
+              <span className="setting-card-text">
+                <span className="setting-card-label">System monitors</span>
+                <small className="setting-card-desc">Local CPU / RAM / GPU readings</small>
+              </span>
+              <input className="switch-control" type="checkbox" role="switch" checked={settings.systemMonitorsEnabled} onChange={(event) => patch({ systemMonitorsEnabled: event.target.checked })} />
+            </label>
+            <label className="setting-card">
+              <span className="setting-card-text">
+                <span className="setting-card-label">Always on top</span>
+                <small className="setting-card-desc">Keep the widget above other windows</small>
+              </span>
+              <input className="switch-control" type="checkbox" role="switch" checked={settings.alwaysOnTop} onChange={(event) => patch({ alwaysOnTop: event.target.checked })} />
+            </label>
+          </div>
+
+          <div className="settings-group">
+            <h3 className="settings-group-title">Actions</h3>
+            <div className="general-actions">
+              <button type="button" className="refresh-all-btn" onClick={onToggleWidget} disabled={widgetVisible === null || widgetToggleBusy}>
+                {widgetToggleBusy ? "Updating..." : widgetVisible === null ? "Checking..." : widgetVisible ? "Hide widget" : "Show widget"}
+              </button>
+              <button type="button" className="refresh-all-btn" onClick={onRefreshAll}>Refresh all</button>
+            </div>
+          </div>
+
+          {settings.developerMode && (
+            <div className="settings-group">
+              <h3 className="settings-group-title">Developer</h3>
+              <div className="settings-row">
+                <div className="seg-field">
+                  <span className="seg-label">Refresh (enabled AIs)</span>
+                  <div className="num-field">
+                    <input
+                      type="number"
+                      min="10"
+                      value={secondsDraft}
+                      onChange={(event) => setSecondsDraft(event.target.value)}
+                      onBlur={commitSeconds}
+                      onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); commitSeconds(); } }}
+                    />
+                    <span className="num-unit">sec</span>
+                  </div>
+                </div>
+                <div className="seg-field">
+                  <span className="seg-label">Monitor update</span>
+                  <div className="num-field">
+                    <input
+                      type="number"
+                      min="1"
+                      max="10"
+                      step="1"
+                      value={settings.monitorIntervalSec}
+                      onChange={(event) => {
+                        const next = Number(event.target.value);
+                        if (Number.isInteger(next) && next >= 1 && next <= 10) patch({ monitorIntervalSec: next });
+                      }}
+                    />
+                    <span className="num-unit">sec</span>
+                  </div>
+                </div>
+              </div>
+              {pendingLow !== null && (
+                <div className="settings-warn">
+                  <span>Under 60s refreshes more often — costs more resources and may get rate-limited. Apply {pendingLow}s anyway?</span>
+                  <div className="settings-warn-actions">
+                    <button className="primary" onClick={confirmLow}>Apply {pendingLow}s</button>
+                    <button onClick={cancelLow}>Cancel</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {activeTab === "accounts" && (
+        <div className="effect-settings ai-usage-settings">
+          <div className="feature-settings-body ai-accounts-body">
+            <span className="ai-accounts-label">Accounts</span>
+            {accountPanels}
           </div>
         </div>
       )}
-      <div className="effect-settings ai-usage-settings">
-        <FeatureSwitch label="AI usage" checked={settings.aiUsageEnabled} onChange={(aiUsageEnabled) => patch({ aiUsageEnabled })} />
-        {settings.aiUsageEnabled && <div className="feature-settings-body ai-accounts-body">
-          <span className="ai-accounts-label">Accounts</span>
-          {accountPanels}
-          <div className="ai-effect-subsection">
-            <FeatureSwitch label="Usage effect" checked={settings.effectsEnabled} onChange={(effectsEnabled) => patch({ effectsEnabled })} />
-            {settings.effectsEnabled && <div className="feature-settings-body">
-            <label className="toggle-row">
-              <span>Drop cell effect</span>
-              <input className="switch-control" type="checkbox" role="switch" checked={settings.effectDropCell} onChange={(event) => patch({ effectDropCell: event.target.checked })} />
-            </label>
+
+      {activeTab === "appearance" && (
+        <>
+          <div className="settings-row">
+            <div className="seg-field">
+              <span className="seg-label">Style</span>
+              <div className="seg" role="group" aria-label="Theme style">
+                <button type="button" className={`seg-btn${themeStyle(settings.theme) === "pixel" ? " active" : ""}`} aria-pressed={themeStyle(settings.theme) === "pixel"} onClick={() => patch({ theme: composeTheme("pixel", themeMode(settings.theme)) })}>Pixel</button>
+                <button type="button" className={`seg-btn${themeStyle(settings.theme) === "glass" ? " active" : ""}`} aria-pressed={themeStyle(settings.theme) === "glass"} onClick={() => patch({ theme: composeTheme("glass", themeMode(settings.theme)) })}>Glass</button>
+              </div>
+            </div>
+            <div className="seg-field">
+              <span className="seg-label">Mode</span>
+              <ModeSwitch
+                mode={themeMode(settings.theme)}
+                onToggle={() => patch({ theme: composeTheme(themeStyle(settings.theme), themeMode(settings.theme) === "light" ? "dark" : "light") })}
+              />
+            </div>
+          </div>
+          <div className="settings-row">
+            <div className="seg-field">
+              <span className="seg-label">Zoom (Full view)</span>
+              <ThemedSelect
+                ariaLabel="Full view zoom"
+                value={settings.uiScale}
+                options={ZOOM_OPTIONS}
+                onChange={(value) => patch({ uiScale: value })}
+              />
+            </div>
+            <div className="seg-field">
+              <span className="seg-label">Opacity <span className="seg-value">{Math.round(settings.opacity * 100)}%</span></span>
+              <input type="range" min="0.45" max="1" step="0.01" value={settings.opacity} onChange={(event) => patch({ opacity: Number(event.target.value) })} />
+            </div>
+          </div>
+          <div className="effect-settings">
+            <FeatureSwitch label="Enable effect" checked={settings.effectsEnabled} onChange={(effectsEnabled) => patch({ effectsEnabled })} />
+            {settings.effectsEnabled && settings.developerMode && <div className="feature-settings-body">
             <details className="effect-tester">
-              <summary><span className="summary-left"><svg className="disclosure-chevron" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg><span>Test / replay</span></span></summary>
+              <summary><span className="summary-left"><svg className="disclosure-chevron" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg><span>Effect tester</span></span></summary>
               <div className="effect-tester-body">
-                <div className="effect-tester-row">
-                  <label>Account<select value={testProvider} onChange={(event) => setTestProvider(event.target.value as Provider)}>
-                    {settings.accounts.map((account) => <option key={account.id} value={account.id}>{account.label}</option>)}
-                  </select></label>
-                  <label>From<input type="number" min="0" max="100" value={testFrom} onChange={(event) => setTestFrom(Number(event.target.value))} /></label>
-                  <label>To<input type="number" min="0" max="100" value={testTo} onChange={(event) => setTestTo(Number(event.target.value))} /></label>
-                  <button type="button" onClick={loadCurrent} title="Load this account's current %">current</button>
+                <div className="seg effect-tester-tabs" role="tablist" aria-label="Effect type">
+                  <button type="button" className={`seg-btn${testMode === "ai" ? " active" : ""}`} role="tab" aria-selected={testMode === "ai"} disabled={!settings.accounts.length} onClick={() => setTestMode("ai")}>AI usage</button>
+                  <button type="button" className={`seg-btn${testMode === "monitor" ? " active" : ""}`} role="tab" aria-selected={testMode === "monitor"} disabled={!shownTestMonitors.length} onClick={() => setTestMode("monitor")}>System monitor</button>
                 </div>
-                <label className="toggle-row">
-                  <span>Drive bar too (fake %, restores on next read)</span>
-                  <input className="switch-control" type="checkbox" role="switch" checked={driveBar} onChange={(event) => setDriveBar(event.target.checked)} />
-                </label>
-                <div className="effect-tester-actions">
-                  <button type="button" className="primary" disabled={!testable} onClick={() => play(testFrom, testTo)}>Play</button>
-                  <button type="button" disabled={!testable} onClick={stepUp}>Step +1%</button>
-                  <button type="button" onClick={onEffectRestore}>Restore</button>
-                </div>
-                <div className="effect-tester-presets">
-                  {presets.map(([label, from, to]) => (
-                    <button type="button" key={label} disabled={!testable} onClick={() => { setTestFrom(from); setTestTo(to); play(from, to); }}>{label}</button>
-                  ))}
-                </div>
+                {widgetMode !== "widget" && <div className="effect-tester-hint"><span>Effects are visible in Full view.</span><button type="button" onClick={() => onSetMode("widget")}>Use Full</button></div>}
+                {testMode === "ai" ? (
+                  <>
+                    <div className="effect-tester-grid effect-tester-targets">
+                      <label>Account<select value={selectedTestProvider} onChange={(event) => setTestProvider(event.target.value as Provider)}>
+                        {settings.accounts.map((account) => <option key={account.id} value={account.id}>{account.label}</option>)}
+                      </select></label>
+                      <label>Scenario<select value="" onChange={(event) => {
+                        if (event.target.value === "") return;
+                        const preset = aiPresets[Number(event.target.value)];
+                        if (!preset) return;
+                        setTestFrom(preset[1]);
+                        setTestTo(preset[2]);
+                      }}>
+                        <option value="">Custom</option>
+                        {aiPresets.map(([label], index) => <option key={label} value={index}>{label}</option>)}
+                      </select></label>
+                    </div>
+                    <div className="effect-tester-grid effect-tester-values">
+                      <label>From<input type="number" min="0" max="100" value={testFrom} onChange={(event) => setTestFrom(Number(event.target.value))} /></label>
+                      <label>To<input type="number" min="0" max="100" value={testTo} onChange={(event) => setTestTo(Number(event.target.value))} /></label>
+                      <button type="button" onClick={loadCurrent} title="Load this account's current %">Current</button>
+                    </div>
+                    <label className="toggle-row effect-tester-toggle">
+                      <span>Move bar to the test value</span>
+                      <input className="switch-control" type="checkbox" role="switch" checked={driveBar} onChange={(event) => setDriveBar(event.target.checked)} />
+                    </label>
+                    <div className="effect-tester-actions">
+                      <button type="button" className="primary" disabled={!testable || !selectedTestProvider} onClick={() => play(testFrom, testTo)}>Play</button>
+                      <button type="button" disabled={!testable || !selectedTestProvider} onClick={stepUp}>Step +1%</button>
+                      <button type="button" onClick={onEffectRestore}>Restore</button>
+                    </div>
+                  </>
+                ) : selectedTestMonitor ? (
+                  <>
+                    <div className="effect-tester-grid effect-tester-monitor-fields">
+                      <label>Sensor<select value={selectedTestMonitor} onChange={(event) => {
+                        const kind = event.target.value as MonitorKind;
+                        setTestMonitor(kind);
+                        setTestMonitorValue(monitorPresetValue(kind, "low"));
+                      }}>
+                        {shownTestMonitors.map((kind) => <option key={kind} value={kind}>{MONITOR_FULL_LABELS[kind]}</option>)}
+                      </select></label>
+                      <label>Value<input type="number" min="0" max="100" value={testMonitorValue} onChange={(event) => setTestMonitorValue(Number(event.target.value))} /></label>
+                    </div>
+                    <div className="effect-monitor-levels" role="group" aria-label="Monitor test level">
+                      {(["low", "medium", "high"] as MonitorLevel[]).map((level) => {
+                        const value = monitorPresetValue(selectedTestMonitor, level);
+                        return <button type="button" key={level} className={testMonitorValue === value ? "active" : ""} onClick={() => { setTestMonitorValue(value); playMonitor(value); }}>{level} {value}{selectedTestMonitor === "cputemp" || selectedTestMonitor === "gputemp" ? "°" : "%"}</button>;
+                      })}
+                    </div>
+                    <p className="effect-tester-note">Temporary test value · restores automatically after 12 seconds.</p>
+                    <div className="effect-tester-actions two">
+                      <button type="button" className="primary" disabled={!testable} onClick={() => playMonitor()}>Play</button>
+                      <button type="button" onClick={onMonitorEffectRestore}>Restore</button>
+                    </div>
+                  </>
+                ) : <p className="effect-tester-note">Show a system-monitor sensor first, then reopen this tester.</p>}
               </div>
             </details>
             </div>}
           </div>
-        </div>}
-      </div>
-      <div className="effect-settings monitor-settings">
-        <FeatureSwitch label="System monitors" checked={settings.systemMonitorsEnabled} onChange={(systemMonitorsEnabled) => patch({ systemMonitorsEnabled })} />
-        {settings.systemMonitorsEnabled && <div className="feature-settings-body">
-        {MONITOR_ORDER.map((k) => (
-          <label className="toggle-row" key={k}>
-            <span>{MONITOR_FULL_LABELS[k]}</span>
-            <input
-              className="switch-control"
-              type="checkbox"
-              role="switch"
-              checked={settings[MONITOR_SHOW_KEY[k]] as boolean}
-              onChange={(event) => patch({ [MONITOR_SHOW_KEY[k]]: event.target.checked } as Partial<Settings>)}
-            />
-          </label>
-        ))}
-        <div className="seg-field">
-          <span className="seg-label">Update every</span>
-          <div className="num-field">
-            <input
-              type="number"
-              min="1"
-              max="10"
-              step="1"
-              value={settings.monitorIntervalSec}
-              onChange={(event) => {
-                const next = Number(event.target.value);
-                if (Number.isInteger(next) && next >= 1 && next <= 10) patch({ monitorIntervalSec: next });
-              }}
-            />
-            <span className="num-unit">sec</span>
+          <ColorsSection settings={settings} patch={patch} />
+        </>
+      )}
+
+      {activeTab === "monitors" && (
+        <>
+          <div className="settings-group">
+            <h3 className="settings-group-title">Sensors</h3>
+            {MONITOR_ORDER.map((k) => {
+              const shown = settings[MONITOR_SHOW_KEY[k]] as boolean;
+              const r = monitorReadings[k];
+              const tone = r && r.available ? monitorTone(settings, r) : settings.monitorColors[k].low;
+              return (
+                <section className="mini-card monitor-sensor-card" key={k} style={{ "--tone": tone, "--provider-color": tone } as React.CSSProperties}>
+                  <div className="mini-head">
+                    <div>
+                      <h2><MonitorMark kind={k} />{MONITOR_FULL_LABELS[k]}</h2>
+                      <p className="account-usage">{r && r.available ? (r.sub ?? r.displayValue) : "Not detected"}</p>
+                    </div>
+                    <StatusPill status={shown ? "ok" : "warn"} label={shown ? "shown" : "hidden"} />
+                  </div>
+                  <div className="daily-actions">
+                    <span className="sensor-value">{r && r.available ? r.displayValue : "—"}</span>
+                    <button className="primary" onClick={() => {
+                      patch({ [MONITOR_SHOW_KEY[k]]: !shown } as Partial<Settings>);
+                      void emitTo("widget", "usageview-monitor-toast", { label: MONITOR_LABELS[k], shown: !shown }).catch(() => undefined);
+                    }}>{shown ? "Hide widget" : "Show widget"}</button>
+                  </div>
+                </section>
+              );
+            })}
           </div>
-        </div>
-        <SensorServiceSettings />
-        </div>}
-      </div>
-      <ColorsSection settings={settings} patch={patch} />
+          <div className="settings-group">
+            <h3 className="settings-group-title">Sensor service</h3>
+            <SensorServiceSettings />
+          </div>
+        </>
+      )}
+
+      {activeTab === "about" && <AboutPanel settings={settings} patch={patch} />}
     </section>
   );
 }
@@ -4291,8 +4708,8 @@ function AddAccountForm({ onAdd, onCancel }: { onAdd: (kind: AccountKind, label:
       <div className="seg-field">
         <span className="seg-label">Service</span>
         <div className="seg" role="group" aria-label="Account type">
-          <button type="button" className={`seg-btn${kind === "claude" ? " active" : ""}`} onClick={() => setKind("claude")}>Claude</button>
-          <button type="button" className={`seg-btn${kind === "codex" ? " active" : ""}`} onClick={() => setKind("codex")}>Codex</button>
+          <button type="button" className={`seg-btn${kind === "claude" ? " active" : ""}`} aria-pressed={kind === "claude"} onClick={() => setKind("claude")}>Claude</button>
+          <button type="button" className={`seg-btn${kind === "codex" ? " active" : ""}`} aria-pressed={kind === "codex"} onClick={() => setKind("codex")}>Codex</button>
         </div>
       </div>
       <label className="url-field">Account name
@@ -4394,6 +4811,479 @@ function makeEffectParticles(from: number, to: number): EffectParticle[] {
   });
 }
 
+const GLASS_WAVE_WIDTH = 180;
+const GLASS_WAVE_HEIGHT = 25;
+const GLASS_AI_WAVE_INNER = 28;
+const GLASS_AI_WAVE_SUPPORT = 54;
+const GLASS_MONITOR_WAVE_INNER = 40;
+const GLASS_MONITOR_WAVE_SUPPORT = 76;
+const GLASS_UNDERLIGHT_AURA_SUPPORT = 0.78;
+const GLASS_MONITOR_UNDERLIGHT_HALF_RATIO = GLASS_MONITOR_WAVE_SUPPORT * GLASS_UNDERLIGHT_AURA_SUPPORT / GLASS_WAVE_WIDTH;
+const GLASS_AI_UNDERLIGHT_HALF_RATIO = GLASS_AI_WAVE_SUPPORT * GLASS_UNDERLIGHT_AURA_SUPPORT / GLASS_WAVE_WIDTH;
+
+type GlassWaveDraw = (timestamp: number) => boolean;
+
+const glassWaveDrawers = new Set<GlassWaveDraw>();
+let glassWaveFrame: number | null = null;
+let glassWaveVisibilityReady = false;
+
+function requestGlassWaveFrame() {
+  if (glassWaveFrame !== null || document.hidden || glassWaveDrawers.size === 0) return;
+  glassWaveFrame = requestAnimationFrame((timestamp) => {
+    glassWaveFrame = null;
+    let keepRunning = false;
+    glassWaveDrawers.forEach((draw) => { keepRunning = draw(timestamp) || keepRunning; });
+    if (keepRunning) requestGlassWaveFrame();
+  });
+}
+
+function registerGlassWave(draw: GlassWaveDraw): () => void {
+  glassWaveDrawers.add(draw);
+  if (!glassWaveVisibilityReady) {
+    glassWaveVisibilityReady = true;
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) requestGlassWaveFrame();
+    });
+  }
+  requestGlassWaveFrame();
+  return () => {
+    glassWaveDrawers.delete(draw);
+    if (glassWaveDrawers.size === 0 && glassWaveFrame !== null) {
+      cancelAnimationFrame(glassWaveFrame);
+      glassWaveFrame = null;
+    }
+  };
+}
+
+function glassWaveStrength(delta: number): number {
+  return Math.max(0.32, Math.min(1, 0.32 + Math.max(0, Math.sqrt(Math.max(0, delta)) - 1) * 0.136));
+}
+
+const GLASS_WAVE_VERTEX_SHADER = `
+attribute vec2 a_position;
+varying vec2 v_uv;
+void main() {
+  v_uv = vec2(a_position.x, 1.0 - a_position.y);
+  gl_Position = vec4(a_position * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+// The shader evaluates one closed silhouette directly per pixel. No path tessellation or canvas texture
+// upload occurs while the phase changes; each bar is one GPU quad.
+const GLASS_WAVE_FRAGMENT_SHADER = `
+precision highp float;
+varying vec2 v_uv;
+uniform float u_width;
+uniform float u_dpr;
+uniform float u_fill;
+uniform float u_crest;
+uniform float u_trough;
+uniform float u_inner;
+uniform float u_support;
+uniform vec2 u_centers;
+uniform float u_center_count;
+uniform vec2 u_highlights;
+uniform float u_highlight_count;
+uniform float u_highlight_alpha;
+uniform float u_underlight;
+uniform vec3 u_color;
+
+const float PI = 3.141592653589793;
+const float W = 180.0;
+const float H = 25.0;
+const float TOP = 8.0;
+const float BOTTOM = 24.0;
+
+float waveOffset(float distance) {
+  float d = abs(distance);
+  float crestOffset = u_crest - TOP;
+  float troughOffset = u_trough - TOP;
+  if (d <= u_inner) {
+    float blend = (1.0 - cos(PI * d / u_inner)) * 0.5;
+    return mix(crestOffset, troughOffset, blend);
+  }
+  if (d <= u_support) {
+    float blend = (1.0 - cos(PI * (d - u_inner) / (u_support - u_inner))) * 0.5;
+    return troughOffset * (1.0 - blend);
+  }
+  return 0.0;
+}
+
+float topAt(float x) {
+  float weighted = 0.0;
+  float weights = 0.0;
+  for (int index = 0; index < 2; index++) {
+    float enabled = index == 0 ? step(0.5, u_center_count) : step(1.5, u_center_count);
+    float center = index == 0 ? u_centers.x : u_centers.y;
+    float distance = abs(x - center);
+    float active = enabled * (1.0 - step(u_support, distance));
+    float weight = max(0.001, 1.0 - distance / u_support) * active;
+    weighted += waveOffset(x - center) * weight;
+    weights += weight;
+  }
+  return weights > 0.0 ? TOP + weighted / weights : TOP;
+}
+
+float verticalMask(float y, float top, float bottom) {
+  float aa = 0.75 / u_dpr;
+  return smoothstep(top - aa, top + aa, y) * (1.0 - smoothstep(bottom - aa, bottom + aa, y));
+}
+
+float capMask(float x, float y, float centerX, float centerY, float radiusX, float radiusY) {
+  float dx = (x - centerX) / max(0.001, radiusX);
+  float dy = (y - centerY) / max(0.001, radiusY);
+  float distance = sqrt(dx * dx + dy * dy);
+  float aa = 0.85 / max(1.0, radiusY * u_dpr);
+  return 1.0 - smoothstep(1.0 - aa, 1.0 + aa, distance);
+}
+
+float highlightAt(float x, float y, float surface, float center) {
+  float span = u_support * 0.72;
+  float dx = (x - center) / span;
+  float dy = (y - surface) / (y < surface ? 3.2 : 6.4);
+  float broad = 1.0 - smoothstep(0.12, 1.0, sqrt(dx * dx + dy * dy));
+  float coreDx = (x - center) / max(1.0, u_inner * 0.62);
+  float coreDy = (y - surface) / (y < surface ? 1.35 : 2.1);
+  float core = 1.0 - smoothstep(0.08, 1.0, sqrt(coreDx * coreDx + coreDy * coreDy));
+  return min(1.0, broad * 0.58 + core * 0.62);
+}
+
+float underlightBroadAt(float x, float y, float center) {
+  float dx = abs((x - center) / max(1.0, u_support * 0.70));
+  float horizontal = 1.0 - smoothstep(0.12, 1.0, dx);
+  float rise = 1.0 - smoothstep(1.0, 16.0, max(0.0, BOTTOM - y));
+  return horizontal * rise;
+}
+
+float underlightCoreAt(float x, float y, float center) {
+  float dx = abs((x - center) / max(1.0, u_inner * 0.68));
+  float horizontal = 1.0 - smoothstep(0.04, 1.0, dx);
+  float rise = 1.0 - smoothstep(2.0, 20.0, max(0.0, BOTTOM - y));
+  return horizontal * rise;
+}
+
+float underlightAuraAt(float x, float y, float center) {
+  float dx = (x - center) / max(1.0, u_support * ${GLASS_UNDERLIGHT_AURA_SUPPORT});
+  float dy = (y - (BOTTOM - 5.0)) / 10.0;
+  return 1.0 - smoothstep(0.08, 1.0, sqrt(dx * dx + dy * dy));
+}
+
+void main() {
+  float x = v_uv.x * W;
+  float y = v_uv.y * H;
+  float fill = clamp(u_fill, 0.0, 1.0);
+  float waterX = x / max(fill, 0.001);
+  float baseRadiusX = min(8.0, u_width * 0.5) / max(1.0, u_width) * W;
+
+  float leftTop = topAt(baseRadiusX);
+  float leftBottom = BOTTOM + (leftTop - TOP) * 0.2;
+  float leftRadiusY = (leftBottom - leftTop) * 0.5;
+  float leftRadiusX = min(u_width * 0.5, leftRadiusY) / max(1.0, u_width) * W;
+  leftTop = topAt(leftRadiusX);
+  leftBottom = BOTTOM + (leftTop - TOP) * 0.2;
+  leftRadiusY = (leftBottom - leftTop) * 0.5;
+  leftRadiusX = min(u_width * 0.5, leftRadiusY) / max(1.0, u_width) * W;
+
+  float rightTop = topAt(W - baseRadiusX);
+  float rightBottom = BOTTOM + (rightTop - TOP) * 0.2;
+  float rightRadiusY = (rightBottom - rightTop) * 0.5;
+  float rightRadiusX = min(u_width * 0.5, rightRadiusY) / max(1.0, u_width) * W;
+  rightTop = topAt(W - rightRadiusX);
+  rightBottom = BOTTOM + (rightTop - TOP) * 0.2;
+  rightRadiusY = (rightBottom - rightTop) * 0.5;
+  rightRadiusX = min(u_width * 0.5, rightRadiusY) / max(1.0, u_width) * W;
+
+  float top = topAt(waterX);
+  float bottom = BOTTOM + (top - TOP) * 0.2;
+  float middle = verticalMask(y, top, bottom) * step(leftRadiusX, waterX) * step(waterX, W - rightRadiusX);
+  float left = capMask(waterX, y, leftRadiusX, (leftTop + leftBottom) * 0.5, leftRadiusX, leftRadiusY);
+  float right = capMask(waterX, y, W - rightRadiusX, (rightTop + rightBottom) * 0.5, rightRadiusX, rightRadiusY);
+  float fillAa = 0.8 * W / max(1.0, u_width * u_dpr);
+  float fillMask = 1.0 - smoothstep(W - fillAa, W + fillAa, waterX);
+  float mask = max(middle, max(left, right)) * fillMask * step(0.001, fill);
+
+  float ramp = y / H;
+  float baseAlpha = ramp <= 0.52 ? mix(0.58, 0.68, ramp / 0.52) : mix(0.68, 0.76, (ramp - 0.52) / 0.48);
+  float light = 0.0;
+  if (u_highlight_count >= 0.5) light = max(light, highlightAt(waterX, y, top, u_highlights.x));
+  if (u_highlight_count >= 1.5) light = max(light, highlightAt(waterX, y, top, u_highlights.y));
+  float underBroad = 0.0;
+  float underCore = 0.0;
+  float underAura = 0.0;
+  if (u_underlight > 0.0 && u_highlight_count >= 0.5) {
+    underBroad = max(underBroad, underlightBroadAt(waterX, y, u_highlights.x));
+    underCore = max(underCore, underlightCoreAt(waterX, y, u_highlights.x));
+    underAura = max(underAura, underlightAuraAt(waterX, y, u_highlights.x));
+  }
+  if (u_underlight > 0.0 && u_highlight_count >= 1.5) {
+    underBroad = max(underBroad, underlightBroadAt(waterX, y, u_highlights.y));
+    underCore = max(underCore, underlightCoreAt(waterX, y, u_highlights.y));
+    underAura = max(underAura, underlightAuraAt(waterX, y, u_highlights.y));
+  }
+  underBroad *= u_underlight;
+  underCore *= u_underlight;
+  underAura *= u_underlight;
+  float highlight = clamp(light * u_highlight_alpha, 0.0, 0.78);
+  vec3 waterColor = mix(u_color, vec3(1.0), highlight);
+  float underWhite = clamp(underBroad * 0.42 + underCore * 0.78, 0.0, 0.92);
+  vec3 underColor = mix(u_color, vec3(1.0), underWhite);
+  waterColor = mix(waterColor, underColor, clamp(underBroad * 0.55 + underCore * 0.68, 0.0, 0.86));
+  float waterAlpha = baseAlpha * mask;
+  float haloBand = 1.0 - smoothstep(0.7, 3.4, abs(y - top));
+  float haloAlpha = light * u_highlight_alpha * haloBand * 0.15 * fillMask * step(0.001, fill);
+  float auraAlpha = underAura * 0.26 * fillMask * step(0.001, fill);
+  float alpha = max(waterAlpha, max(haloAlpha, auraAlpha));
+  float haloWeight = alpha > 0.0 ? haloAlpha / alpha : 0.0;
+  float auraWeight = alpha > 0.0 ? auraAlpha / alpha : 0.0;
+  vec3 haloColor = mix(u_color, vec3(1.0), 0.76);
+  vec3 auraColor = mix(u_color, vec3(1.0), 0.46);
+  vec3 finalColor = mix(waterColor, haloColor, haloWeight);
+  gl_FragColor = vec4(mix(finalColor, auraColor, auraWeight), alpha);
+}`;
+
+function compileGlassWaveShader(gl: WebGLRenderingContext, type: number, source: string): WebGLShader | null {
+  const shader = gl.createShader(type);
+  if (!shader) return null;
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    console.error("Glass wave shader failed", gl.getShaderInfoLog(shader));
+    gl.deleteShader(shader);
+    return null;
+  }
+  return shader;
+}
+
+function createGlassWaveProgram(gl: WebGLRenderingContext): WebGLProgram | null {
+  const vertex = compileGlassWaveShader(gl, gl.VERTEX_SHADER, GLASS_WAVE_VERTEX_SHADER);
+  const fragment = compileGlassWaveShader(gl, gl.FRAGMENT_SHADER, GLASS_WAVE_FRAGMENT_SHADER);
+  if (!vertex || !fragment) return null;
+  const program = gl.createProgram();
+  if (!program) return null;
+  gl.attachShader(program, vertex);
+  gl.attachShader(program, fragment);
+  gl.linkProgram(program);
+  gl.deleteShader(vertex);
+  gl.deleteShader(fragment);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    console.error("Glass wave program failed", gl.getProgramInfoLog(program));
+    gl.deleteProgram(program);
+    return null;
+  }
+  return program;
+}
+
+function glassWaveRgb(color: string): [number, number, number] {
+  const values = color.match(/[\d.]+/g)?.map(Number);
+  if (!values || values.length < 3) return [1, 1, 1];
+  return [values[0] / 255, values[1] / 255, values[2] / 255];
+}
+
+function GlassWaveCanvas({
+  kind,
+  strength,
+  fill,
+  colorToken,
+  level = "low",
+  onReadyChange,
+  phaseOrigin,
+}: {
+  kind: "ai" | "monitor";
+  strength?: number;
+  fill: number;
+  colorToken?: string;
+  level?: MonitorLevel;
+  onReadyChange?: (ready: boolean) => void;
+  phaseOrigin?: number;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [contextRevision, setContextRevision] = useState(0);
+  const paramsRef = useRef({ strength: strength ?? 0.32, fill, level });
+  const colorRef = useRef<[number, number, number]>([1, 1, 1]);
+  paramsRef.current = { strength: strength ?? 0.32, fill, level };
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    colorRef.current = glassWaveRgb(getComputedStyle(canvas).color);
+    requestGlassWaveFrame();
+  }, [colorToken]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    onReadyChange?.(false);
+    const contextLost = (event: Event) => {
+      event.preventDefault();
+      onReadyChange?.(false);
+    };
+    const contextRestored = () => setContextRevision((current) => current + 1);
+    canvas.addEventListener("webglcontextlost", contextLost);
+    canvas.addEventListener("webglcontextrestored", contextRestored);
+    const gl = canvas.getContext("webgl", { alpha: true, antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: false, powerPreference: "low-power" });
+    if (!gl) return () => {
+      canvas.removeEventListener("webglcontextlost", contextLost);
+      canvas.removeEventListener("webglcontextrestored", contextRestored);
+    };
+    const program = createGlassWaveProgram(gl);
+    if (!program) return () => {
+      canvas.removeEventListener("webglcontextlost", contextLost);
+      canvas.removeEventListener("webglcontextrestored", contextRestored);
+    };
+    const buffer = gl.createBuffer();
+    if (!buffer) return () => {
+      canvas.removeEventListener("webglcontextlost", contextLost);
+      canvas.removeEventListener("webglcontextrestored", contextRestored);
+      gl.deleteProgram(program);
+    };
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1]), gl.STATIC_DRAW);
+    gl.useProgram(program);
+    const position = gl.getAttribLocation(program, "a_position");
+    gl.enableVertexAttribArray(position);
+    gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0);
+    const uniforms = {
+      width: gl.getUniformLocation(program, "u_width"),
+      dpr: gl.getUniformLocation(program, "u_dpr"),
+      fill: gl.getUniformLocation(program, "u_fill"),
+      crest: gl.getUniformLocation(program, "u_crest"),
+      trough: gl.getUniformLocation(program, "u_trough"),
+      inner: gl.getUniformLocation(program, "u_inner"),
+      support: gl.getUniformLocation(program, "u_support"),
+      centers: gl.getUniformLocation(program, "u_centers"),
+      centerCount: gl.getUniformLocation(program, "u_center_count"),
+      highlights: gl.getUniformLocation(program, "u_highlights"),
+      highlightCount: gl.getUniformLocation(program, "u_highlight_count"),
+      highlightAlpha: gl.getUniformLocation(program, "u_highlight_alpha"),
+      underlight: gl.getUniformLocation(program, "u_underlight"),
+      color: gl.getUniformLocation(program, "u_color"),
+    };
+    let width = 0;
+    let dpr = 1;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const startedAt = phaseOrigin ?? performance.now();
+    let readySent = false;
+
+    const resize = () => {
+      const rect = canvas.getBoundingClientRect();
+      width = rect.width;
+      dpr = Math.max(1, window.devicePixelRatio || 1);
+      const pixelWidth = Math.max(1, Math.round(rect.width * dpr));
+      const pixelHeight = Math.max(1, Math.round(GLASS_WAVE_HEIGHT * dpr));
+      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+        canvas.width = pixelWidth;
+        canvas.height = pixelHeight;
+      }
+      colorRef.current = glassWaveRgb(getComputedStyle(canvas).color);
+      gl.viewport(0, 0, pixelWidth, pixelHeight);
+      requestGlassWaveFrame();
+    };
+
+    const draw = (timestamp: number): boolean => {
+      if (reducedMotion.matches || width <= 0.5) {
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        return false;
+      }
+      let centerOne = 0;
+      let centerTwo = 0;
+      let centerCount = 0;
+      let highlightOne = 0;
+      let highlightTwo = 0;
+      let highlightCount = 0;
+      let crestY: number;
+      let troughY: number;
+      let highlightAlpha = 0;
+      let underlight = 0;
+      let keepRunning = kind === "monitor";
+      const params = paramsRef.current;
+      const fillRatio = Math.max(0, Math.min(1, params.fill / 100));
+      const inner = kind === "monitor" ? GLASS_MONITOR_WAVE_INNER : GLASS_AI_WAVE_INNER;
+      const support = kind === "monitor" ? GLASS_MONITOR_WAVE_SUPPORT : GLASS_AI_WAVE_SUPPORT;
+      if (kind === "monitor") {
+        const levelStrength = params.level === "high" ? 1 : params.level === "medium" ? 0.5 : 0;
+        crestY = 5 - 4 * levelStrength;
+        troughY = 9 + 2 * levelStrength;
+        highlightAlpha = 0.54 + levelStrength * 0.18;
+        underlight = 0.56 + levelStrength * 0.38;
+        const progress = timestamp % 3300 / 3300;
+        centerOne = -support + (GLASS_WAVE_WIDTH + support * 2) * progress;
+        centerCount = 1;
+        highlightOne = centerOne;
+        highlightCount = 1;
+      } else {
+        const elapsed = timestamp - startedAt;
+        const phase = Math.max(0, Math.min(1, elapsed / 4000));
+        const normalized = Math.max(0, Math.min(1, (params.strength - 0.32) / 0.68));
+        crestY = 5 - 4 * normalized;
+        troughY = 8.64 + 1.36 * normalized;
+        highlightAlpha = 0.48 + normalized * 0.24;
+        keepRunning = elapsed < 4000;
+        if (phase >= 0.2 && phase < 0.8) {
+          const progress = (phase - 0.2) / 0.6;
+          const eased = 1 - Math.pow(1 - progress, 2.1);
+          const distance = eased * (GLASS_WAVE_WIDTH / 2 + support);
+          centerOne = GLASS_WAVE_WIDTH / 2 - distance;
+          centerTwo = GLASS_WAVE_WIDTH / 2 + distance;
+          centerCount = 2;
+          const opacity = progress < 0.12 ? progress / 0.12 : progress < 0.72 ? 1 - 0.28 * (progress - 0.12) / 0.6 : Math.max(0, 0.72 * (1 - progress) / 0.28);
+          highlightOne = centerOne;
+          highlightTwo = centerTwo;
+          highlightCount = 2;
+          highlightAlpha *= opacity;
+          underlight = (0.56 + normalized * 0.34) * opacity;
+        }
+      }
+      gl.uniform1f(uniforms.width, Math.max(1, width * fillRatio));
+      gl.uniform1f(uniforms.dpr, dpr);
+      gl.uniform1f(uniforms.fill, fillRatio);
+      gl.uniform1f(uniforms.crest, crestY);
+      gl.uniform1f(uniforms.trough, troughY);
+      gl.uniform1f(uniforms.inner, inner);
+      gl.uniform1f(uniforms.support, support);
+      gl.uniform2f(uniforms.centers, centerOne, centerTwo);
+      gl.uniform1f(uniforms.centerCount, centerCount);
+      gl.uniform2f(uniforms.highlights, highlightOne, highlightTwo);
+      gl.uniform1f(uniforms.highlightCount, highlightCount);
+      gl.uniform1f(uniforms.highlightAlpha, highlightCount === 0 ? 0 : highlightAlpha);
+      gl.uniform1f(uniforms.underlight, underlight);
+      const color = colorRef.current;
+      gl.uniform3f(uniforms.color, color[0], color[1], color[2]);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.drawArrays(gl.TRIANGLES, 0, 6);
+      if (!readySent) {
+        readySent = true;
+        onReadyChange?.(true);
+      }
+      return keepRunning;
+    };
+
+    const resizeObserver = new ResizeObserver(resize);
+    resizeObserver.observe(canvas);
+    const unregister = registerGlassWave(draw);
+    const resume = () => requestGlassWaveFrame();
+    reducedMotion.addEventListener("change", resume);
+    resize();
+    return () => {
+      onReadyChange?.(false);
+      unregister();
+      resizeObserver.disconnect();
+      reducedMotion.removeEventListener("change", resume);
+      canvas.removeEventListener("webglcontextlost", contextLost);
+      canvas.removeEventListener("webglcontextrestored", contextRestored);
+      gl.deleteBuffer(buffer);
+      gl.deleteProgram(program);
+    };
+  }, [kind, contextRevision, onReadyChange, phaseOrigin]);
+  return <canvas ref={canvasRef} className={`glass-wave-canvas glass-${kind}-wave`} aria-hidden="true" />;
+}
+
+const GlassAiWave = React.memo(function GlassAiWave({ strength, fill, colorToken, phaseOrigin }: { strength: number; fill: number; colorToken?: string; phaseOrigin: number }) {
+  return <GlassWaveCanvas kind="ai" strength={strength} fill={fill} colorToken={colorToken} phaseOrigin={phaseOrigin} />;
+});
+
+const GlassMonitorWave = React.memo(function GlassMonitorWave({ fill, colorToken, level, onReadyChange }: { fill: number; colorToken: string; level: MonitorLevel; onReadyChange: (ready: boolean) => void }) {
+  return <GlassWaveCanvas kind="monitor" fill={fill} colorToken={colorToken} level={level} onReadyChange={onReadyChange} />;
+});
+
 function effectStyle(effect: UsageEffect | undefined, fallbackPercent: number | undefined): React.CSSProperties {
   const from = effect ? Math.max(0, Math.min(100, effect.from)) : fallbackPercent ?? 0;
   const to = effect ? Math.max(0, Math.min(100, effect.to)) : fallbackPercent ?? 0;
@@ -4448,7 +5338,7 @@ function effectStyle(effect: UsageEffect | undefined, fallbackPercent: number | 
 
 // The 11 glass liquid layers (order matches the prototype markup). Hidden by default; shown/animated
 // only under .theme-glass. Rendered always so the glass fill (--bar-fill) shows even when idle.
-const LiquidLayers = React.memo(function LiquidLayers() {
+const LiquidLayers = React.memo(function LiquidLayers({ waveStrength, waveFill, colorToken, phaseOrigin }: { waveStrength?: number; waveFill?: number; colorToken?: string; phaseOrigin?: number }) {
   return (
     <>
       <span className="liquid-refraction" aria-hidden="true" />
@@ -4458,8 +5348,7 @@ const LiquidLayers = React.memo(function LiquidLayers() {
       <span className="liquid-neck" aria-hidden="true" />
       <span className="liquid-fill-mask" aria-hidden="true" />
       <span className="liquid-flow" aria-hidden="true" />
-      <span className="liquid-wave-left" aria-hidden="true" />
-      <span className="liquid-wave-right" aria-hidden="true" />
+      {waveStrength !== undefined && waveFill !== undefined && phaseOrigin !== undefined && <GlassAiWave strength={waveStrength} fill={waveFill} colorToken={colorToken} phaseOrigin={phaseOrigin} />}
       <span className="liquid-ripple" aria-hidden="true" />
       <span className="liquid-drop" aria-hidden="true" />
     </>
@@ -4505,10 +5394,17 @@ function buildUsageCells(percent: number | undefined, cellCount: number, effect?
     const cellStart = index * cellWidth;
     const cellEnd = cellStart + cellWidth;
     const intersectsEffect = !!effect && effectEnd > cellStart && effectStart < cellEnd;
+    // Pha cua song quet: vet quet chay het phan da fill trong 1 chu ky, nen o o vi tri x% cua phan fill
+    // se nho len o thoi diem x% cua chu ky. Chi .monitor-scan doc bien nay.
+    const waveCenter = index === fullCells && partialRatio > 0
+      ? cellStart + cellWidth * partialRatio / 2
+      : cellStart + cellWidth / 2;
+    const waveDelay = normalized > 0 ? Math.min(1, waveCenter / normalized) : 0;
+    const waveStyle = { "--wave-delay": waveDelay } as React.CSSProperties;
     if (intersectsEffect) {
       const filledMinis = Math.max(0, Math.min(10, Math.ceil(((normalized - cellStart) / cellWidth) * 10)));
       return (
-        <span key={index} className="cell partial current fx-partial">
+        <span key={index} className="cell partial current fx-partial" style={waveStyle}>
           {Array.from({ length: 10 }, (_, mini) => {
             const miniStart = cellStart + mini * (cellWidth / 10);
             const on = mini < filledMinis;
@@ -4519,12 +5415,12 @@ function buildUsageCells(percent: number | undefined, cellCount: number, effect?
       );
     }
     if (index < fullCells) {
-      return <span key={index} className={`cell active${index === fullCells - 1 && partialRatio === 0 ? " current" : ""}`} />;
+      return <span key={index} className={`cell active${index === fullCells - 1 && partialRatio === 0 ? " current" : ""}`} style={waveStyle} />;
     }
     if (index === fullCells && partialRatio > 0) {
-      return <span key={index} className="cell partial current" style={{ "--partial-ratio": partialRatio } as React.CSSProperties} />;
+      return <span key={index} className="cell partial current" style={{ ...waveStyle, "--partial-ratio": partialRatio } as React.CSSProperties} />;
     }
-    return <span key={index} className="cell" />;
+    return <span key={index} className="cell" style={waveStyle} />;
   });
 }
 
@@ -4614,6 +5510,22 @@ function clampPercent(value: number): number {
 function emptyReading(kind: MonitorKind): MonitorReading {
   const unit: "%" | "°C" = kind === "cputemp" || kind === "gputemp" ? "°C" : "%";
   return { kind, label: MONITOR_LABELS[kind], displayValue: "N/A", unit, available: false };
+}
+
+function monitorTestReading(base: MonitorReading, kind: MonitorKind, value: number, nonce: string): MonitorReading {
+  const unit: "%" | "°C" = kind === "cputemp" || kind === "gputemp" ? "°C" : "%";
+  const percent = Math.max(0, Math.min(100, value));
+  return {
+    ...base,
+    kind,
+    label: MONITOR_LABELS[kind],
+    percent,
+    displayValue: `${Math.round(percent)}${unit}`,
+    unit,
+    available: true,
+    testing: true,
+    testNonce: nonce,
+  };
 }
 
 function shortGpuName(name: string | null): string | undefined {
@@ -4741,33 +5653,29 @@ function monitorTone(settings: Settings, reading: MonitorReading): string {
 // metrics glide instead of snapping each poll. Cheap: stops itself once it reaches the goal.
 // The readout is rounded to a whole percent, so settling closer than half a point buys nothing
 // visible and only costs frames — every frame re-renders the tile and rebuilds its bar cells.
-function useSmoothedValue(target: number, speed = 0.3): number {
+function useSmoothedValue(target: number, durationMs = 260): number {
   const [display, setDisplay] = useState(target);
   const currentRef = useRef(target);
-  const goalRef = useRef(target);
   const rafRef = useRef<number | null>(null);
   useEffect(() => {
-    goalRef.current = target;
-    const tick = () => {
-      const diff = goalRef.current - currentRef.current;
-      if (Math.abs(diff) < 0.5) {
-        currentRef.current = goalRef.current;
-        setDisplay(goalRef.current);
-        rafRef.current = null;
-        return;
-      }
-      currentRef.current += diff * speed;
+    const from = currentRef.current;
+    const startedAt = performance.now();
+    const tick = (timestamp: number) => {
+      const progress = Math.min(1, (timestamp - startedAt) / durationMs);
+      const eased = progress * progress * (3 - 2 * progress);
+      currentRef.current = from + (target - from) * eased;
       setDisplay(currentRef.current);
-      rafRef.current = requestAnimationFrame(tick);
+      if (progress < 1) rafRef.current = requestAnimationFrame(tick);
+      else rafRef.current = null;
     };
-    if (rafRef.current === null) rafRef.current = requestAnimationFrame(tick);
+    rafRef.current = requestAnimationFrame(tick);
     return () => {
       if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
       }
     };
-  }, [target, speed]);
+  }, [target, durationMs]);
   return display;
 }
 
@@ -4821,15 +5729,344 @@ function MonitorMark({ kind }: { kind: MonitorKind }) {
   );
 }
 
-const MonitorBlock = React.memo(function MonitorBlock({ reading, tone }: { reading: MonitorReading; tone: string }) {
+function useMonitorNumberLight({
+  enabled,
+  glass,
+  fill,
+  text,
+  level,
+}: {
+  enabled: boolean;
+  glass: boolean;
+  fill: number;
+  text: string;
+  level: MonitorLevel;
+}) {
+  const numberRef = useRef<HTMLSpanElement>(null);
+  const lightRef = useRef<HTMLSpanElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
+  const animationRef = useRef<Animation | null>(null);
+  const rebuildRef = useRef<(() => void) | null>(null);
+  const paramsRef = useRef({ fill, level });
+  paramsRef.current = { fill, level };
+
+  useEffect(() => {
+    const number = numberRef.current;
+    const light = lightRef.current;
+    const bar = barRef.current;
+    if (!number || !light || !bar || !enabled) {
+      animationRef.current?.cancel();
+      animationRef.current = null;
+      if (light) light.style.opacity = "0";
+      return;
+    }
+
+    let disposed = false;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const duration = glass ? 3300 : 2200;
+    const centerStart = glass ? -0.422222 : -0.27;
+    const centerRate = glass ? 1.844444 : 1.665015;
+    const beamHalfRatio = glass ? GLASS_MONITOR_UNDERLIGHT_HALF_RATIO : 0.225;
+
+    const stop = () => {
+      animationRef.current?.cancel();
+      animationRef.current = null;
+      light.style.opacity = "0";
+    };
+
+    const rebuild = () => {
+      if (disposed || reducedMotion.matches) {
+        stop();
+        return;
+      }
+      const numberRect = number.getBoundingClientRect();
+      const barRect = bar.getBoundingClientRect();
+      const textWidth = numberRect.width;
+      const trackWidth = Math.max(0, bar.clientWidth - 6);
+      const params = paramsRef.current;
+      const fillWidth = trackWidth * Math.max(0, Math.min(100, params.fill)) / 100;
+      if (textWidth <= 0.5 || fillWidth <= 0.5) {
+        stop();
+        return;
+      }
+
+      const fillLeft = barRect.left + bar.clientLeft + 3;
+      const fillOffset = fillLeft - numberRect.left;
+      const beamHalfWidth = fillWidth * beamHalfRatio;
+      const maxOpacity = params.level === "low" ? 0.95 : 1;
+      const clampPhase = (value: number) => Math.max(0, Math.min(1, value));
+      const phaseAt = (fillPosition: number) => (fillPosition - centerStart) / centerRate;
+      let frames: Keyframe[];
+
+      if (fillWidth <= textWidth + 1) {
+        light.classList.add("is-whole-pulse");
+        light.style.backgroundSize = "";
+        const start = clampPhase(phaseAt(0.5 - beamHalfRatio));
+        const peak = clampPhase(phaseAt(0.5));
+        const end = clampPhase(phaseAt(0.5 + beamHalfRatio));
+        frames = [
+          { offset: 0, opacity: 0 },
+          { offset: start, opacity: 0 },
+          { offset: peak, opacity: maxOpacity },
+          { offset: end, opacity: 0 },
+          { offset: 1, opacity: 0 },
+        ];
+      } else {
+        light.classList.remove("is-whole-pulse");
+        const beamWidth = Math.max(18, beamHalfWidth * 2);
+        light.style.backgroundSize = `${beamWidth}px 145%`;
+        const centerAt = (phase: number) => fillOffset + fillWidth * (centerStart + centerRate * phase);
+        const positionAt = (phase: number) => `${centerAt(phase) - beamHalfWidth}px 50%`;
+        const start = clampPhase(phaseAt((-fillOffset - beamHalfWidth) / fillWidth));
+        const end = clampPhase(phaseAt((textWidth - fillOffset + beamHalfWidth) / fillWidth));
+        const span = Math.max(0.02, end - start);
+        const fade = Math.min(0.07, span * 0.22);
+        const fullStart = Math.min(end, start + fade);
+        const fullEnd = Math.max(fullStart, end - fade);
+        frames = [
+          { offset: 0, opacity: 0, backgroundPosition: positionAt(0) },
+          { offset: start, opacity: 0, backgroundPosition: positionAt(start) },
+          { offset: fullStart, opacity: maxOpacity, backgroundPosition: positionAt(fullStart) },
+          { offset: fullEnd, opacity: maxOpacity, backgroundPosition: positionAt(fullEnd) },
+          { offset: end, opacity: 0, backgroundPosition: positionAt(end) },
+          { offset: 1, opacity: 0, backgroundPosition: positionAt(1) },
+        ];
+      }
+
+      light.style.opacity = "";
+      const existing = animationRef.current;
+      if (existing) {
+        const currentTime = existing.currentTime;
+        const effect = existing.effect as KeyframeEffect;
+        effect.setKeyframes(frames);
+        effect.updateTiming({ duration, iterations: Infinity, easing: "linear" });
+        if (currentTime !== null) existing.currentTime = currentTime;
+        return;
+      }
+
+      const animation = light.animate(frames, { duration, iterations: Infinity, easing: "linear" });
+      animationRef.current = animation;
+      if (glass) {
+        const timelineNow = typeof document.timeline.currentTime === "number" ? document.timeline.currentTime : performance.now();
+        animation.startTime = timelineNow - performance.now() % duration;
+      } else {
+        const beam = bar.getAnimations({ subtree: true }).find((candidate) =>
+          (candidate as CSSAnimation).animationName === "monitor-scan-band",
+        );
+        const beamStart = beam?.startTime;
+        const beamTime = beam?.currentTime;
+        if (typeof beamStart === "number") {
+          animation.startTime = beamStart;
+        } else {
+          animation.currentTime = typeof beamTime === "number" ? beamTime % duration : performance.now() % duration;
+        }
+      }
+    };
+
+    rebuildRef.current = rebuild;
+    const observer = new ResizeObserver(rebuild);
+    observer.observe(number);
+    observer.observe(bar);
+    reducedMotion.addEventListener("change", rebuild);
+    const frame = window.requestAnimationFrame(rebuild);
+    void document.fonts.ready.then(() => { if (!disposed) rebuild(); });
+    return () => {
+      disposed = true;
+      rebuildRef.current = null;
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+      reducedMotion.removeEventListener("change", rebuild);
+      stop();
+    };
+  }, [enabled, glass]);
+
+  useLayoutEffect(() => {
+    rebuildRef.current?.();
+  }, [fill, level, text]);
+
+  return { numberRef, lightRef, barRef };
+}
+
+function useAiUsageNumberLight({
+  enabled,
+  fill,
+  strength,
+  effectId,
+  phaseOrigin,
+  text,
+}: {
+  enabled: boolean;
+  fill: number;
+  strength: number;
+  effectId?: number;
+  phaseOrigin?: number;
+  text: string;
+}) {
+  const numberRef = useRef<HTMLSpanElement>(null);
+  const leftLightRef = useRef<HTMLSpanElement>(null);
+  const rightLightRef = useRef<HTMLSpanElement>(null);
+  const barRef = useRef<HTMLDivElement>(null);
+  const animationsRef = useRef<[Animation | null, Animation | null]>([null, null]);
+  const rebuildRef = useRef<(() => void) | null>(null);
+  const paramsRef = useRef({ fill, strength });
+  paramsRef.current = { fill, strength };
+
+  useEffect(() => {
+    const number = numberRef.current;
+    const leftLight = leftLightRef.current;
+    const rightLight = rightLightRef.current;
+    const bar = barRef.current;
+    if (!enabled || effectId === undefined || phaseOrigin === undefined || !number || !leftLight || !rightLight || !bar) {
+      animationsRef.current.forEach((animation) => animation?.cancel());
+      animationsRef.current = [null, null];
+      return;
+    }
+
+    let disposed = false;
+    const duration = 4000;
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const lights = [leftLight, rightLight] as const;
+
+    const stop = () => {
+      animationsRef.current.forEach((animation) => animation?.cancel());
+      animationsRef.current = [null, null];
+      lights.forEach((light) => { light.style.opacity = "0"; });
+    };
+
+    const rebuild = () => {
+      if (disposed || reducedMotion.matches) {
+        stop();
+        return;
+      }
+      const numberRect = number.getBoundingClientRect();
+      const barRect = bar.getBoundingClientRect();
+      const trackWidth = Math.max(0, bar.clientWidth - 6);
+      const params = paramsRef.current;
+      const fillWidth = trackWidth * Math.max(0, Math.min(100, params.fill)) / 100;
+      if (numberRect.width <= 0.5 || fillWidth <= 0.5) {
+        stop();
+        return;
+      }
+
+      const fillOffset = barRect.left + bar.clientLeft + 3 - numberRect.left;
+      const beamHalfWidth = fillWidth * GLASS_AI_UNDERLIGHT_HALF_RATIO;
+      const normalizedStrength = Math.max(0, Math.min(1, (params.strength - 0.32) / 0.68));
+      const maxOpacity = 0.9 + normalizedStrength * 0.1;
+      lights.forEach((light) => { light.style.backgroundSize = `${Math.max(18, beamHalfWidth * 2)}px 145%`; });
+
+      const makeFrames = (direction: -1 | 1): Keyframe[] => Array.from({ length: 41 }, (_, index) => {
+        const phase = index / 40;
+        let opacity = 0;
+        let center = fillOffset + fillWidth * 0.5;
+        if (phase >= 0.2 && phase < 0.8) {
+          const progress = (phase - 0.2) / 0.6;
+          const eased = 1 - Math.pow(1 - progress, 2.1);
+          const distance = eased * (GLASS_WAVE_WIDTH / 2 + GLASS_AI_WAVE_SUPPORT);
+          const centerWorld = GLASS_WAVE_WIDTH / 2 + direction * distance;
+          center = fillOffset + fillWidth * centerWorld / GLASS_WAVE_WIDTH;
+          const envelope = progress < 0.12
+            ? progress / 0.12
+            : progress < 0.72
+              ? 1 - 0.28 * (progress - 0.12) / 0.6
+              : Math.max(0, 0.72 * (1 - progress) / 0.28);
+          opacity = maxOpacity * envelope;
+        }
+        return {
+          offset: phase,
+          opacity,
+          backgroundPosition: `${center - beamHalfWidth}px 50%`,
+        };
+      });
+
+      const frames = [makeFrames(-1), makeFrames(1)] as const;
+      const elapsed = Math.max(0, Math.min(duration, performance.now() - phaseOrigin));
+      lights.forEach((light, index) => {
+        light.style.opacity = "";
+        const existing = animationsRef.current[index];
+        if (existing) {
+          const currentTime = existing.currentTime;
+          (existing.effect as KeyframeEffect).setKeyframes(frames[index]);
+          if (currentTime !== null) existing.currentTime = currentTime;
+          return;
+        }
+        const animation = light.animate(frames[index], { duration, easing: "linear", fill: "both" });
+        const timelineNow = typeof document.timeline.currentTime === "number" ? document.timeline.currentTime : performance.now();
+        animation.startTime = timelineNow - elapsed;
+        animationsRef.current[index] = animation;
+      });
+    };
+
+    rebuildRef.current = rebuild;
+    const observer = new ResizeObserver(rebuild);
+    observer.observe(number);
+    observer.observe(bar);
+    reducedMotion.addEventListener("change", rebuild);
+    const frame = window.requestAnimationFrame(rebuild);
+    void document.fonts.ready.then(() => { if (!disposed) rebuild(); });
+    return () => {
+      disposed = true;
+      rebuildRef.current = null;
+      window.cancelAnimationFrame(frame);
+      observer.disconnect();
+      reducedMotion.removeEventListener("change", rebuild);
+      stop();
+    };
+  }, [effectId, enabled, phaseOrigin]);
+
+  useLayoutEffect(() => {
+    rebuildRef.current?.();
+  }, [fill, strength, text]);
+
+  return { numberRef, leftLightRef, rightLightRef, barRef };
+}
+
+function usePixelUsageNumberFlash(percent: number | undefined, enabled: boolean) {
+  const previousRef = useRef(percent);
+  const timerRef = useRef(0);
+  const [flash, setFlash] = useState({ active: false, sequence: 0 });
+
+  useEffect(() => {
+    const previous = previousRef.current;
+    previousRef.current = percent;
+    window.clearTimeout(timerRef.current);
+    if (!enabled || previous === undefined || percent === undefined || previous === percent) {
+      setFlash((current) => current.active ? { ...current, active: false } : current);
+      return;
+    }
+    setFlash((current) => ({ active: true, sequence: current.sequence + 1 }));
+    timerRef.current = window.setTimeout(() => {
+      setFlash((current) => ({ ...current, active: false }));
+    }, 1000);
+    return () => window.clearTimeout(timerRef.current);
+  }, [enabled, percent]);
+
+  useEffect(() => () => window.clearTimeout(timerRef.current), []);
+  return flash;
+}
+
+const MonitorBlock = React.memo(function MonitorBlock({ reading, tone, pulse = false, glass = false, textEffect = true }: { reading: MonitorReading; tone: string; pulse?: boolean; glass?: boolean; textEffect?: boolean }) {
   const [flipped, setFlipped] = useState(false);
+  const [glassWaveReady, setGlassWaveReady] = useState(false);
   const smoothed = useSmoothedValue(reading.available ? reading.percent ?? 0 : 0);
   const details = reading.details ?? [];
   const canFlip = reading.available && details.length > 0;
   const showBack = flipped && canFlip;
+  // Ambient "scanner": a bright band sweeps across only the *used* portion of the bar, brighter as the
+  // value climbs. The sweep runs at a FIXED speed (so a changing value never restarts the animation and
+  // it stays smooth); the load only drives brightness/width, which transition smoothly in CSS.
+  const scanOn = pulse && reading.available && !showBack;
+  const waveLevel = monitorLevel(reading.kind, reading.percent);
+  const displayValue = reading.available ? reading.displayValue : "N/A";
+  const { numberRef, lightRef, barRef } = useMonitorNumberLight({
+    enabled: scanOn && textEffect,
+    glass,
+    fill: reading.available ? smoothed : 0,
+    text: displayValue,
+    level: waveLevel,
+  });
   return (
     <article
-      className={`usage compact provider-tile monitor monitor-${reading.kind}${reading.available ? "" : " monitor-unavailable"}${canFlip ? " flippable" : ""}`}
+      className={`usage compact provider-tile monitor monitor-${reading.kind} monitor-wave-${waveLevel}${reading.available ? "" : " monitor-unavailable"}${canFlip ? " flippable" : ""}${scanOn ? " monitor-scan" : ""}${glassWaveReady ? " glass-wave-ready" : ""}`}
       style={{ "--tone": tone, "--provider-color": tone } as React.CSSProperties}
       onClick={canFlip ? () => setFlipped((f) => !f) : undefined}
       title={canFlip ? (showBack ? "Click to go back" : "Click for details") : undefined}
@@ -4837,7 +6074,7 @@ const MonitorBlock = React.memo(function MonitorBlock({ reading, tone }: { readi
       <div className="usage-top">
         <strong><MonitorMark kind={reading.kind} /><span>{reading.label}</span></strong>
         <span className="tile-status">
-          <span className={`source-pill ${reading.available ? "ok" : "warn"}`}>{reading.available ? "live" : "n/a"}</span>
+          <span className={`source-pill ${reading.testing ? "test" : reading.available ? "ok" : "warn"}`}>{reading.testing ? "test" : reading.available ? "live" : "n/a"}</span>
         </span>
       </div>
       {showBack ? (
@@ -4852,11 +6089,12 @@ const MonitorBlock = React.memo(function MonitorBlock({ reading, tone }: { readi
       ) : (
         <>
           <div className="metric">
-            <span className="percent">{reading.available ? reading.displayValue : "N/A"}</span>
+            <span ref={numberRef} className="percent monitor-number"><span className="monitor-number-base">{displayValue}</span><span ref={lightRef} className="monitor-number-light" aria-hidden="true">{displayValue}</span></span>
             {reading.sub && <span className="message">{reading.sub}</span>}
           </div>
-          <div className="bar monitor-bar" style={{ "--bar-fill": `${reading.available ? smoothed : 0}%` } as React.CSSProperties} aria-label={`${reading.label} ${reading.displayValue}`}>
+          <div ref={barRef} className="bar monitor-bar" style={{ "--bar-fill": `${reading.available ? smoothed : 0}%` } as React.CSSProperties} aria-label={`${reading.label} ${reading.displayValue}`}>
             {buildUsageCells(reading.available ? smoothed : 0, 10)}
+            {scanOn && glass && <GlassMonitorWave fill={reading.available ? smoothed : 0} colorToken={tone} level={waveLevel} onReadyChange={setGlassWaveReady} />}
           </div>
         </>
       )}
@@ -4925,12 +6163,32 @@ function MiniTimerRow({ snapshot, accent, onBack, paused = false }: { snapshot: 
 // Memoised: a system-monitor poll lands as often as once a second and re-renders the widget, but
 // nothing about an AI tile changed — without this every poll rebuilt each tile's bar cells and its
 // eleven liquid layers. Same reasoning for the other tiles below.
-const UsageBlock = React.memo(function UsageBlock({ snapshot, accent, flash = false, paused = false, updatedAgo, effect, dropCell = false, onFlip }: { snapshot: UsageSnapshot; accent?: string; flash?: boolean; paused?: boolean; updatedAgo?: string; effect?: UsageEffect; dropCell?: boolean; onFlip?: () => void }) {
+const UsageBlock = React.memo(function UsageBlock({ snapshot, accent, flash = false, paused = false, updatedAgo, effect, dropCell = false, glass = false, effectsEnabled = true, onFlip }: { snapshot: UsageSnapshot; accent?: string; flash?: boolean; paused?: boolean; updatedAgo?: string; effect?: UsageEffect; dropCell?: boolean; glass?: boolean; effectsEnabled?: boolean; onFlip?: () => void }) {
   const percent = typeof snapshot.percentUsed === "number" ? Math.max(0, Math.min(100, snapshot.percentUsed)) : undefined;
   const stale = isStale(snapshot);
   const sourceState = stale ? "stale" : snapshot.status !== "ok" ? snapshot.status : paused ? "paused" : "ok";
-   const metaLeft = usageMetaLeft(snapshot);
+  const metaLeft = usageMetaLeft(snapshot);
   const metaRight = usageMetaRight(snapshot);
+  const percentText = percent !== undefined ? `${Math.round(percent)}%` : "--";
+  const waveStrength = effect && dropCell ? glassWaveStrength(Math.abs(effect.to - effect.from)) : 0.32;
+  const waveFill = effect && dropCell ? Math.max(0, Math.min(100, effect.to)) : percent ?? 0;
+  const effectOriginRef = useRef<{ id?: number; time: number }>({ time: 0 });
+  if (effect && effectOriginRef.current.id !== effect.id) {
+    effectOriginRef.current = { id: effect.id, time: performance.now() };
+  } else if (!effect && effectOriginRef.current.id !== undefined) {
+    effectOriginRef.current = { time: 0 };
+  }
+  const phaseOrigin = effect ? effectOriginRef.current.time : undefined;
+  const { numberRef, leftLightRef, rightLightRef, barRef } = useAiUsageNumberLight({
+    enabled: glass && dropCell && effect !== undefined,
+    fill: waveFill,
+    strength: waveStrength,
+    effectId: effect?.id,
+    phaseOrigin,
+    text: percentText,
+  });
+  const pixelNumberFlash = usePixelUsageNumberFlash(percent, effectsEnabled && !glass);
+  const pixelFlashClass = pixelNumberFlash.active ? ` pixel-number-flash-${pixelNumberFlash.sequence % 2}` : "";
   return (
     <article className={`usage compact provider-tile ${providerKind(snapshot.provider)}${flash ? " mark-flash" : ""}${paused ? " mark-paused" : ""}${onFlip ? " flippable" : ""}`} style={providerAccentStyle(accent)} onClick={onFlip} title={onFlip ? "Tap for reset countdown" : undefined}>
       <div className="usage-top">
@@ -4941,13 +6199,18 @@ const UsageBlock = React.memo(function UsageBlock({ snapshot, accent, flash = fa
         </span>
       </div>
       <div className="metric">
-        <span className="percent">{percent !== undefined ? `${Math.round(percent)}%` : "--"}</span>
+        <span ref={numberRef} className={`percent ai-usage-number${pixelFlashClass}`}><span className="ai-number-base">{percentText}</span><span ref={leftLightRef} className="ai-number-light ai-number-light-left" aria-hidden="true">{percentText}</span><span ref={rightLightRef} className="ai-number-light ai-number-light-right" aria-hidden="true">{percentText}</span></span>
         <span className="message">{providerMessage(snapshot)}</span>
       </div>
-      <div key={effect?.id ?? "idle"} className={`bar${effect ? " usage-effect-bar" : ""}${effect && dropCell ? " drop-impact" : ""}`} style={effectStyle(effect, percent)} aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
+      <div ref={barRef} key={effect?.id ?? "idle"} className={`bar${effect ? " usage-effect-bar" : ""}${effect && dropCell ? " drop-impact" : ""}`} style={effectStyle(effect, percent)} aria-label={`${providerLabel(snapshot.provider)} usage ${percent ?? 0} percent`}>
         {buildUsageCells(percent, 10, effect)}
         <EffectOverlays effect={effect} dropCell={dropCell} />
-        <LiquidLayers />
+        <LiquidLayers
+          waveStrength={effect && dropCell ? waveStrength : undefined}
+          waveFill={effect && dropCell ? waveFill : undefined}
+          colorToken={accent}
+          phaseOrigin={effect && dropCell ? phaseOrigin : undefined}
+        />
       </div>
       <div className="usage-meta" data-tip={`${metaLeft}\n${metaRight}`}>
         <span>{metaLeft}</span>
@@ -4971,6 +6234,22 @@ function ProviderLifecycleToasts({ notices }: { notices: Partial<Record<Provider
         <div key={`${lifecycle.provider}-${lifecycle.generation}-${lifecycle.phase}`} className={`provider-lifecycle-toast ${lifecycleTone(lifecycle)}`}>
           <span className="provider-lifecycle-dot" aria-hidden="true" />
           <span>{lifecycle.message ?? `${providerLabel(lifecycle.provider)} ${lifecycleLabel(lifecycle)}`}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Transient toasts for system-monitor show/hide, mirroring the account lifecycle toasts (reuses the same
+// container/skin). Driven by the "usageview-monitor-toast" event the Settings window emits.
+function MonitorToasts({ toasts }: { toasts: { id: number; text: string; tone: string }[] }) {
+  if (!toasts.length) return null;
+  return (
+    <div className="provider-lifecycle-toasts" aria-live="polite" aria-atomic="false">
+      {toasts.map((t) => (
+        <div key={t.id} className={`provider-lifecycle-toast ${t.tone}`}>
+          <span className="provider-lifecycle-dot" aria-hidden="true" />
+          <span>{t.text}</span>
         </div>
       ))}
     </div>

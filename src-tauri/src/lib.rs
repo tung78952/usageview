@@ -30,6 +30,7 @@ const CONTEXT_SETTINGS: &str = "widget_context_settings";
 const CONTEXT_CLOSE: &str = "widget_context_close";
 const CONTEXT_ACTION_EVENT: &str = "usageview-context-action";
 const PROVIDER_RELEASED_EVENT: &str = "usageview-provider-released";
+const WIDGET_VISIBILITY_EVENT: &str = "usageview-widget-visibility";
 /// Fraction of the SMALLER of (tile, widget) that must overlap before a dropped tile docks.
 ///
 /// Do not go back to "is the tile's centre inside the widget": a detached tile is ~248px tall while
@@ -397,6 +398,27 @@ fn open_widget_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn close_widget_window(app: tauri::AppHandle) -> Result<(), String> {
+  hide_widget_window(&app)
+}
+
+#[tauri::command]
+fn get_widget_visibility(app: tauri::AppHandle) -> Result<bool, String> {
+  widget_window_visible(&app)
+}
+
+#[tauri::command]
+fn toggle_widget_window(app: tauri::AppHandle) -> Result<bool, String> {
+  if widget_window_visible(&app)? {
+    hide_widget_window(&app)?;
+    Ok(false)
+  } else {
+    show_widget_window(&app)?;
+    Ok(true)
+  }
+}
+
+#[tauri::command]
 fn load_window_geometry(app: tauri::AppHandle) -> Result<HashMap<String, WindowPosition>, String> {
   let state = app.state::<WindowPositionStoreLock>();
   let _guard = state.0.lock().map_err(|error| error.to_string())?;
@@ -455,18 +477,14 @@ fn show_widget_context_menu(
   if mode != "widget" && mode != "mini" {
     return Err(format!("Unknown widget mode: {}", mode));
   }
+  // View mode, pin and refresh moved into Settings; the right-click menu is now just Settings + Close.
+  let _ = pinned;
 
-  let mini = MenuItem::with_id(&app, CONTEXT_MINI, "Mini view", mode != "mini", None::<&str>).map_err(|error| error.to_string())?;
-  let full = MenuItem::with_id(&app, CONTEXT_FULL, "Full view", mode != "widget", None::<&str>).map_err(|error| error.to_string())?;
-  let view_separator = PredefinedMenuItem::separator(&app).map_err(|error| error.to_string())?;
-  let pin = MenuItem::with_id(&app, CONTEXT_PIN, if pinned { "Unpin" } else { "Pin" }, true, None::<&str>).map_err(|error| error.to_string())?;
-  let refresh = MenuItem::with_id(&app, CONTEXT_REFRESH, "Refresh", true, None::<&str>).map_err(|error| error.to_string())?;
   let settings = MenuItem::with_id(&app, CONTEXT_SETTINGS, "Settings", true, None::<&str>).map_err(|error| error.to_string())?;
-  let close_separator = PredefinedMenuItem::separator(&app).map_err(|error| error.to_string())?;
   let close = MenuItem::with_id(&app, CONTEXT_CLOSE, "Close", true, None::<&str>).map_err(|error| error.to_string())?;
   let menu = Menu::with_items(
     &app,
-    &[&mini, &full, &view_separator, &pin, &refresh, &settings, &close_separator, &close],
+    &[&settings, &close],
   ).map_err(|error| error.to_string())?;
 
   window
@@ -834,27 +852,38 @@ fn save_current_widget_geometry(app: &tauri::AppHandle) {
   save_widget_geometry(app, &mode);
 }
 
-fn show_widget_window(app: &tauri::AppHandle) -> Result<(), String> {
-  if let Some(window) = app.get_webview_window("widget") {
-    window.set_resizable(false).map_err(|error| error.to_string())?;
-    window.unminimize().map_err(|error| error.to_string())?;
-    window.show().map_err(|error| error.to_string())?;
-    window.set_focus().map_err(|error| error.to_string())?;
-    return Ok(());
+fn widget_window_visible(app: &tauri::AppHandle) -> Result<bool, String> {
+  match app.get_webview_window("widget") {
+    Some(window) => window.is_visible().map_err(|error| error.to_string()),
+    None => Ok(false),
   }
+}
 
-  WebviewWindowBuilder::new(app, "widget", WebviewUrl::App("index.html".into()))
-    .title("UsageView Widget")
-    .inner_size(392.0, 500.0)
-    .decorations(false)
-    .transparent(true)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .resizable(false)
-    .zoom_hotkeys_enabled(false)
-    .additional_browser_args(WEBVIEW_BROWSER_ARGS)
-    .build()
-    .map_err(|error| error.to_string())?;
+fn emit_widget_visibility(app: &tauri::AppHandle, visible: bool) {
+  let _ = app.emit_to("settings", WIDGET_VISIBILITY_EVENT, visible);
+}
+
+fn show_widget_window(app: &tauri::AppHandle) -> Result<(), String> {
+  let window = match app.get_webview_window("widget") {
+    Some(window) => window,
+    None => WebviewWindowBuilder::new(app, "widget", WebviewUrl::App("index.html".into()))
+      .title("UsageView Widget")
+      .inner_size(392.0, 500.0)
+      .decorations(false)
+      .transparent(true)
+      .always_on_top(true)
+      .skip_taskbar(true)
+      .resizable(false)
+      .zoom_hotkeys_enabled(false)
+      .additional_browser_args(WEBVIEW_BROWSER_ARGS)
+      .build()
+      .map_err(|error| error.to_string())?,
+  };
+  window.set_resizable(false).map_err(|error| error.to_string())?;
+  window.unminimize().map_err(|error| error.to_string())?;
+  window.show().map_err(|error| error.to_string())?;
+  emit_widget_visibility(app, true);
+  window.set_focus().map_err(|error| error.to_string())?;
   Ok(())
 }
 
@@ -863,6 +892,7 @@ fn hide_widget_window(app: &tauri::AppHandle) -> Result<(), String> {
     save_current_widget_geometry(app);
     window.hide().map_err(|error| error.to_string())?;
   }
+  emit_widget_visibility(app, false);
   Ok(())
 }
 
@@ -1601,14 +1631,10 @@ pub fn run() {
         let label = window.label();
         if label == "widget" {
           api.prevent_close();
-          save_current_widget_geometry(&window.app_handle());
-          let _ = window.hide();
+          let _ = hide_widget_window(window.app_handle());
         } else if label.starts_with("provider_") {
           api.prevent_close();
-          if let Some(widget) = window.app_handle().get_webview_window("widget") {
-            let _ = widget.show();
-            let _ = widget.set_focus();
-          }
+          let _ = show_widget_window(window.app_handle());
           let _ = window.hide();
           if provider_enabled(window.app_handle(), label) {
             if let Some(webview) = window.app_handle().get_webview_window(label) {
@@ -1642,6 +1668,9 @@ pub fn run() {
       suspend_provider_windows,
       refresh_provider_page,
       open_widget_window,
+      close_widget_window,
+      get_widget_visibility,
+      toggle_widget_window,
       load_window_geometry,
       save_window_geometry,
       reset_window_geometry,

@@ -241,7 +241,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   flex-direction: column;
 }
 .control-shell .scale-shell {
-  height: 100vh;
+  height: 100%;
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
@@ -559,6 +559,7 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   white-space: nowrap;
 }
 .source-pill.ok, .pill.ok { color: var(--ok); background: color-mix(in oklch, var(--ok) 16%, transparent); border: 1px solid color-mix(in oklch, var(--ok) 34%, transparent); }
+.source-pill.test { color: var(--warn); border: 1px solid color-mix(in oklch, var(--warn) 48%, transparent); background: color-mix(in oklch, var(--warn) 15%, transparent); }
 .source-pill.warn, .source-pill.not_open, .source-pill.not_logged_in, .pill.warn, .pill.not_open, .pill.not_logged_in { color: var(--warn); border: 1px solid color-mix(in oklch, var(--warn) 46%, transparent); background: color-mix(in oklch, var(--warn) 13%, transparent); }
 .source-pill.not_found, .source-pill.parser_failed, .source-pill.page_unavailable, .pill.not_found, .pill.parser_failed, .pill.page_unavailable { color: var(--danger); border: 1px solid color-mix(in oklch, var(--danger) 46%, transparent); background: color-mix(in oklch, var(--danger) 14%, transparent); }
 .source-pill.stale { color: var(--warn); border: 1px solid color-mix(in oklch, var(--warn) 46%, transparent); background: color-mix(in oklch, var(--warn) 13%, transparent); }
@@ -905,6 +906,8 @@ button.primary { color: var(--accent); border-color: color-mix(in oklch, var(--a
   height: 100vh;
   padding: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
   border: 2px solid var(--border);
   border-radius: 8px;
   color: var(--fg);
@@ -1299,14 +1302,18 @@ h2 {
 }
 .effect-tester > summary::-webkit-details-marker { display: none; }
 .effect-tester[open] > summary .disclosure-chevron { transform: rotate(90deg); }
-.effect-tester-body { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
-.effect-tester-row {
-  display: flex;
+.effect-tester-body { display: flex; flex-direction: column; gap: 9px; margin-top: 10px; }
+.effect-tester-tabs { width: 100%; }
+.effect-tester-tabs .seg-btn { flex: 1 1 0; }
+.effect-tester-grid {
+  display: grid;
   gap: 8px;
-  align-items: flex-end;
+  align-items: end;
 }
-.effect-tester-row label {
-  flex: 1;
+.effect-tester-targets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.effect-tester-values { grid-template-columns: repeat(2, minmax(0, 1fr)) auto; }
+.effect-tester-monitor-fields { grid-template-columns: minmax(0, 1fr) 88px; }
+.effect-tester-grid label {
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -1314,26 +1321,35 @@ h2 {
   font-size: 12px;
   color: var(--muted);
 }
-.effect-tester-row button {
+.effect-tester-grid input,
+.effect-tester-grid select { min-width: 0; width: 100%; }
+.effect-tester-values > button {
   flex: 0 0 auto;
-  min-height: 28px;
+  min-height: 32px;
   padding: 0 9px;
   font-size: 11px;
 }
-.effect-tester-actions,
-.effect-tester-presets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+.effect-tester-toggle { margin: 0; }
+.effect-tester-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
 }
-.effect-tester-actions button { min-height: 28px; padding: 0 12px; font-size: 11px; }
-.effect-tester-presets button {
+.effect-tester-actions.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.effect-tester-actions button {
   flex: 0 1 auto;
   min-width: 0;
-  min-height: 26px;
-  padding: 0 9px;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 12px;
   font-size: 11px;
 }
+.effect-monitor-levels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.effect-monitor-levels button { min-width: 0; min-height: 28px; padding: 0 7px; font-size: 10px; text-transform: capitalize; }
+.effect-monitor-levels button.active { color: var(--accent); border-color: color-mix(in oklch, var(--accent) 58%, var(--border)); background: color-mix(in oklch, var(--accent) 14%, transparent); }
+.effect-tester-note { margin: 0; color: var(--muted); font: 500 9.5px/1.45 var(--font-mono); }
+.effect-tester-hint { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 8px; border: 1px solid color-mix(in oklch, var(--warn) 34%, var(--border)); border-radius: 4px; color: var(--warn); font: 600 10px/1.35 var(--font-mono); }
+.effect-tester-hint button { flex: 0 0 auto; min-height: 26px; padding: 0 9px; font-size: 10px; }
 input, select {
   width: 100%;
   min-height: 32px;
@@ -1545,6 +1561,7 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
 /* ── Accent scope (default = all ON = current look; only the OFF states + bg-tint override) ── */
 .widget:not(.scope-text) .percent, .widget:not(.scope-text) .timer-clock,
 .mini-widget:not(.scope-text) .mini-percent, .mini-widget:not(.scope-text) .mini-timer-clock { color: var(--fg); text-shadow: none; }
+.widget:not(.scope-text) :is(.monitor-number-light, .ai-number-light) { display: none; }
 .widget:not(.scope-bar) .cell.active, .mini-widget:not(.scope-bar) .mini-bar .cell.active { background: color-mix(in srgb, var(--muted) 38%, transparent); box-shadow: none; }
 .theme-glass:not(.scope-bar) .bar::before, .theme-glass:not(.scope-bar) .mini-bar::before { background: color-mix(in srgb, var(--paper-soft) 42%, transparent) !important; }
 .widget:not(.scope-border) .provider-tile, .mini-widget:not(.scope-border) .provider-tile { border-color: var(--border); }
@@ -1756,4 +1773,391 @@ input:focus, select:focus { outline: 1px solid var(--accent); }
   font: 800 16px/1 var(--font-mono);
   letter-spacing: -.02em;
   pointer-events: none; /* clicks fall through to drag; only the logo flips back */
+}
+
+/* ── System-monitor "scanner by load" ────────────────────────────────────────
+   A bright band sweeps beneath the filled cells when the shared effect switch is on. It stays clipped
+   to --bar-fill and shares the cells' fixed 2.2s clock, so live monitor polling never restarts it. */
+.monitor-scan .monitor-bar { position: relative; }
+.provider-tile.monitor .percent { text-shadow: none; }
+.monitor-number,
+.ai-usage-number {
+  position: relative;
+  display: inline-grid;
+  width: max-content;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.monitor-number-base,
+.monitor-number-light,
+.ai-number-base,
+.ai-number-light { grid-area: 1 / 1; }
+.monitor-number-light,
+.ai-number-light {
+  z-index: 1;
+  pointer-events: none;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  background-image: radial-gradient(ellipse at 50% 54%,
+    #fff 0 22%,
+    color-mix(in srgb, #fff 88%, var(--tone)) 42%,
+    color-mix(in srgb, var(--tone) 90%, transparent) 68%,
+    transparent 88%);
+  background-repeat: no-repeat;
+  background-position: -100px 50%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  filter: drop-shadow(0 0 var(--monitor-number-glow-blur, 6px) color-mix(in srgb, var(--tone) var(--monitor-number-glow-alpha, 38%), transparent));
+  mix-blend-mode: screen;
+  opacity: 0;
+  will-change: background-position, opacity;
+}
+.monitor-number-light.is-whole-pulse {
+  background-image: linear-gradient(90deg,
+    color-mix(in srgb, #fff 68%, var(--tone)),
+    #fff 50%,
+    color-mix(in srgb, #fff 68%, var(--tone)));
+  background-size: 100% 100%;
+  background-position: 0 50%;
+}
+
+@keyframes ai-pixel-number-flash-a {
+  0% { filter: brightness(1); text-shadow: 0 0 0 transparent; }
+  28% { filter: brightness(1.38); text-shadow: 0 0 14px color-mix(in srgb, var(--tone) 78%, transparent), 0 0 28px color-mix(in srgb, var(--tone) 36%, transparent); }
+  100% { filter: brightness(1); text-shadow: 0 0 18px color-mix(in oklch, var(--tone) 26%, transparent); }
+}
+@keyframes ai-pixel-number-flash-b {
+  0% { filter: brightness(1); text-shadow: 0 0 0 transparent; }
+  28% { filter: brightness(1.38); text-shadow: 0 0 14px color-mix(in srgb, var(--tone) 78%, transparent), 0 0 28px color-mix(in srgb, var(--tone) 36%, transparent); }
+  100% { filter: brightness(1); text-shadow: 0 0 18px color-mix(in oklch, var(--tone) 26%, transparent); }
+}
+:is(.theme-terminal, .theme-light) .ai-usage-number.pixel-number-flash-0 { animation: ai-pixel-number-flash-a 900ms cubic-bezier(.16, 1, .3, 1) both; }
+:is(.theme-terminal, .theme-light) .ai-usage-number.pixel-number-flash-1 { animation: ai-pixel-number-flash-b 900ms cubic-bezier(.16, 1, .3, 1) both; }
+
+@keyframes monitor-scan-band {
+  from { background-position: -90% 100%; }
+  to { background-position: 212.73% 100%; }
+}
+
+/* Pixel wave: each filled cell lifts as the band front reaches it, then drops once it passes — a
+   "stadium wave" running through the cells. --wave-delay (set per cell in buildUsageCells) is the cell's
+   position 0→1 inside the *used* portion; it is mapped onto the window where the band is actually over
+   the fill. Band is 45% wide sweeping -110%→260%, so its centre enters the fill at ~16% of the cycle and
+   leaves at ~76% (span ~60%, i.e. 1.32s of the 2.2s loop). The bar keeps its normal, balanced geometry;
+   the real cell moves through its top edge instead of making extra headroom inside the frame. */
+@keyframes monitor-cell-wave {
+  0%   { transform: translateY(0); filter: brightness(1); animation-timing-function: cubic-bezier(.4, 0, .2, 1); }
+  9%   { transform: translateY(var(--monitor-cell-lift, 0px)); filter: brightness(var(--monitor-cell-peak-brightness, 1)); animation-timing-function: cubic-bezier(.4, 0, .2, 1); }
+  22%  { transform: translateY(0); filter: brightness(1); }
+  100% { transform: translateY(0); filter: brightness(1); }
+}
+:is(.theme-terminal, .theme-light) .monitor-scan .monitor-bar .cell {
+  --monitor-cell-lift: 0px;
+  --monitor-cell-peak-brightness: 1;
+  position: relative;
+  z-index: 1;
+  animation: monitor-cell-wave 2.2s linear infinite;
+  animation-delay: calc(var(--wave-delay, 0) * 1.32s + 0.16s);
+}
+:is(.theme-terminal, .theme-light) .monitor-scan .monitor-bar .cell.active {
+  --monitor-cell-lift: var(--monitor-cell-rise, -3px);
+  --monitor-cell-peak-brightness: var(--monitor-level-cell-peak, 1.12);
+  will-change: transform;
+}
+
+/* A partial cell is one full grid slot whose ::after paints only the filled fraction. Keep that slot
+   planted and move the painted fraction itself; otherwise its dark remainder looks like another empty
+   cell jumping beside the coloured sliver. The pseudo exists on every cell so its animation clock never
+   starts late when an empty edge becomes partial. */
+:is(.theme-terminal, .theme-light) .monitor-scan .monitor-bar .cell::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  --monitor-cell-lift: 0px;
+  --monitor-cell-peak-brightness: 1;
+  animation: monitor-cell-wave 2.2s linear infinite;
+  animation-delay: calc(var(--wave-delay, 0) * 1.32s + 0.16s);
+}
+:is(.theme-terminal, .theme-light) .monitor-scan .monitor-bar .cell.partial::after {
+  --monitor-cell-lift: var(--monitor-cell-rise, -3px);
+  --monitor-cell-peak-brightness: var(--monitor-level-cell-peak, 1.12);
+  will-change: transform;
+}
+:is(.theme-terminal, .theme-light) .monitor-scan .monitor-bar .cell.partial {
+  background: linear-gradient(90deg,
+    transparent 0 max(2px, calc(100% * var(--partial-ratio, 0))),
+    color-mix(in srgb, var(--fg) 9%, transparent) max(2px, calc(100% * var(--partial-ratio, 0))) 100%);
+}
+
+/* The pseudo-element is the filled-track light, not a second cell layer. A 45%-wide radial beam moves
+   along its background while the element itself stays clipped to the live fill. Its position curve is
+   mathematically paired with --wave-delay, placing the beam centre under each cell at that cell's peak. */
+:is(.theme-terminal, .theme-light) .monitor-scan .monitor-bar::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  bottom: 1px;
+  z-index: 0;
+  width: max(0px, calc(var(--bar-fill, 0%) - 6px));
+  border-radius: 1px;
+  pointer-events: none;
+  opacity: var(--monitor-scan-opacity, .56);
+  background-image: radial-gradient(ellipse 66% 105% at 50% 100%, color-mix(in srgb, #fff 68%, var(--tone)) 0 8%, color-mix(in srgb, var(--tone) 72%, transparent) 42%, color-mix(in srgb, var(--tone) 26%, transparent) 68%, transparent 82%);
+  background-repeat: no-repeat;
+  background-size: 45% 100%;
+  background-position: -90% 100%;
+  filter: drop-shadow(0 -2px 4px color-mix(in srgb, var(--tone) var(--monitor-scan-halo-alpha, 32%), transparent));
+  animation: monitor-scan-band 2.2s linear infinite;
+  will-change: background-position;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :is(.monitor-number-light, .ai-number-light) { display: none; }
+  :is(.theme-terminal, .theme-light) .ai-usage-number { animation: none; }
+  :is(.theme-terminal, .theme-light) .monitor-scan .monitor-bar::before { display: none; }
+  :is(.theme-terminal, .theme-light) .monitor-scan .monitor-bar .cell,
+  :is(.theme-terminal, .theme-light) .monitor-scan .monitor-bar .cell::after { animation: none; }
+}
+
+/* ── Settings sidebar (5-tab) layout ─────────────────────────────────────────
+   .control-shell is now a flex column: titlebar on top, then .settings-body (a flex row of the nav +
+   the scrolling content). Everything keys off theme tokens so Pixel/Glass both work. */
+.settings-body { flex: 1 1 auto; display: flex; min-height: 0; min-width: 0; }
+.settings-nav {
+  flex: 0 0 auto;
+  width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 8px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  scrollbar-width: none;
+  background: color-mix(in srgb, var(--surface) var(--panel-opacity-pct), transparent);
+}
+.settings-nav::-webkit-scrollbar { width: 0; height: 0; }
+.settings-nav-item {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: 700 11px/1 var(--font-body);
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  text-align: left;
+  justify-content: flex-start;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+.settings-nav-item:hover { transform: none; box-shadow: none; color: var(--fg); background: color-mix(in oklch, var(--surface-2) 55%, transparent); }
+.settings-nav-item.is-active {
+  color: var(--fg);
+  border-color: color-mix(in oklch, var(--accent) 42%, var(--border));
+  background: color-mix(in oklch, var(--accent) 14%, transparent);
+}
+
+/* Widget preview (General tab): the same Full-view tiles the widget renders, stacked, view-only. */
+.settings-preview { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.settings-preview-empty {
+  padding: 18px 12px;
+  margin-bottom: 14px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  font: 500 12px/1.5 var(--font-mono);
+  text-align: center;
+}
+
+/* About tab */
+.settings-about { display: flex; flex-direction: column; gap: 2px; }
+.settings-about .about-p { margin: 6px 0 0; font: 500 12px/1.6 var(--font-body); color: var(--fg); }
+.settings-about .about-p.muted { color: var(--muted); }
+
+/* General tab: Refresh-all button spans the row like a primary action. */
+.refresh-all-btn { width: 100%; margin-top: 6px; }
+
+/* ── Settings cards + sections (General / System monitor tabs) ────────────────
+   .settings-group = a titled section; .setting-card = an icon + label + control row styled like the
+   account mini-cards. Token-based so Pixel/Glass both work. */
+.settings-group { margin: 0 0 18px; }
+.settings-group:last-child { margin-bottom: 0; }
+.settings-group-title {
+  margin: 0 0 8px;
+  font: 800 10px/1 var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.setting-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--surface) 55%, transparent);
+  cursor: pointer;
+}
+.setting-card:last-child { margin-bottom: 0; }
+.setting-card-icon {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  line-height: 0;
+  color: var(--accent);
+}
+.setting-card-icon svg { width: 16px; height: 16px; display: block; }
+.setting-card-icon .mark { width: 16px; height: 16px; display: grid; place-items: center; }
+.setting-card-icon .mark svg { width: 16px; height: 16px; display: block; }
+/* The 2-line text block (label + description) is flex:1 and pushes the trailing control to the right. */
+.setting-card-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.setting-card-label { min-width: 0; font: 700 12px/1.15 var(--font-body); color: var(--fg); }
+.setting-card-desc { font: 500 10.5px/1.35 var(--font-mono); color: var(--muted); }
+.setting-card > .switch-control,
+.setting-card > .seg,
+.setting-card > .num-field { flex: 0 0 auto; }
+/* Sensor cards: coloured dots for the chosen low/med/high palette. */
+.setting-card-dots { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 4px; margin-right: 2px; }
+.setting-card-dots i { width: 8px; height: 8px; border-radius: 50%; box-shadow: inset 0 0 0 1px color-mix(in srgb, #000 18%, transparent); }
+
+/* General overview summary: quick stat chips so the tab is not empty. */
+.general-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 16px;
+}
+.general-summary > span {
+  flex: 1 1 0;
+  min-width: 90px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--surface) 55%, transparent);
+  font: 600 11px/1.3 var(--font-body);
+  color: var(--muted);
+}
+.general-summary strong { display: block; font: 800 18px/1.1 var(--font-mono); color: var(--fg); }
+.general-summary-view { display: flex; align-items: center; }
+.theme-glass .setting-card,
+.theme-glass .general-summary > span { border-radius: 12px; }
+
+/* Glass: rounder, frosted cards mirroring .theme-glass .settings-card. */
+.theme-glass .setting-card {
+  border-radius: 12px;
+  border-color: var(--paper-glass-line);
+  background: color-mix(in srgb, var(--paper-panel) 20%, transparent);
+  backdrop-filter: blur(6px) saturate(150%);
+  -webkit-backdrop-filter: blur(6px) saturate(150%);
+}
+
+/* Account + sensor cards: last-known usage / live value line under the title. */
+.account-usage { margin: 3px 0 0; font: 500 11px/1.4 var(--font-mono); color: var(--muted); }
+/* Sensor cards reuse the account mini-card look; tint the icon with the chosen "low" colour (--tone),
+   and let the single Show/Hide button span the row. */
+.monitor-sensor-card h2 .mark { color: var(--tone); }
+.monitor-sensor-card .daily-actions { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
+.monitor-sensor-card .daily-actions button { min-height: 28px; width: auto; padding: 0 12px; font-size: 10.5px; }
+.sensor-value { font: 800 20px/1 var(--font-mono); color: var(--tone); font-variant-numeric: tabular-nums; }
+
+/* General → Actions: the visibility toggle + Refresh all stay side by side. */
+.general-actions { display: flex; gap: 8px; }
+.general-actions .refresh-all-btn { flex: 1; margin-top: 0; }
+
+/* Both themes share three visual energy tiers. Pixel consumes every variable below; Glass consumes the
+   number glow here and maps the same level to its WebGL crest/underlight in MonitorBlock. */
+.monitor.monitor-wave-low {
+  --monitor-level-cell-peak: 1.12;
+  --monitor-scan-opacity: .56;
+  --monitor-scan-halo-alpha: 32%;
+  --monitor-number-glow-alpha: 38%;
+  --monitor-number-glow-blur: 6px;
+}
+.monitor.monitor-wave-medium {
+  --monitor-level-cell-peak: 1.22;
+  --monitor-scan-opacity: .68;
+  --monitor-scan-halo-alpha: 44%;
+  --monitor-number-glow-alpha: 52%;
+  --monitor-number-glow-blur: 8px;
+}
+.monitor.monitor-wave-high {
+  --monitor-level-cell-peak: 1.34;
+  --monitor-scan-opacity: .80;
+  --monitor-scan-halo-alpha: 58%;
+  --monitor-number-glow-alpha: 66%;
+  --monitor-number-glow-blur: 10px;
+}
+
+/* Pixel monitor wave: the fixed frame keeps the normal 3px padding on every side. Low reaches the top
+   edge, medium breaks it slightly and high rises clearly above it. Only the top overflow is exposed, so
+   the moving real cell cannot bleed through the sides or bottom of the bar. */
+:is(.theme-terminal, .theme-light) .monitor.monitor-wave-low { --monitor-cell-rise: -3px; }
+:is(.theme-terminal, .theme-light) .monitor.monitor-wave-medium { --monitor-cell-rise: -5px; }
+:is(.theme-terminal, .theme-light) .monitor.monitor-wave-high { --monitor-cell-rise: -7px; }
+:is(.theme-terminal, .theme-light) .monitor-scan .monitor-bar {
+  overflow: visible;
+  clip-path: inset(-8px 0 0 0);
+}
+
+/* Accounts tab: drop the stray top divider that .effect-settings adds (it sits at the top of the tab). */
+.effect-settings.ai-usage-settings { border-top: none; padding-top: 0; margin-top: 0; }
+
+/* General status line (moved down from the titlebar): dot coloured by tone + latest activity. */
+.general-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--surface) 55%, transparent);
+  font: 500 11px/1.4 var(--font-mono);
+  color: var(--muted);
+}
+.general-status-msg { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.general-status.ok .settings-health-dot { background: var(--ok); }
+.general-status.warn .settings-health-dot { background: var(--warn); }
+.general-status.error .settings-health-dot { background: var(--danger); }
+.theme-glass .general-status { border-radius: 12px; }
+/* Keep the on/off switch vertically centred at the far right of a General card. */
+.setting-card > .switch-control { align-self: center; }
+/* Titlebar now just: title + saved + close. */
+.settings-titlebar .settings-header-saved { margin-left: auto; }
+
+/* Add/Remove popup: keep the full-window dim (blocks the sidebar too) but centre the card over the
+   content pane, not on top of the 150px sidebar. */
+.control-shell .app-modal { padding-left: calc(150px + 20px); }
+
+/* The Settings section wraps these cards in <label>, and `.settings-card label { display:grid }` +
+   `.settings-card label span { uppercase mono }` (higher specificity) were stacking the toggle cards and
+   restyling their text. Re-assert the flex card layout + typography with a matching-or-higher specificity. */
+.settings-card .setting-card { display: flex; align-items: center; gap: 10px; margin: 0 0 8px; }
+.settings-card .setting-card-text { display: flex; flex-direction: column; gap: 2px; margin: 0; }
+.settings-card .setting-card-label { font: 700 12px/1.15 var(--font-body); letter-spacing: 0; text-transform: none; color: var(--fg); }
+.settings-card .setting-card-desc { font: 500 10.5px/1.35 var(--font-mono); letter-spacing: 0.01em; text-transform: none; color: var(--muted); }
+.settings-card .setting-card > .switch-control { align-self: center; margin: 0; }
+
+/* Settings cards follow the same "Tint" accent scope as the widget tiles (Appearance → Colors → Tint):
+   when it is on, the AI account cards and sensor cards get a subtle wash of their own colour.
+   --tone is already resolved for both (.mini-card.claude/.codex above; sensor cards set it inline). */
+.control-shell.scope-bgtint .mini-card.claude,
+.control-shell.scope-bgtint .mini-card.codex,
+.control-shell.scope-bgtint .monitor-sensor-card {
+  background-color: color-mix(in oklch, var(--tone) 10%, var(--surface));
+}
+/* Glass needs higher specificity than `.theme-glass .mini-card` to replace the paper background. */
+.theme-glass.control-shell.scope-bgtint .mini-card.claude,
+.theme-glass.control-shell.scope-bgtint .mini-card.codex,
+.theme-glass.control-shell.scope-bgtint .monitor-sensor-card {
+  background-color: color-mix(in srgb, var(--tone) 12%, color-mix(in srgb, var(--paper-panel) 18%, transparent));
 }

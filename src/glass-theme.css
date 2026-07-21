@@ -538,7 +538,7 @@
 
 .theme-glass .settings-section,
 .theme-glass .settings-row,
-.theme-glass .effect-tester-row {
+.theme-glass .effect-tester-grid {
         min-width: 0;
         max-width: 100%;
       }
@@ -561,13 +561,6 @@
         overflow-wrap: anywhere;
       }
 
-.theme-glass .effect-tester-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        gap: 10px;
-        align-items: end;
-      }
-
 .theme-glass .effect-tester label,
 .theme-glass .effect-tester input,
 .theme-glass .effect-tester select,
@@ -575,24 +568,26 @@
         max-width: 100%;
       }
 
-.theme-glass .effect-tester-row input,
-.theme-glass .effect-tester-row select {
+.theme-glass .effect-tester-grid input,
+.theme-glass .effect-tester-grid select {
         min-width: 0;
         width: 100%;
       }
 
 .theme-glass .effect-tester-actions,
-.theme-glass .effect-tester-presets {
+.theme-glass .effect-monitor-levels {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 8px;
       }
 
 .theme-glass .effect-tester-actions button,
-.theme-glass .effect-tester-presets button {
+.theme-glass .effect-monitor-levels button {
         min-width: 0;
         width: 100%;
       }
+
+.theme-glass .effect-tester-actions.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
 .theme-glass .toggle-row {
         display: grid;
@@ -665,13 +660,12 @@
 /* Segmented Style/Mode control — glass active state (pill highlight). */
 .theme-glass .seg-btn.active {
   color: var(--paper-ink);
-  border-color: var(--paper-glass-line);
-  background-color: color-mix(in srgb, var(--paper-panel) 34%, transparent);
+  border-color: color-mix(in srgb, var(--paper-ink) 42%, var(--paper-glass-line));
+  background-color: color-mix(in srgb, var(--paper-ink) 14%, transparent);
   box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 20%), transparent),
-    inset 2px 3px 0 -2px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 96%), transparent),
-    inset -2px -2px 0 -2px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 86%), transparent),
-    0 8px 20px -14px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 22%), transparent);
+    inset 0 2px 5px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 14%), transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--paper-ink) 14%, transparent),
+    0 3px 10px -8px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 20%), transparent);
 }
 .theme-glass .seg-btn.active:hover { transform: none; }
 
@@ -813,3 +807,55 @@
   backdrop-filter: blur(12px) saturate(150%);
   -webkit-backdrop-filter: blur(12px) saturate(150%);
 }
+
+/* Settings sidebar nav in Glass: frosted paper panel like the titlebar. */
+.theme-glass .settings-nav {
+  background: color-mix(in srgb, var(--paper-panel) 55%, transparent);
+  border-right-color: var(--paper-glass-line);
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+}
+.theme-glass .settings-nav-item { border-radius: 10px; }
+
+/* ── Glass liquid wave (monitor tiles, effect on) ────────────────────────────
+   Monitor water uses the same single WebGL silhouette as AI Usage. Load changes shader uniforms only;
+   the stable full-width canvas keeps the moving crest continuous while the fill edge glides. */
+
+.theme-glass .monitor-scan.glass-wave-ready .bar::before { display: none; }
+.theme-glass .monitor-scan .bar { overflow: visible; }
+
+.theme-glass .monitor-scan .glass-monitor-wave {
+  display: block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-glass .monitor-scan .bar::before {
+    display: block;
+  }
+  .theme-glass .monitor-scan .glass-monitor-wave { display: none; }
+}
+
+/* Lifecycle + sensor toasts (widget). The Pixel chip — hard 3px offset shadow, mono uppercase, 4px
+   corners — reads as out-of-place in Glass, so restyle to the frosted-panel language the modal and
+   tooltips use. Both ProviderLifecycleToasts and MonitorToasts share .provider-lifecycle-toast, so this
+   covers both. Only the chip changes; the centered container and the tone dot are left alone. */
+.theme-glass .provider-lifecycle-toast {
+  border-radius: 13px;
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--paper-glass-line));
+  background: color-mix(in srgb, var(--paper-panel) 82%, transparent);
+  backdrop-filter: blur(9px) saturate(150%);
+  -webkit-backdrop-filter: blur(9px) saturate(150%);
+  color: var(--paper-ink);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 16%), transparent),
+    inset 1.5px 2px 0 -2px color-mix(in srgb, #fff calc(var(--glass-reflex-light) * 80%), transparent),
+    0 16px 34px -18px color-mix(in srgb, #000 calc(var(--glass-reflex-dark) * 46%), transparent);
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 13px;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+.theme-glass .provider-lifecycle-toast.ok { border-color: color-mix(in srgb, var(--ok) 44%, var(--paper-glass-line)); }
+.theme-glass .provider-lifecycle-toast.page_unavailable { border-color: color-mix(in srgb, var(--danger) 50%, var(--paper-glass-line)); }
