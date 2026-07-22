@@ -21,6 +21,7 @@ const ERROR_SUCCESS: u32 = 0;
 
 /// Holds a live PDH query for the GPU-engine counters plus the Intel adapter's LUID string.
 /// Not `Clone`; kept behind a `Mutex` in app state because PDH queries are not reentrant.
+#[derive(Default)]
 pub struct IgpuMonitor {
     query: PDH_HQUERY,
     counter: PDH_HCOUNTER,
@@ -84,7 +85,7 @@ impl IgpuMonitor {
 
         // Allocate an 8-byte-aligned backing buffer of exactly buf_size bytes (PDH appends the
         // instance-name strings after the item array inside the same buffer).
-        let mut backing: Vec<u64> = vec![0u64; ((buf_size as usize) + 7) / 8];
+        let mut backing: Vec<u64> = vec![0u64; (buf_size as usize).div_ceil(8)];
         let items_ptr = backing.as_mut_ptr() as *mut PDH_FMT_COUNTERVALUE_ITEM_W;
         let status = PdhGetFormattedCounterArrayW(
             self.counter,
@@ -116,17 +117,6 @@ impl IgpuMonitor {
         }
         let max = per_engtype.values().cloned().fold(0.0f64, f64::max);
         Some(max.clamp(0.0, 100.0) as f32)
-    }
-}
-
-impl Default for IgpuMonitor {
-    fn default() -> Self {
-        IgpuMonitor {
-            query: PDH_HQUERY::default(),
-            counter: PDH_HCOUNTER::default(),
-            intel_luid: None,
-            intel_name: None,
-        }
     }
 }
 

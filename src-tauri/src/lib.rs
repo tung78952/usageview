@@ -1827,15 +1827,23 @@ fn extract_script(id: &str, kind: &str, marker: &str) -> Result<String, String> 
     try {{ history.replaceState(null, '', location.pathname + location.search + '#' + marker + status + '|' + encoded); }} catch (e) {{}}
   }}
 
-  function resetLabel(prefix, windowInfo) {{
-    if (!windowInfo) return undefined;
-    if (windowInfo.reset_at) {{
-      return `Reset ${{new Date(windowInfo.reset_at * 1000).toLocaleString([], {{ month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }})}}`;
+  function resetInfo(windowInfo) {{
+    if (!windowInfo) return {{}};
+    const now = Date.now();
+    const maxFuture = now + 366 * 24 * 60 * 60 * 1000;
+    let atMs;
+    if (typeof windowInfo.reset_at === 'number' && isFinite(windowInfo.reset_at)) {{
+      const absolute = Math.trunc(windowInfo.reset_at < 1e12 ? windowInfo.reset_at * 1000 : windowInfo.reset_at);
+      if (absolute >= 1e12 && absolute <= maxFuture) atMs = absolute;
     }}
-    if (typeof windowInfo.reset_after_seconds === 'number') {{
-      return `Reset ${{new Date(Date.now() + windowInfo.reset_after_seconds * 1000).toLocaleString([], {{ month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }})}}`;
+    if (atMs === undefined && typeof windowInfo.reset_after_seconds === 'number'
+        && isFinite(windowInfo.reset_after_seconds) && windowInfo.reset_after_seconds >= 0
+        && windowInfo.reset_after_seconds <= 366 * 24 * 60 * 60) {{
+      atMs = Math.trunc(now + windowInfo.reset_after_seconds * 1000);
     }}
-    return undefined;
+    return atMs === undefined
+      ? {{}}
+      : {{ atMs, label: `Reset ${{new Date(atMs).toLocaleString([], {{ month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }})}}` }};
   }}
 
   function creditsLabel(credits, resetCredits) {{
@@ -1854,6 +1862,18 @@ fn extract_script(id: &str, kind: &str, marker: &str) -> Result<String, String> 
       message,
       debugText: debugText ? String(debugText).slice(0, 600) : undefined
     }};
+  }}
+
+  function diagnosticText(value) {{
+    const sensitiveKey = /^(user_id|account_id|email|access_token|accessToken|token)$/i;
+    try {{
+      const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+      return JSON.stringify(parsed, (key, entry) => sensitiveKey.test(key) ? '[redacted]' : entry).slice(0, 600);
+    }} catch (e) {{
+      return String(value)
+        .replace(/("(?:user_id|account_id|email|access_token|accessToken|token)"\s*:\s*)"[^"]*"/gi, '$1"[redacted]"')
+        .slice(0, 600);
+    }}
   }}
 
   try {{
@@ -1883,23 +1903,28 @@ fn extract_script(id: &str, kind: &str, marker: &str) -> Result<String, String> 
     }});
     const raw = await response.text();
     if (!response.ok) {{
-      finish('not_found', fallbackSnapshot(`Codex usage API returned HTTP ${{response.status}}`, raw));
+      finish('not_found', fallbackSnapshot(`Codex usage API returned HTTP ${{response.status}}`, diagnosticText(raw)));
       return;
     }}
 
     const data = JSON.parse(raw);
     const primary = data && data.rate_limit && data.rate_limit.primary_window;
     const secondary = data && data.rate_limit && data.rate_limit.secondary_window;
+    // New Codex plans expose their sole seven-day limit as primary_window. Require both the
+    // documented seven-day duration and an absent secondary window so malformed short-window
+    // responses are never guessed to be weekly.
+    const weeklyOnly = secondary == null && primary && primary.limit_window_seconds === 604800;
+    const weekly = weeklyOnly ? primary : secondary;
     const percentUsed = primary && typeof primary.used_percent === 'number' ? primary.used_percent : undefined;
-    const weeklyPercent = secondary && typeof secondary.used_percent === 'number' ? secondary.used_percent : undefined;
-    const reset = resetLabel('5-hour window', primary);
-    const weeklyReset = resetLabel('Weekly window', secondary);
+    const weeklyPercent = weekly && typeof weekly.used_percent === 'number' ? weekly.used_percent : undefined;
+    const reset = resetInfo(primary);
+    const weeklyReset = resetInfo(weekly);
     const remaining = weeklyPercent !== undefined
       ? `Weekly left ${{Math.max(0, 100 - Math.round(weeklyPercent))}}%`
       : creditsLabel(data.credits, data.rate_limit_reset_credits);
 
-    if (percentUsed === undefined && !reset && !weeklyReset && !remaining) {{
-      finish('not_found', fallbackSnapshot('Codex usage API responded, but no usage fields were detected.', raw));
+    if (percentUsed === undefined && !reset.label && !weeklyReset.label && !remaining) {{
+      finish('not_found', fallbackSnapshot('Codex usage API responded, but no usage fields were detected.', diagnosticText(data)));
       return;
     }}
 
@@ -1910,11 +1935,14 @@ fn extract_script(id: &str, kind: &str, marker: &str) -> Result<String, String> 
       usedLabel: percentUsed !== undefined ? `${{Math.round(percentUsed)}}% used` : undefined,
       remainingLabel: remaining,
       percentUsed,
-      resetLabel: reset,
+      resetLabel: reset.label,
+      resetAtMs: reset.atMs,
+      displayPeriod: weeklyOnly ? 'weekly' : undefined,
+      weeklyResetAtMs: weeklyReset.atMs,
       weeklyLabel: weeklyPercent !== undefined
-        ? `Weekly ${{Math.round(weeklyPercent)}}% used${{weeklyReset ? ' / ' + weeklyReset : ''}}`
-        : weeklyReset,
-      debugText: raw.slice(0, 600)
+        ? `Weekly ${{Math.round(weeklyPercent)}}% used${{weeklyReset.label ? ' / ' + weeklyReset.label : ''}}`
+        : weeklyReset.label,
+      debugText: diagnosticText(data)
     }});
   }} catch (error) {{
     finish('not_found', fallbackSnapshot('Codex usage API fetch failed.', error && error.message ? error.message : error));
@@ -1945,9 +1973,20 @@ fn extract_script(id: &str, kind: &str, marker: &str) -> Result<String, String> 
   }
   function toMs(value) {
     if (value === null || value === undefined) return undefined;
-    if (typeof value === 'number' && isFinite(value)) return value < 1e12 ? value * 1000 : value;
-    const parsed = Date.parse(value);
-    return isFinite(parsed) ? parsed : undefined;
+    const parsed = typeof value === 'number' && isFinite(value)
+      ? (value < 1e12 ? value * 1000 : value)
+      : Date.parse(value);
+    if (!isFinite(parsed)) return undefined;
+    const ms = Math.trunc(parsed);
+    return ms >= 1e12 && ms <= Date.now() + 366 * 24 * 60 * 60 * 1000 ? ms : undefined;
+  }
+  function resetValueMs(key, value) {
+    if (typeof value === 'number' && isFinite(value) && value >= 0
+        && value <= 366 * 24 * 60 * 60
+        && (/(?:after|until).*seconds/.test(key) || /seconds.*(?:after|until)/.test(key))) {
+      return Math.trunc(Date.now() + value * 1000);
+    }
+    return toMs(value);
   }
   function toPercent(value) {
     if (typeof value !== 'number' || !isFinite(value)) return undefined;
@@ -1972,7 +2011,7 @@ fn extract_script(id: &str, kind: &str, marker: &str) -> Result<String, String> 
         if (r !== undefined) remaining = r;
       }
       if (resetMs === undefined && /(reset|resets_at|expires|renew|refresh)/.test(lower)) {
-        const m = toMs(value);
+        const m = resetValueMs(lower, value);
         if (m !== undefined) resetMs = m;
       }
     }
@@ -1999,8 +2038,8 @@ fn extract_script(id: &str, kind: &str, marker: &str) -> Result<String, String> 
     return { primary: primary, weekly: weekly };
   }
 
-  // Claude's usage endpoint returns { five_hour:{utilization,resets_at}, seven_day:{...} }
-  // where utilization is a 0..1 fraction. Parse that known shape precisely.
+  // Claude's usage endpoint returns { five_hour:{utilization,resets_at}, seven_day:{...} }.
+  // Parse that known shape precisely before trying the fuzzy fallback below.
   function windowFromClaude(win) {
     if (!win || typeof win !== 'object') return undefined;
     const resetMs = toMs(win.resets_at);
@@ -2008,9 +2047,37 @@ fn extract_script(id: &str, kind: &str, marker: &str) -> Result<String, String> 
     // candidate loop skips it and picks the org that actually has an active usage window (a user can
     // belong to several orgs; only one has real usage).
     if (resetMs === undefined && !win.utilization) return undefined;
-    const percent = toPercent(win.utilization);
+    // This known endpoint reports utilization directly on a 0..100 scale. Keep the dual-scale
+    // toPercent() heuristic only for unknown/fuzzy payloads, where 0..1 may genuinely be a fraction.
+    const percent = typeof win.utilization === 'number' && isFinite(win.utilization)
+      && win.utilization >= 0 && win.utilization <= 100
+      ? win.utilization
+      : undefined;
     if (percent === undefined && resetMs === undefined) return undefined;
     return { percent: percent, resetMs: resetMs };
+  }
+
+  // Claude's post-reset payload keeps the legacy windows at 0/null and marks the real zero values
+  // in limits[]. Match the exact base-plan entries so model, spend, and promotional limits cannot
+  // become the primary or weekly usage window.
+  function limitWindowFromClaude(data, kind, group) {
+    if (!data || !Array.isArray(data.limits)) return undefined;
+    for (const limit of data.limits) {
+      if (!limit || typeof limit !== 'object'
+          || limit.kind !== kind || limit.group !== group || limit.scope !== null) continue;
+      const percent = typeof limit.percent === 'number' && isFinite(limit.percent)
+        && limit.percent >= 0 && limit.percent <= 100
+        ? limit.percent
+        : undefined;
+      const resetMs = toMs(limit.resets_at);
+      if (percent !== undefined || resetMs !== undefined) return { percent: percent, resetMs: resetMs };
+    }
+    return undefined;
+  }
+
+  function hasStrictClaudeLimits(data) {
+    return limitWindowFromClaude(data, 'session', 'session') !== undefined
+      || limitWindowFromClaude(data, 'weekly_all', 'weekly') !== undefined;
   }
 
   function fromApi(data, raw) {
@@ -2023,15 +2090,24 @@ fn extract_script(id: &str, kind: &str, marker: &str) -> Result<String, String> 
       primary = windows.primary;
       weekly = windows.weekly;
     }
+    primary = primary || limitWindowFromClaude(data, 'session', 'session');
+    weekly = weekly || limitWindowFromClaude(data, 'weekly_all', 'weekly');
+    // A real org can have no active five-hour window immediately after reset while its weekly
+    // window remains active. Restore only that exact 0% case; an empty legacy org still has no
+    // weekly window and therefore remains excluded by the multi-org candidate loop.
+    if (primary === undefined && weekly !== undefined && data && data.five_hour && data.five_hour.utilization === 0) {
+      primary = { percent: 0, resetMs: toMs(data.five_hour.resets_at) };
+    }
     primary = primary || {};
     weekly = weekly || {};
     if (primary.percent === undefined && primary.resetMs === undefined) {
       return undefined;
     }
     const percentUsed = primary.percent !== undefined ? primary.percent : weekly.percent;
-    const resetLabel = primary.resetMs ? 'Reset ' + clock(primary.resetMs) : (weekly.resetMs ? 'Reset ' + clock(weekly.resetMs) : undefined);
+    const resetAtMs = primary.resetMs !== undefined ? primary.resetMs : weekly.resetMs;
+    const resetLabel = resetAtMs !== undefined ? 'Reset ' + clock(resetAtMs) : undefined;
     const weeklyPercent = weekly.percent;
-    const weeklyReset = weekly.resetMs ? 'Reset ' + clock(weekly.resetMs) : undefined;
+    const weeklyReset = weekly.resetMs !== undefined ? 'Reset ' + clock(weekly.resetMs) : undefined;
     return {
       provider: provider,
       status: 'ok',
@@ -2040,9 +2116,19 @@ fn extract_script(id: &str, kind: &str, marker: &str) -> Result<String, String> 
       remainingLabel: weeklyPercent !== undefined ? 'Weekly left ' + Math.max(0, 100 - Math.round(weeklyPercent)) + '%' : undefined,
       percentUsed: percentUsed,
       resetLabel: resetLabel,
+      resetAtMs: resetAtMs,
+      weeklyResetAtMs: weekly.resetMs,
       weeklyLabel: weeklyPercent !== undefined ? ('Weekly ' + Math.round(weeklyPercent) + '% used' + (weeklyReset ? ' / ' + weeklyReset : '')) : weeklyReset,
       debugText: String(raw || '').slice(0, 600)
     };
+  }
+
+  function snapshotHasSubstantiveUsage(snapshot) {
+    if (!snapshot) return false;
+    if ((typeof snapshot.percentUsed === 'number' && snapshot.percentUsed > 0)
+        || snapshot.resetAtMs !== undefined || snapshot.weeklyResetAtMs !== undefined) return true;
+    const weekly = String(snapshot.weeklyLabel || '').match(/Weekly\s+(\d{1,3}(?:\.\d+)?)%\s+used/i);
+    return weekly ? Number(weekly[1]) > 0 : false;
   }
 
   // Fallback: scrape the rendered usage page (only reliable once the SPA has painted).
@@ -2051,26 +2137,19 @@ fn extract_script(id: &str, kind: &str, marker: &str) -> Result<String, String> 
     const raw = body ? ((body.innerText && body.innerText.trim()) ? body.innerText : (body.textContent || '')) : '';
     const text = raw.replace(/\s+/g, ' ').trim();
 
-    function findPercent() {
-      const matches = [...text.matchAll(/(\d{1,3}(?:\.\d+)?)\s*%/g)].map((match) => Number(match[1])).filter((value) => value >= 0 && value <= 100);
-      if (!matches.length) return undefined;
-      const usageWords = /(usage|used|limit|credit|credits|message|messages|5-hour|weekly)/i;
-      const scored = matches.map((value) => {
-        const index = text.indexOf(value + '%');
-        const sample = text.slice(Math.max(0, index - 80), index + 80);
-        return { value: value, score: usageWords.test(sample) ? 1 : 0 };
-      });
-      return scored.sort((a, b) => b.score - a.score)[0].value;
+    function isPromotionalPercent(sample, index) {
+      const source = String(sample || '');
+      const after = source.slice(index, index + 90);
+      if (/^\d{1,3}(?:\.\d+)?\s*%\s*(?:higher|more|extra|additional|increase|increased|boost(?:ed)?|bonus)/i.test(after)) return true;
+      const before = source.slice(Math.max(0, index - 45), index);
+      return /(?:promotion(?:al)?|promo|bonus|boost|up to|get)\s*$/i.test(before);
     }
     function findPercentIn(sample) {
       const matches = [...String(sample || '').matchAll(/(\d{1,3}(?:\.\d+)?)\s*%\s*(?:used)?/gi)]
+        .filter((match) => !isPromotionalPercent(sample, match.index || 0))
         .map((match) => Number(match[1]))
         .filter((value) => value >= 0 && value <= 100);
       return matches.length ? matches[0] : undefined;
-    }
-    function findReset() {
-      const match = text.match(/(?:reset|resets|renews|refreshes|available again|next reset)[^.]{0,90}/i);
-      return match ? match[0].trim() : undefined;
     }
     function findResetIn(sample) {
       const match = String(sample || '').match(/(?:reset|resets|renews|refreshes|available again|next reset)[^%]{0,90}/i);
@@ -2112,13 +2191,19 @@ fn extract_script(id: &str, kind: &str, marker: &str) -> Result<String, String> 
     }
 
     const currentBlock = blockAfter(/current session/i, [/weekly limits/i, /all models/i, /learn more/i]);
-    const weeklyBlock = blockAfter(/weekly limits|all models/i, []);
+    const weeklyBlock = blockAfter(/all models/i, [/usage credits/i, /extra usage/i, /learn more/i])
+      || blockAfter(/weekly limits/i, [/usage credits/i, /extra usage/i, /learn more/i]);
+    const usageOnlyBlock = text.split(/usage credits|extra usage/i)[0];
     const weeklyPercent = findPercentIn(weeklyBlock);
     const weeklyReset = resetToClock(findResetIn(weeklyBlock));
-    const percentUsed = (findPercentIn(currentBlock) ?? findPercent());
-    const resetLabel = (resetToClock(findResetIn(currentBlock)) || resetToClock(findReset()));
-    const weeklyLabel = weeklyPercent !== undefined ? ('Weekly ' + Math.round(weeklyPercent) + '% used' + (weeklyReset ? ' / ' + weeklyReset : '')) : findWeekly();
-    const remainingLabel = weeklyPercent !== undefined ? ('Weekly left ' + Math.max(0, 100 - Math.round(weeklyPercent)) + '%') : findRemaining();
+    const percentUsed = findPercentIn(currentBlock || usageOnlyBlock);
+    const resetLabel = resetToClock(findResetIn(currentBlock || usageOnlyBlock));
+    const weeklyLabel = weeklyPercent !== undefined
+      ? ('Weekly ' + Math.round(weeklyPercent) + '% used' + (weeklyReset ? ' / ' + weeklyReset : ''))
+      : (weeklyBlock ? undefined : findWeekly());
+    const remainingLabel = weeklyPercent !== undefined
+      ? ('Weekly left ' + Math.max(0, 100 - Math.round(weeklyPercent)) + '%')
+      : (weeklyBlock ? undefined : findRemaining());
     const hasUsagePageMarkers = /plan usage limits|usage|limit|reset|resets|messages?|weekly|5[-\s]?hour|%/i.test(text);
     const ok = hasUsagePageMarkers && (percentUsed !== undefined || resetLabel || weeklyPercent !== undefined || remainingLabel);
     const status = ok ? 'ok' : inferLoginStatus();
@@ -2161,6 +2246,7 @@ fn extract_script(id: &str, kind: &str, marker: &str) -> Result<String, String> 
     // resets_at null); we must try EVERY org's usage endpoint, not just the first, otherwise an
     // empty personal org shadows the org that actually holds the plan usage.
     let orgUuids = [];
+    let listedActiveOrgUuid;
     try {
       const orgResp = await fetch(origin + '/api/organizations', { credentials: 'include' });
       apiLog.push('organizations ' + orgResp.status);
@@ -2169,6 +2255,8 @@ fn extract_script(id: &str, kind: &str, marker: &str) -> Result<String, String> 
         if (Array.isArray(orgs)) {
           for (const o of orgs) {
             if (o && o.uuid && orgUuids.indexOf(o.uuid) === -1) orgUuids.push(o.uuid);
+            if (!listedActiveOrgUuid && o && o.uuid
+                && (o.is_current === true || o.is_selected === true || o.current === true)) listedActiveOrgUuid = o.uuid;
           }
         }
       }
@@ -2178,26 +2266,120 @@ fn extract_script(id: &str, kind: &str, marker: &str) -> Result<String, String> 
       if (match && orgUuids.indexOf(match[1]) === -1) orgUuids.push(match[1]);
     }
 
-    // Candidates: every org's usage endpoint (the loop below skips empty/secondary orgs because
-    // fromApi() returns undefined for them), then any usage-looking call the page already made.
-    const candidates = [];
-    for (const uuid of orgUuids) candidates.push(origin + '/api/organizations/' + uuid + '/usage');
-    for (const name of perfNames) {
-      if (/usage|rate.?limit|limits|quota/i.test(name) && candidates.indexOf(name) === -1) candidates.push(name);
+    const uuidPattern = /[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}/;
+    function uuidFromValue(value) {
+      if (typeof value !== 'string') return undefined;
+      let decoded = value;
+      try { decoded = decodeURIComponent(value); } catch (e) {}
+      const match = decoded.match(uuidPattern);
+      return match ? match[0] : undefined;
+    }
+    function isActiveOrgKey(key) {
+      const normalized = String(key || '').toLowerCase().replace(/[^a-z]/g, '');
+      return /^(?:lastactive|active|current|selected)org(?:anization)?(?:uuid|id)?$/.test(normalized);
+    }
+    function uuidFromOrgSetting(value) {
+      const direct = uuidFromValue(value);
+      if (direct) return direct;
+      if (!value || typeof value !== 'object') return undefined;
+      return uuidFromValue(value.uuid) || uuidFromValue(value.id);
+    }
+    function activeOrgFromObject(node, depth) {
+      if (!node || typeof node !== 'object' || depth > 3) return undefined;
+      for (const key of Object.keys(node)) {
+        if (!isActiveOrgKey(key)) continue;
+        const uuid = uuidFromOrgSetting(node[key]);
+        if (uuid) return uuid;
+      }
+      for (const key of Object.keys(node)) {
+        const uuid = activeOrgFromObject(node[key], depth + 1);
+        if (uuid) return uuid;
+      }
+      return undefined;
+    }
+    function configuredActiveOrgUuid() {
+      try {
+        for (const pair of String(document.cookie || '').split(';')) {
+          const separator = pair.indexOf('=');
+          const key = (separator < 0 ? pair : pair.slice(0, separator)).trim();
+          if (!isActiveOrgKey(key)) continue;
+          const uuid = uuidFromValue(separator < 0 ? '' : pair.slice(separator + 1));
+          if (uuid) return uuid;
+        }
+      } catch (e) {}
+      for (const storageName of ['localStorage', 'sessionStorage']) {
+        let storage;
+        try { storage = window[storageName]; } catch (e) { continue; }
+        try {
+          for (let index = 0; index < storage.length; index++) {
+            const key = storage.key(index) || '';
+            if (!isActiveOrgKey(key)) continue;
+            const uuid = uuidFromValue(storage.getItem(key));
+            if (uuid) return uuid;
+          }
+        } catch (e) {}
+      }
+      try {
+        const bootstrap = window.__BOOTSTRAP_PRELOAD__;
+        const uuid = activeOrgFromObject(bootstrap, 0);
+        if (uuid) return uuid;
+      } catch (e) {}
+      return undefined;
+    }
+    const configuredOrgUuid = configuredActiveOrgUuid();
+    let performanceOrgUuid;
+    for (let index = perfNames.length - 1; index >= 0; index--) {
+      const match = perfNames[index].match(/\/api\/organizations\/([0-9a-fA-F-]{36})\//);
+      if (match && /\/(?:overage_spend_limit|overage_credit_grant|prepaid\/credits)(?:[?#]|$)/i.test(perfNames[index])) {
+        performanceOrgUuid = match[1];
+        break;
+      }
     }
 
-    for (const url of candidates) {
+    // Collect all parseable responses before selecting one. The active organization wins even when
+    // its valid post-reset values are all zero; without an active signal, substantive usage and the
+    // exact limits[] shape distinguish a plan org from an empty secondary org.
+    const candidates = [];
+    function addCandidate(url) {
+      if (candidates.some((candidate) => candidate.url === url)) return;
+      const match = url.match(/\/api\/organizations\/([0-9a-fA-F-]{36})\//);
+      candidates.push({ url: url, orgUuid: match ? match[1] : undefined });
+    }
+    for (const uuid of [listedActiveOrgUuid, performanceOrgUuid, configuredOrgUuid]) {
+      if (uuid) addCandidate(origin + '/api/organizations/' + uuid + '/usage');
+    }
+    for (const uuid of orgUuids) addCandidate(origin + '/api/organizations/' + uuid + '/usage');
+    for (const name of perfNames) {
+      if (/\/api\/organizations\/[0-9a-fA-F-]{36}\/usage(?:[?#]|$)/i.test(name)) addCandidate(name);
+    }
+
+    const parsedCandidates = [];
+    for (const candidate of candidates) {
       try {
-        const resp = await fetch(url, { credentials: 'include' });
+        const resp = await fetch(candidate.url, { credentials: 'include' });
         const contentType = resp.headers.get('content-type') || '';
-        apiLog.push(url.replace(origin, '') + ' ' + resp.status + (contentType.indexOf('json') === -1 ? ' non-json' : ''));
+        apiLog.push(candidate.url.replace(origin, '') + ' ' + resp.status + (contentType.indexOf('json') === -1 ? ' non-json' : ''));
         if (!resp.ok || contentType.indexOf('json') === -1) continue;
         const raw = await resp.text();
         let data;
         try { data = JSON.parse(raw); } catch (e) { continue; }
         const snapshot = fromApi(data, raw);
-        if (snapshot) { finish('ok', snapshot); return; }
+        if (!snapshot) continue;
+        let score = 0;
+        if (/\/api\/organizations\/[0-9a-fA-F-]{36}\/usage(?:[?#]|$)/i.test(candidate.url)) score += 10000;
+        if (snapshotHasSubstantiveUsage(snapshot)) score += 5000;
+        if (hasStrictClaudeLimits(data)) score += 1000;
+        if (data && data.extra_usage && data.extra_usage.is_enabled === true) score += 100;
+        if (candidate.orgUuid && candidate.orgUuid === listedActiveOrgUuid) score += 300000;
+        else if (candidate.orgUuid && candidate.orgUuid === performanceOrgUuid) score += 200000;
+        else if (candidate.orgUuid && candidate.orgUuid === configuredOrgUuid) score += 100000;
+        parsedCandidates.push({ snapshot: snapshot, score: score });
       } catch (e) { apiLog.push('fetch error'); }
+    }
+    if (parsedCandidates.length) {
+      parsedCandidates.sort((a, b) => b.score - a.score);
+      finish('ok', parsedCandidates[0].snapshot);
+      return;
     }
   } catch (e) {}
 

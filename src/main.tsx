@@ -60,6 +60,9 @@ type UsageSnapshot = {
   remainingLabel?: string;
   percentUsed?: number;
   resetLabel?: string;
+  resetAtMs?: number;
+  displayPeriod?: "weekly";
+  weeklyResetAtMs?: number;
   weeklyLabel?: string;
   debugText?: string;
   updatedAt: string;
@@ -339,6 +342,7 @@ const PROVIDER_LIFECYCLE_REQUEST_EVENT = "usageview-provider-lifecycle-request";
 const PROVIDER_RELEASED_EVENT = "usageview-provider-released";
 const PROVIDER_REMOVED_EVENT = "usageview-provider-removed";
 const WIDGET_VISIBILITY_EVENT = "usageview-widget-visibility";
+const TIMER_TOGGLE_EVENT = "usageview-timer-toggle";
 const PROVIDER_REMOVING_KEY_PREFIX = "usageview.provider-removing.";
 const PROVIDER_RETRY_EVENT = "usageview-provider-retry";
 const PROVIDER_START_ATTEMPTS = 3;
@@ -365,10 +369,12 @@ const DETACHED_TILE_HEIGHT = 220;
 const clampTileScale = (scale: number) => Math.min(1.5, Math.max(0.5, scale));
 type TileLayout = { version: 1; order: TileId[]; detached: Partial<Record<TileId, WindowPosition>> };
 type DetachedTileEvent = { tileId: TileId; x: number; y: number; screenY: number };
+type TimerOrigin = "auto" | "manual";
 type DetachedRuntimeState = {
   snapshot?: UsageSnapshot;
   monitorReading?: MonitorReading;
   activeEffect?: UsageEffect;
+  timerOrigin?: TimerOrigin;
   flash: boolean;
   paused: boolean;
   freshAt?: string;
@@ -1018,9 +1024,8 @@ function providerEnabled(provider: Provider, settings: Settings): boolean {
 }
 
 function resetCountdownLabel(snapshot: UsageSnapshot): string | undefined {
-  if (!snapshot.resetLabel) return undefined;
-  const resetMs = parseResetMs(snapshot.resetLabel);
-  if (resetMs === null) return "resetting soon";
+  const resetMs = snapshotResetMs(snapshot);
+  if (resetMs === null) return snapshot.resetLabel ? "resetting soon" : undefined;
   const remaining = resetMs - Date.now();
   if (remaining <= 0) return "resetting soon";
   const days = Math.floor(remaining / 86_400_000);
@@ -1030,8 +1035,13 @@ function resetCountdownLabel(snapshot: UsageSnapshot): string | undefined {
   return hours > 0 ? `resets in ${hours}h ${minutes}m` : `resets in ${minutes}m`;
 }
 
+function snapshotDisplayPeriod(snapshot: UsageSnapshot): "main" | "weekly" {
+  return snapshot.displayPeriod === "weekly" ? "weekly" : "main";
+}
+
 function providerMessage(snapshot: UsageSnapshot) {
   if (snapshot.status === "ok") {
+    if (snapshotDisplayPeriod(snapshot) === "weekly") return "used this week";
     return resetCountdownLabel(snapshot) ?? "up to date";
   }
   if (snapshot.status === "not_found" && providerKind(snapshot.provider) === "claude") return "Usage page not detected";
@@ -1115,6 +1125,10 @@ function resetLabelToClock(label?: string) {
 }
 
 function usageMetaLeft(snapshot: UsageSnapshot) {
+  if (snapshotDisplayPeriod(snapshot) === "weekly" && typeof snapshot.percentUsed === "number") {
+    const used = Math.max(0, Math.min(100, snapshot.percentUsed));
+    return `${Math.max(0, 100 - Math.round(used))}% left`;
+  }
   // Only ever show a clean "Weekly left X%" (or a placeholder) — never raw scraped text, which for
   // Claude's DOM fallback can contain promo/Fable copy.
   const weeklyUsed = snapshot.weeklyLabel?.match(/Weekly\s+(\d{1,3})(?:\.\d+)?%\s+used/i)?.[1];
@@ -1132,10 +1146,15 @@ function weeklyResetLabel(snapshot: UsageSnapshot) {
   const resetPart = snapshot.weeklyLabel
     ?.split(" / ")
     .find((part) => /^\s*Reset\b/i.test(part));
+  const resetMs = validResetAtMs(snapshot.weeklyResetAtMs);
+  if (resetMs !== null) return `Reset ${formatCompactDate(new Date(resetMs))}`;
+  const legacyResetMs = parseResetMs(resetPart);
+  if (legacyResetMs !== null) return `Reset ${formatCompactDate(new Date(legacyResetMs))}`;
   return resetLabelToClock(resetPart) || "Reset --";
 }
 
 function usageMetaRight(snapshot: UsageSnapshot) {
+  if (snapshotDisplayPeriod(snapshot) === "weekly") return resetCountdownLabel(snapshot) ?? "Reset --";
   return weeklyResetLabel(snapshot);
 }
 
@@ -1145,6 +1164,8 @@ function hasUsageDisplayValue(snapshot: UsageSnapshot) {
     !!snapshot.usedLabel ||
     !!snapshot.remainingLabel ||
     !!snapshot.resetLabel ||
+    snapshot.resetAtMs !== undefined ||
+    snapshot.weeklyResetAtMs !== undefined ||
     !!snapshot.weeklyLabel
   );
 }
@@ -1212,10 +1233,18 @@ function isProviderLimited(provider: Provider, snapshot: UsageSnapshot) {
   return (snapshot.percentUsed ?? 0) >= limitedThreshold(provider);
 }
 
+function trustworthyLimitState(provider: Provider, snapshot: UsageSnapshot): boolean | undefined {
+  const percent = snapshot.percentUsed;
+  if (snapshot.status !== "ok" || typeof percent !== "number" || !Number.isFinite(percent) || percent < 0 || percent > 100) {
+    return undefined;
+  }
+  return percent >= limitedThreshold(provider);
+}
+
 function shouldAutoRefreshProvider(provider: Provider, snapshot: UsageSnapshot, now: number, lastLimitedRefreshAt: Record<Provider, number>) {
   if (!isProviderLimited(provider, snapshot)) return true;
 
-  const resetMs = parseResetMs(snapshot.resetLabel);
+  const resetMs = snapshotResetMs(snapshot);
   if (resetMs !== null) return resetMs <= now + LIMITED_RESET_REFRESH_LEAD_MS;
 
   return now - (lastLimitedRefreshAt[provider] || 0) >= LIMITED_FALLBACK_REFRESH_MS;
@@ -1370,7 +1399,6 @@ function DetachedTileApp({ tileId }: { tileId: TileId }) {
       paused: false,
     };
   });
-  const [timer, setTimer] = useState(false);
   const rootRef = useRef<HTMLElement | null>(null);
   const pointerRef = useRef<{ x: number; y: number; dragging: boolean } | null>(null);
   const suppressClickRef = useRef(false);
@@ -1446,20 +1474,23 @@ function DetachedTileApp({ tileId }: { tileId: TileId }) {
   const accent = provider ? providerAccent(provider, settings) : undefined;
   const snapshot = provider ? runtime.snapshot ?? emptySnapshot(provider) : null;
   const reading = monitor ? runtime.monitorReading ?? emptyReading(monitor) : null;
+  const activeEffect = settings.effectsEnabled ? runtime.activeEffect : undefined;
+  const deferAutoTimer = runtime.timerOrigin === "auto" && activeEffect !== undefined && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const toggleTimer = () => { if (provider) void emitTo("widget", TIMER_TOGGLE_EVENT, { provider }); };
   const content = provider
-    ? timer
-      ? <TimerView snapshot={snapshot!} accent={accent} onBack={() => setTimer(false)} paused={runtime.paused} />
+    ? runtime.timerOrigin && !deferAutoTimer
+      ? <TimerView snapshot={snapshot!} accent={accent} onBack={toggleTimer} paused={runtime.paused} />
       : <UsageBlock
           snapshot={snapshot!}
           accent={accent}
           flash={runtime.flash}
           paused={runtime.paused}
           updatedAgo={formatAgo(runtime.freshAt)}
-          effect={settings.effectsEnabled ? runtime.activeEffect : undefined}
+          effect={activeEffect}
           dropCell={settings.effectDropCell}
           glass={themeStyle(settings.theme) === "glass"}
           effectsEnabled={settings.effectsEnabled}
-          onFlip={() => setTimer(true)}
+          onFlip={deferAutoTimer ? undefined : toggleTimer}
         />
     : monitor
       ? <MonitorBlock key={reading!.testNonce ?? "live"} reading={reading!} tone={monitorTone(settings, reading!)} pulse={settings.effectsEnabled} glass={themeStyle(settings.theme) === "glass"} textEffect={!settings.colorsEnabled || settings.colorScope.text} />
@@ -1909,15 +1940,15 @@ function SettingsWindowApp() {
   }
   async function findApi(provider: Provider) {
     setBusy(`${provider}-discover`);
-    setActivity(`Finding ${providerLabel(provider)} API`);
+    setActivity(`Inspecting ${providerLabel(provider)} API calls`);
     try {
       const result = await discoverProviderApi(provider, providerUrl(provider, settings));
       setDiscovery((current) => ({ ...current, [provider]: result }));
-      providerSucceeded(provider, `${providerLabel(provider)} API discovery done`);
+      providerSucceeded(provider, `${providerLabel(provider)} API inspection complete`);
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       setDiscovery((current) => ({ ...current, [provider]: `Error: ${msg}` }));
-      providerFailed(provider, `${providerLabel(provider)} discovery failed: ${msg}`);
+      providerFailed(provider, `${providerLabel(provider)} API inspection failed: ${msg}`);
     }
     setBusy(null);
   }
@@ -2072,7 +2103,7 @@ function WidgetApp() {
   const compactPointerRef = useRef<{ x: number; y: number; dragged: boolean } | null>(null);
   const contextActionHandlerRef = useRef<(action: string) => void>(() => undefined);
   const [mode, setMode] = useState<AppMode>(loadMode);
-  const [timerSet, setTimerSet] = useState<Set<Provider>>(new Set());
+  const [timerModes, setTimerModes] = useState<Partial<Record<Provider, TimerOrigin>>>({});
   const [settings, setSettings] = useState(loadSettings);
   const [tileLayout, setTileLayout] = useState(loadTileLayout);
   const tileLayoutRef = useRef(tileLayout);
@@ -2150,6 +2181,8 @@ function WidgetApp() {
   const lastLimitedAutoRefreshRef = useRef<Record<Provider, number>>(Object.fromEntries(settings.accounts.map((account) => [account.id, 0])));
   const prevFlashTokenRef = useRef<Partial<Record<Provider, string>>>({});
   const prevEffectPercentRef = useRef<Partial<Record<Provider, number>>>({});
+  const prevEffectPeriodRef = useRef<Partial<Record<Provider, "main" | "weekly">>>({});
+  const previousLimitRef = useRef<Partial<Record<Provider, boolean>>>({});
   const runtimeValidReadRef = useRef<Partial<Record<Provider, boolean>>>({});
   const lastFreshAtRef = useRef<Partial<Record<Provider, string>>>({});
   const runtimePayloadRef = useRef<Partial<Record<TileId, DetachedRuntimeState>>>({});
@@ -2162,7 +2195,6 @@ function WidgetApp() {
   const [monitorEffectTest, setMonitorEffectTest] = useState<MonitorEffectTest | null>(null);
   const [, setAgoTick] = useState(0);
   const [lastUpdated, setLastUpdated] = useState(new Date());
-  const [busy, setBusy] = useState<Provider | null>(null);
   const [monitorReadings, setMonitorReadings] = useState<Record<MonitorKind, MonitorReading>>(() => buildMonitorReadings(null));
   const monitorReadingsForRender = useMemo(() => {
     if (!monitorEffectTest) return monitorReadings;
@@ -2295,13 +2327,6 @@ function WidgetApp() {
       && !providerRemovalPending(snapshot.provider),
     );
     setSnapshots((current) => currentResults.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), current));
-    setTimerSet((current) => {
-      const next = new Set(current);
-      currentResults.forEach((snapshot) => {
-        if (!isProviderLimited(snapshot.provider, snapshot)) next.delete(snapshot.provider);
-      });
-      return next;
-    });
   }
 
   function restoreMonitorTestEffect() {
@@ -2418,15 +2443,15 @@ function WidgetApp() {
       if (timer !== undefined) window.clearTimeout(timer);
       delete timers.current[provider];
     }
-    setTimerSet((current) => { const next = new Set(current); next.delete(provider); return next; });
+    setTimerModes((current) => { const next = { ...current }; delete next[provider]; return next; });
     setFlashSet((current) => { const next = new Set(current); next.delete(provider); return next; });
     setActiveEffects((current) => { const next = { ...current }; delete next[provider]; return next; });
     setProviderNotices((current) => { const next = { ...current }; delete next[provider]; return next; });
-    setBusy((current) => current === provider ? null : current);
 
-    for (const values of [lastLimitedAutoRefreshRef, prevFlashTokenRef, prevEffectPercentRef, runtimeValidReadRef, lastFreshAtRef]) {
+    for (const values of [lastLimitedAutoRefreshRef, prevFlashTokenRef, prevEffectPercentRef, prevEffectPeriodRef, runtimeValidReadRef, lastFreshAtRef]) {
       delete values.current[provider];
     }
+    delete previousLimitRef.current[provider];
     return generation;
   }
 
@@ -2926,7 +2951,7 @@ function WidgetApp() {
       if (!providers.length) return;
 
       for (const provider of providers) {
-        if (isProviderLimited(provider, snapshotOf(currentSnapshots, provider)) && parseResetMs(snapshotOf(currentSnapshots, provider).resetLabel) === null) {
+        if (isProviderLimited(provider, snapshotOf(currentSnapshots, provider)) && snapshotResetMs(snapshotOf(currentSnapshots, provider)) === null) {
           lastLimitedAutoRefreshRef.current[provider] = now;
         }
       }
@@ -3058,6 +3083,7 @@ function WidgetApp() {
         ? {
             snapshot: snapshotOf(snapshots, provider),
             activeEffect: settings.effectsEnabled ? activeEffects[provider] : undefined,
+            timerOrigin: timerModes[provider],
             flash: flashSet.has(provider),
             paused: !shouldAutoRefreshProvider(provider, snapshotOf(snapshots, provider), now, lastLimitedAutoRefreshRef.current),
             freshAt: lastFreshAtRef.current[provider],
@@ -3073,13 +3099,14 @@ function WidgetApp() {
         || old.snapshot !== state.snapshot
         || old.monitorReading !== state.monitorReading
         || old.activeEffect !== state.activeEffect
+        || old.timerOrigin !== state.timerOrigin
         || old.flash !== state.flash
         || old.paused !== state.paused
         || old.freshAt !== state.freshAt;
       if (changed) void emitTo(tileWindowLabel(tileId), "usageview-runtime-state", state).catch(() => undefined);
     }
     runtimePayloadRef.current = next;
-  }, [snapshots, monitorReadingsForRender, activeEffects, flashSet, tileLayout, settings]);
+  }, [snapshots, monitorReadingsForRender, activeEffects, timerModes, flashSet, tileLayout, settings]);
 
   // A late-joining tile asks for the current state. This listener is deliberately kept out of the
   // push effect above: that one re-runs on every monitor poll, and `listen` resolving after its
@@ -3133,6 +3160,16 @@ function WidgetApp() {
         const detached = { ...layout.detached };
         delete detached[tileId];
         return { ...layout, detached };
+      });
+    }).then(keep);
+    void listen<{ provider: Provider }>(TIMER_TOGGLE_EVENT, ({ payload }) => {
+      const provider = payload?.provider;
+      if (!provider || !settingsRef.current.accounts.some((account) => account.id === provider)) return;
+      setTimerModes((current) => {
+        const next = { ...current };
+        if (current[provider]) delete next[provider];
+        else next[provider] = "manual";
+        return next;
       });
     }).then(keep);
     return () => { disposed = true; disposers.forEach((dispose) => dispose()); };
@@ -3197,45 +3234,58 @@ async function refresh(provider: Provider, requestNonce: string) {
       } satisfies RefreshResult).catch(() => undefined);
       return;
     }
-      setBusy(provider);
-    try {
-      const snapshot = await guardedRefresh(provider, providerUrl(provider, settingsRef.current), false);
-      if (!settingsRef.current.accounts.some((account) => account.id === provider) || providerRemovalPending(provider)) return;
-      triggerManualReplay(provider, snapshot);
-      setSnapshots((currentSnapshots) => ({ ...currentSnapshots, [provider]: snapshot }));
-      setLastUpdated(new Date());
-      if (providerDesiredRef.current[provider] === true) {
-        const generation = providerGenerationRef.current[provider];
-        if (snapshot.status === "ok" && !isStale(snapshot)) {
-          publishProviderLifecycle({ provider, phase: "ready", generation, message: `${providerLabel(provider)} ready` });
-        } else if (snapshot.status === "not_open" || snapshot.status === "not_logged_in") {
-          publishProviderLifecycle({ provider, phase: "login-needed", generation, message: `${providerLabel(provider)} needs login` });
-        }
+    const snapshot = await guardedRefresh(provider, providerUrl(provider, settingsRef.current), false);
+    if (!settingsRef.current.accounts.some((account) => account.id === provider) || providerRemovalPending(provider)) return;
+    triggerManualReplay(provider, snapshot);
+    setSnapshots((currentSnapshots) => ({ ...currentSnapshots, [provider]: snapshot }));
+    setLastUpdated(new Date());
+    if (providerDesiredRef.current[provider] === true) {
+      const generation = providerGenerationRef.current[provider];
+      if (snapshot.status === "ok" && !isStale(snapshot)) {
+        publishProviderLifecycle({ provider, phase: "ready", generation, message: `${providerLabel(provider)} ready` });
+      } else if (snapshot.status === "not_open" || snapshot.status === "not_logged_in") {
+        publishProviderLifecycle({ provider, phase: "login-needed", generation, message: `${providerLabel(provider)} needs login` });
       }
-      await emitTo("settings", "usageview-refresh-result", {
-        nonce: requestNonce,
-        provider,
-        status: snapshot.status,
-        message: snapshot.message,
-      } satisfies RefreshResult).catch(() => undefined);
-    } finally {
-      setBusy((current) => current === provider ? null : current);
     }
+    await emitTo("settings", "usageview-refresh-result", {
+      nonce: requestNonce,
+      provider,
+      status: snapshot.status,
+      message: snapshot.message,
+    } satisfies RefreshResult).catch(() => undefined);
   }
 
   useEffect(() => {
-    setTimerSet((prev) => {
-      const next = new Set(prev);
-      let changed = false;
-      for (const p of accountIdsFrom(settingsRef.current)) {
-        if (isProviderLimited(p, snapshotOf(snapshots, p)) && !next.has(p)) {
-          next.add(p);
-          changed = true;
+    const accountIds = accountIdsFrom(settings);
+    const activeIds = new Set(accountIds);
+    const previous = previousLimitRef.current;
+    const observations = accountIds.map((provider) => {
+      const limit = trustworthyLimitState(provider, snapshotOf(snapshots, provider));
+      return { provider, limit, enteredLimited: limit === true && previous[provider] !== true };
+    });
+    const nextPrevious = { ...previous };
+    for (const provider of Object.keys(nextPrevious)) if (!activeIds.has(provider)) delete nextPrevious[provider];
+    for (const { provider, limit } of observations) if (limit !== undefined) nextPrevious[provider] = limit;
+    previousLimitRef.current = nextPrevious;
+
+    setTimerModes((current) => {
+      let next = current;
+      const mutate = () => { if (next === current) next = { ...current }; };
+      for (const provider of Object.keys(current)) {
+        if (!activeIds.has(provider)) { mutate(); delete next[provider]; }
+      }
+      for (const { provider, limit, enteredLimited } of observations) {
+        if (limit !== true && current[provider] === "auto") {
+          mutate();
+          delete next[provider];
+        } else if (enteredLimited && current[provider] === undefined) {
+          mutate();
+          next[provider] = "auto";
         }
       }
-      return changed ? next : prev;
+      return next;
     });
-  }, [snapshots]);
+  }, [snapshots, settings.accounts]);
 
   useLayoutEffect(() => {
     const newly: Provider[] = [];
@@ -3245,14 +3295,17 @@ async function refresh(provider: Provider, requestNonce: string) {
       const token = flashToken(snap);
       const previousToken = prevFlashTokenRef.current[p];
       const previousPercent = prevEffectPercentRef.current[p];
+      const previousPeriod = prevEffectPeriodRef.current[p];
       const nextPercent = snapshotPercent(snap);
+      const nextPeriod = snapshotDisplayPeriod(snap);
       const hasRuntimeValidRead = runtimeValidReadRef.current[p] === true;
       prevFlashTokenRef.current[p] = token;
+      prevEffectPeriodRef.current[p] = nextPeriod;
       if (previousToken !== undefined && token && token !== previousToken) {
         newly.push(p);
         if (typeof nextPercent === "number" && nextPercent > 0) {
           const isStartupReveal = !hasRuntimeValidRead;
-          const increased = hasRuntimeValidRead && typeof previousPercent === "number" && nextPercent > previousPercent;
+          const increased = hasRuntimeValidRead && previousPeriod === nextPeriod && typeof previousPercent === "number" && nextPercent > previousPercent;
           if (isStartupReveal || increased) {
             const fromPercent = isStartupReveal ? 0 : Number(previousPercent);
             effectPayloads[p] = makeUsageEffect(fromPercent, nextPercent);
@@ -3292,9 +3345,10 @@ async function refresh(provider: Provider, requestNonce: string) {
   // change the prop identity each time and defeat the memo on the tiles below, which is the whole
   // point of memoising them: a monitor poll must not re-render the AI tiles.
   const timerToggles = useMemo(() => {
-    const make = (provider: Provider) => () => setTimerSet((prev) => {
-      const next = new Set(prev);
-      next.has(provider) ? next.delete(provider) : next.add(provider);
+    const make = (provider: Provider) => () => setTimerModes((current) => {
+      const next = { ...current };
+      if (current[provider]) delete next[provider];
+      else next[provider] = "manual";
       return next;
     });
     return Object.fromEntries(accountIdsFrom(settings).map((id) => [id, make(id)])) as Record<Provider, () => void>;
@@ -3334,7 +3388,6 @@ async function refresh(provider: Provider, requestNonce: string) {
       providerEnabled(provider, settings) && lifecycleShowsTile(providerLifecycleRef.current[provider]),
     );
     if (!providers.length) return;
-    setBusy(providers[0]);
     const results = await Promise.all(
       providers.map((provider) => guardedRefresh(provider, providerUrl(provider, settings), false)),
     );
@@ -3345,7 +3398,6 @@ async function refresh(provider: Provider, requestNonce: string) {
     currentResults.forEach((snapshot) => triggerManualReplay(snapshot.provider, snapshot));
     setSnapshots((currentSnapshots) => currentResults.reduce((next, snapshot) => ({ ...next, [snapshot.provider]: snapshot }), currentSnapshots));
     setLastUpdated(new Date());
-    setBusy(null);
   }
 
   async function closeWindow() {
@@ -3413,8 +3465,9 @@ async function refresh(provider: Provider, requestNonce: string) {
       const snap = snapshotOf(snapshots, provider);
       const accent = providerAccent(provider, settings);
       const activeEffect = settings.effectsEnabled ? activeEffects[provider] : undefined;
-      const deferTimer = timerSet.has(provider) && activeEffect !== undefined && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      return timerSet.has(provider) && !deferTimer
+      const timerOrigin = timerModes[provider];
+      const deferTimer = timerOrigin === "auto" && activeEffect !== undefined && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      return timerOrigin && !deferTimer
         ? <TimerView snapshot={snap} accent={accent} onBack={timerToggles[provider]} paused={isPaused(provider)} />
         : <UsageBlock snapshot={snap} accent={accent} flash={flashSet.has(provider)} paused={isPaused(provider)} updatedAgo={agoFor(provider)} effect={activeEffect} dropCell={settings.effectDropCell} glass={themeStyle(settings.theme) === "glass"} effectsEnabled={settings.effectsEnabled} onFlip={deferTimer ? undefined : timerToggles[provider]} />;
     }
@@ -3428,7 +3481,7 @@ async function refresh(provider: Provider, requestNonce: string) {
     if (provider) {
       const snap = snapshotOf(snapshots, provider);
       const accent = providerAccent(provider, settings);
-      return timerSet.has(provider)
+      return timerModes[provider]
         ? <MiniTimerRow snapshot={snap} accent={accent} onBack={timerToggles[provider]} paused={isPaused(provider)} />
         : <MiniUsageRow snapshot={snap} accent={accent} paused={isPaused(provider)} updatedAgo={agoFor(provider)} flash={flashSet.has(provider)} onFlip={timerToggles[provider]} />;
     }
@@ -3572,55 +3625,11 @@ async function refresh(provider: Provider, requestNonce: string) {
   );
 }
 
-function WindowControls({
-  pinned,
-  onTogglePin,
-  onClose,
-}: {
-  pinned: boolean;
-  onTogglePin: () => void;
-  onClose: () => void;
-}) {
-  return (
-    <div className="window-controls" aria-label="Window controls">
-      <button className={`window-control pin ${pinned ? "active" : ""}`} type="button" title={pinned ? "Unpin from top" : "Pin always on top"} aria-label={pinned ? "Unpin from top" : "Pin always on top"} onClick={onTogglePin}><PinIcon /></button>
-      <button className="window-control close" type="button" title="Close" aria-label="Close" onClick={onClose}>x</button>
-    </div>
-  );
-}
-
-function PinIcon() {
-  return (
-    <svg className="pin-icon" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M14 3l7 7-4.2 4.2-3.2-.8-5.9 5.9-3-3 5.9-5.9-.8-3.2L14 3z" />
-      <path d="M7.2 16.8 3 21" />
-    </svg>
-  );
-}
-
-function RefreshIcon() {
-  return (
-    <svg className="action-icon" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-      <path d="M21 3v6h-6" />
-    </svg>
-  );
-}
-
 function GearIcon() {
   return (
     <svg className="action-icon" viewBox="0 0 24 24" aria-hidden="true">
       <circle cx="12" cy="12" r="3" />
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-    </svg>
-  );
-}
-
-function MiniIcon() {
-  return (
-    <svg className="action-icon" viewBox="0 0 24 24" aria-hidden="true">
-      <rect x="5" y="8" width="14" height="3" rx="1.2" />
-      <rect x="5" y="13" width="14" height="3" rx="1.2" />
     </svg>
   );
 }
@@ -3773,7 +3782,7 @@ function ProviderPanel({
   const usagePercent = typeof snapshot.percentUsed === "number" ? Math.round(snapshot.percentUsed) : null;
   const usageReset = resetCountdownLabel(snapshot);
   const usageSummary = snapshot.status === "ok"
-    ? `${usagePercent !== null ? `${usagePercent}% used` : "up to date"}${usageReset ? ` · ${usageReset}` : ""}`
+    ? `${usagePercent !== null ? `${usagePercent}% ${snapshotDisplayPeriod(snapshot) === "weekly" ? "used this week" : "used"}` : "up to date"}${usageReset ? ` · ${usageReset}` : ""}`
     : providerMessage(snapshot);
   const showLabel = lifecycle?.phase === "starting" || lifecycle?.phase === "retrying"
     ? "Cancel"
@@ -3827,18 +3836,19 @@ function ProviderPanel({
         <div className="button-grid">
           <button onClick={onReload} disabled={busy === `${provider}-reload`}>Reload page</button>
           <button onClick={onClose} disabled={busy === `${provider}-close`}>Hide window</button>
-          <button onClick={onDiscover} disabled={busy === `${provider}-discover`}>{busy === `${provider}-discover` ? "Finding API..." : "Find API"}</button>
+          <button onClick={onDiscover} disabled={busy === `${provider}-discover`}>{busy === `${provider}-discover` ? "Inspecting API..." : "Inspect API calls"}</button>
         </div>
         <p className="hint">Log out clears only this account's isolated in-app session.</p>
+        <p className="hint">API inspection is diagnostic only and does not change usage extraction. Review its output before sharing.</p>
       {discovery && (
         <details className="debug-text" open>
-          <summary>Discovered API</summary>
+          <summary>API inspection report</summary>
           <pre>{discovery}</pre>
         </details>
       )}
       {snapshot.debugText && (
         <details className="debug-text">
-          <summary>Raw page text</summary>
+          <summary>Last extraction diagnostic</summary>
           <pre>{snapshot.debugText}</pre>
         </details>
       )}
@@ -4387,7 +4397,7 @@ function AboutPanel({ settings, patch }: { settings: Settings; patch: (next: Par
         <span>Developer mode</span>
         <input className="switch-control" type="checkbox" role="switch" checked={settings.developerMode} onChange={(event) => patch({ developerMode: event.target.checked })} />
       </label>
-      <p className="about-p muted">Developer mode shows the effect tester, API discovery and the custom URL field.</p>
+      <p className="about-p muted">Developer mode shows effect testing, API inspection, extraction diagnostics and custom account URLs.</p>
     </div>
   );
 }
@@ -4804,15 +4814,38 @@ function AddAccountForm({ onAdd, onCancel }: { onAdd: (kind: AccountKind, label:
   );
 }
 
+const RESET_TIMESTAMP_MIN_MS = 1_000_000_000_000;
+const RESET_TIMESTAMP_MAX_FUTURE_MS = 366 * 86_400_000;
+const LEGACY_RESET_NEXT_YEAR_HORIZON_MS = 8 * 86_400_000;
+
+function validResetAtMs(value: unknown, now = Date.now()): number | null {
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) return null;
+  if (value < RESET_TIMESTAMP_MIN_MS || value > now + RESET_TIMESTAMP_MAX_FUTURE_MS) return null;
+  return value;
+}
+
 function parseResetMs(resetLabel?: string): number | null {
   if (!resetLabel) return null;
   const stripped = resetLabel.replace(/^Reset\s+/i, "").trim();
-  const year = new Date().getFullYear();
+  const now = Date.now();
+  const year = new Date(now).getFullYear();
+  const hasExplicitYear = /\b\d{4}\b/.test(stripped);
+  const horizon = hasExplicitYear ? RESET_TIMESTAMP_MAX_FUTURE_MS : LEGACY_RESET_NEXT_YEAR_HORIZON_MS;
   for (const candidate of [stripped, `${stripped}, ${year}`, `${stripped} ${year}`]) {
     const d = new Date(candidate);
-    if (!isNaN(d.getTime()) && d.getTime() > Date.now() - 60_000) return d.getTime();
+    if (!isNaN(d.getTime()) && d.getTime() > now - 60_000 && d.getTime() <= now + horizon) return d.getTime();
+  }
+  if (!hasExplicitYear) {
+    for (const candidate of [`${stripped}, ${year + 1}`, `${stripped} ${year + 1}`]) {
+      const d = new Date(candidate);
+      if (!isNaN(d.getTime()) && d.getTime() > now - 60_000 && d.getTime() <= now + LEGACY_RESET_NEXT_YEAR_HORIZON_MS) return d.getTime();
+    }
   }
   return null;
+}
+
+function snapshotResetMs(snapshot: UsageSnapshot): number | null {
+  return validResetAtMs(snapshot.resetAtMs) ?? parseResetMs(snapshot.resetLabel);
 }
 
 function countdownParts(resetMs: number): { days: number; clock: string } | null {
@@ -4850,14 +4883,14 @@ function TimerView({ snapshot, accent, onBack, paused = false }: { snapshot: Usa
     const id = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(id);
   }, []);
-  const resetMs = parseResetMs(snapshot.resetLabel);
+  const resetMs = snapshotResetMs(snapshot);
   return (
     <article className={`usage compact provider-tile ${providerKind(snapshot.provider)} timer-view flippable${paused ? " mark-paused" : ""}`} style={providerAccentStyle(accent)} onClick={onBack} title="Tap to dismiss">
       <div className="usage-top">
         <strong><ProviderMark provider={snapshot.provider} />{providerLabel(snapshot.provider)}</strong>
         <span className="timer-label">reset in</span>
       </div>
-      <div className="timer-clock"><CountdownFace resetMs={resetMs} fallback={snapshot.resetLabel ? "Resetting soon" : "—"} /></div>
+      <div className="timer-clock"><CountdownFace resetMs={resetMs} fallback={resetMs !== null || snapshot.resetLabel ? "Resetting soon" : "—"} /></div>
       <div className="timer-sub">
         {snapshot.resetLabel && <span>{snapshot.resetLabel}</span>}
         <span className="timer-hint">tap to dismiss</span>
@@ -6504,11 +6537,11 @@ function MiniTimerRow({ snapshot, accent, onBack, paused = false }: { snapshot: 
     const id = setInterval(() => setTick((t) => t + 1), 1000);
     return () => clearInterval(id);
   }, []);
-  const resetMs = parseResetMs(snapshot.resetLabel);
+  const resetMs = snapshotResetMs(snapshot);
   return (
     <article className={`mini-usage mini-timer provider-tile ${providerKind(snapshot.provider)}${paused ? " mark-paused" : ""}`} style={providerAccentStyle(accent)}>
       <MiniMarkButton provider={snapshot.provider} onClick={onBack} title="Tap to dismiss" />
-      <strong className="mini-timer-clock"><CountdownFace resetMs={resetMs} fallback={snapshot.resetLabel ? "soon" : "--"} /></strong>
+      <strong className="mini-timer-clock"><CountdownFace resetMs={resetMs} fallback={resetMs !== null || snapshot.resetLabel ? "soon" : "--"} /></strong>
     </article>
   );
 }
